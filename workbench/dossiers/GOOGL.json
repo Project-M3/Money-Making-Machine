@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "ticker": "GOOGL",
+  "name": "Alphabet Inc.",
+  "updated_at": "2026-11-19",
+  "draft_source": "agent_draft",
+  "three_sentence_business": "以搜索、YouTube 与 Android 分发流量收割全球数字广告现金牛，同时依托 Google Cloud 与自研 TPU 向企业出售算力与 AI 基础设施。过去它是极轻资产的软件印钞机，但目前正将巨额经营现金流乃至额外融资投入数据中心与 AI 算力基建。核心投资矛盾在于这轮天量 CapEx 究竟是“建好后收租十年的收费站”，还是“永远停不下来的军备消耗”。",
+  "latticework": {
+    "microeconomics": "传统搜索广告具有近乎垄断的双边网络效应与极高边际利润；但 AI 算力基建将业务结构拉向公用事业般的重资产与高折旧。",
+    "ecology": "在基础大模型、自研 TPU 芯片、云服务与终端分发（Search/YouTube/Android）全栈卡位，对抗 Microsoft/OpenAI 与 Meta 的围攻。",
+    "psychology_incentives": "用户搜索心智惯性极强，但生成式 AI 改变了信息获取习惯；同时公司长期存在较高的 SBC 股权激励成本，需密切观察回购是否恢复。",
+    "capital_allocation": "资本配置发生显著转折：2026 年 CapEx 急剧膨胀且 10-Q 期间回购暂停并出现外部融资，短期自由现金流承压，对未来资本回报率要求极高。"
+  },
+  "premortem": [
+    "AI 数据中心与芯片折旧周期仅 4–5 年，若云与 AI 变现速率跟不上每年千亿美元级 CapEx，ROIC 与严苛股东盈余将长期维持低位甚至为负。",
+    "生成式答案替代传统搜索结果页面广告位，导致最赚钱的搜索广告增速持续放缓且单次查询成本大幅上升。",
+    "停止股票回购叠加大额 SBC，导致总股本重新出现净稀释，每股内在价值增速落后于业务增长。"
+  ],
+  "open_questions": [
+    "你如何判断 Alphabet 当前这轮千亿美元级 AI CapEx——更像 AWS 早期建收费站，还是被迫保卫搜索地盘的军备内卷？",
+    "在看到自由现金流转正和恢复回购拐点前，你愿意给它什么样的安全边际（击球价）？"
+  ],
+  "human_judgment": {
+    "pending_human_review": true,
+    "my_stance": null,
+    "weight_rationale": null,
+    "falsification_metrics": [],
+    "feynman_checked_at": null
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "ticker": "INTC",
+  "name": "Intel Corporation",
+  "updated_at": "2026-11-19",
+  "draft_source": "agent_draft",
+  "three_sentence_business": "集 x86 处理器设计与重资产晶圆代工制造于一体的老牌半导体巨头，目前正试图砸下巨资追赶台积电重建代工生态。然而其核心 PC 与数据中心 CPU 份额正同时遭遇 AMD 与 ARM 架构的双重围攻，而晶圆代工是人类工业史上最烧钱、最残酷的资本密集型赛道。在持续巨额 CapEx、营业亏损和未来自由现金流完全不可测的状态下，现阶段直接归入 Too Hard。",
+  "latticework": {
+    "microeconomics": "兼备重资产高固定折旧与技术快速迭代双重不利特性：一旦良率或工艺落后一代，产线巨额折旧会迅速吞噬全部现金流。",
+    "ecology": "旧时代 Wintel 护城河已被云厂商自研 ARM 芯片、NVIDIA AI 算力重心转移和 TSMC+AMD 联盟严重侵蚀，外部客户代工信任尚待建立。",
+    "psychology_incentives": "容易诱发散户的“昔日帝国情怀”和“暴跌抄底困境反转”赌博心理；但高难度反转在没有现金流安全垫前风险极大。",
+    "capital_allocation": "经营现金流远不足以覆盖每年百亿美元以上晶圆厂 CapEx，依赖政府补贴、分拆融资与资产出售维持投入。"
+  },
+  "premortem": [
+    "先进制程良率与外部大客户量产一再延期，百亿美元晶圆厂投资成为沉没资本黑洞。",
+    "数据中心客户加速向 ARM 与 GPU 异构算力迁移，x86 传统服务器基本盘现金牛萎缩速度快于代工止血速度。",
+    "为填补资金缺口被迫持续举债、出售核心资产或稀释股权，永久性损害普通股价值。"
+  ],
+  "open_questions": [
+    "作为 Too Hard 博物馆对照样本：对比 SEC XBRL 的实证数字（营业利润与 FCF 转负、CapEx 高企），你能清晰说出为什么它既不是伟大企业，也不符合低估烟蒂股吗？"
+  ],
+  "human_judgment": {
+    "pending_human_review": true,
+    "my_stance": null,
+    "weight_rationale": null,
+    "falsification_metrics": [],
+    "feynman_checked_at": null
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "experiment_id": "sma20-history-v1",
+  "registered_on": "2026-10-17",
+  "status": "registered_before_data_replay",
+  "hypothesis": "Fixed hourly SMA20 timing may improve net return or downside tradeoff versus equal-quantity buy-and-hold after costs; this is a screening experiment, not proof of future alpha.",
+  "symbol": "BTCUSDT",
+  "interval": "1h",
+  "sma_hours": 20,
+  "starting_cash_usdt": "1000",
+  "target_btc": "0.001",
+  "rule": "completed_close > inclusive_last_20_completed_closes_mean => hold 0.001 BTC; otherwise hold cash; trade only on target changes",
+  "execution": "next hour open with adverse slippage; no historical spread or depth available; no same-bar close fills; no leverage or shorts",
+  "warmup_bars": 20,
+  "periods": {
+    "calibration": {"year": 2024, "start_ms": 1704067200000, "end_exclusive_ms": 1735689600000},
+    "holdout": {"year": 2025, "start_ms": 1735689600000, "end_exclusive_ms": 1767225600000}
+  },
+  "costs": [
+    {"name": "base", "fee_each_side_bps": 10, "slippage_each_side_bps": 5},
+    {"name": "stress", "fee_each_side_bps": 20, "slippage_each_side_bps": 10}
+  ],
+  "evaluation": {
+    "independent_accounts_per_year": true,
+    "baseline_entry": "same evaluation-start open, 0.001 BTC plus remaining cash; identical costs and terminal liquidation assumptions",
+    "equity": "initial 1000 plus each completed hourly close marked to hypothetical liquidation, with adverse exit slippage and exit fee; no forced terminal order",
+    "drawdown": "largest peak-to-trough decline of this hourly-close liquidation equity including initial 1000; not intrahour drawdown",
+    "return_to_drawdown": "period net profit divided by maximum drawdown in USDT; undefined if drawdown is zero; descriptive, not annualized",
+    "exposure": "fraction of evaluation hours holding 0.001 BTC; lower drawdown alone is not proof of timing skill",
+    "quarters_months": "changes in continuous year-account liquidation equity at calendar boundaries; no independent account resets within year",
+    "trade_summary": "completed round trips separately from any terminal open position; include actual fees and distinguish hypothetical exit fee",
+    "no_parameter_search": true,
+    "no_early_stopping_or_period_selection": true,
+    "no_sharpe_or_significance_claim": true
+  },
+  "decision_policy": {
+    "abandon_fixed_version": "holdout base net profit <= 0 AND stress net profit <= 0",
+    "continue_to_forward_test_only": "holdout base and stress net profit > 0, at least 3 of 4 base quarters profitable, AND either (base net profit >= buy-hold net profit AND base max drawdown <= buy-hold max drawdown) OR (base max drawdown <= 75% of buy-hold max drawdown AND base profit/drawdown > buy-hold profit/drawdown)",
+    "otherwise": "insufficient_evidence",
+    "interpretation": "25% drawdown improvement and 3-quarter breadth are predeclared research-budget screening choices, not statistical confidence thresholds; abandoning this fixed version does not reject all trend strategies"
+  },
+  "data_policy": "official monthly spot archives plus published SHA256 checksums; complete UTC calendar years and preceding 20 hours; reject gaps, duplicates, invalid OHLCV and unexpected timestamp units; preserve ZIPs and source manifest",
+  "holdout_policy": "2024 may debug implementation but may not tune strategy; freeze tested code hash before viewing 2025 performance; any later correction preserves original outputs and is disclosed; 2025 historical holdout is not fresh future data",
+  "runtime_boundary": "separate artifact directory; preserve existing GUI binary, paper journal, account and paused heartbeat; no real orders or new recurring validation"
+}

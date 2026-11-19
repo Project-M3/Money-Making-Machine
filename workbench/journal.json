@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "account_note": "PAPER RESEARCH FIXTURE — NO LIVE ACCOUNT / NO BROKERAGE CONNECTION",
+  "currency": "USD",
+  "starting_cash": "100000",
+  "cash_balance": "100000",
+  "benchmark_symbol": "^GSPC",
+  "benchmark_start_price": "7323.63",
+  "positions": [],
+  "entries": [
+    {
+      "id": "j-20261119-intc-toohard",
+      "recorded_at": "2026-11-19",
+      "ticker": "INTC",
+      "action": "TOO_HARD",
+      "price": null,
+      "shares": null,
+      "strict_fcf_yield_pct": null,
+      "benchmark_price": null,
+      "rationale": "归入 Too Hard 博物馆：晶圆代工处于极高资本开支与亏损转型期，同时面对 TSMC 工艺压制及 AMD/ARM 在服务端与 PC 端围攻，无法可靠估算 5–10 年自由现金流。",
+      "falsification_trigger": "除非代工实现独立可持续正自由现金流且连续 8 个季度维持高良率与毛利率修复，否则不移出 Too Hard。"
+    },
+    {
+      "id": "j-20261119-1810hk-toohard",
+      "recorded_at": "2026-11-19",
+      "ticker": "1810.HK",
+      "action": "TOO_HARD",
+      "price": null,
+      "shares": null,
+      "strict_fcf_yield_pct": null,
+      "benchmark_price": null,
+      "rationale": "归入 Too Hard 博物馆：消费电子硬件与智能纯电汽车均属高强度围攻赛道，未来产能与研发吞金需求大，薄利多销模式下稳态股东盈余难以在心算层锁定。",
+      "falsification_trigger": "当汽车业务度过重资本扩张期并连续 3 年展示稳定的真实自由现金流与提价能力后，才考虑重新评估。"
+    }
+  ]
+}

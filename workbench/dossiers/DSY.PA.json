@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "ticker": "DSY.PA",
+  "name": "Dassault Systèmes SE",
+  "updated_at": "2026-11-19",
+  "draft_source": "agent_draft",
+  "three_sentence_business": "向全球航空航天、汽车制造、高端装备及生命科学企业提供 CATIA、SOLIDWORKS、SIMULIA 与 3DEXPERIENCE 全生命周期设计仿真平台，是高端制造业不可动摇的“数字造物主底座”。工程师肌肉记忆、工艺数据格式与整条供应商协同体系高度锁定，使核心工业客户极少更换平台。当前因在巴黎泛欧交易所（IFRS 准则）上市，待后续按年报手工录入结构化 IFRS 财务快照后纳入精确计算器。",
+  "latticework": {
+    "microeconomics": "极端高的转换成本与跨部门流程绑定，软件边际复制成本极低，在航空与汽车旗舰级 CAD/PLM 领域享有持久定价权。",
+    "ecology": "工业软件核心操作系统之一，与西门子（NX/Teamcenter）、PTC 正面竞争；同时承载 CADENAS 等中立零部件目录插件嵌入。",
+    "psychology_incentives": "达索家族长期控股约 40% 股份并掌握多数投票权，避免迎合季度短视行为；但需警惕此前天价收购 Medidata 跨界生命科学带来的资本配置教训。",
+    "capital_allocation": "核心工业主业产生充沛自由现金流，需持续跟踪 Medidata 商誉减值/增速拖累是否真正出清，以及对未来并购的克制程度。"
+  },
+  "premortem": [
+    "2019 年 58 亿美元跨界收购 Medidata 后医药临床研发周期持续疲软，继续拖累整体增速与投入资本回报率。",
+    "新能源车企与新兴制造玩家为追求快速迭代，部分跳过传统重型 3DEXPERIENCE 架构转向更轻量的云工具或自研工具链。",
+    "欧洲宏观疲软叠加持续云转型阵痛，导致大客户许可证向订阅迁移期间现金流与利润波动超出市场容忍。"
+  ],
+  "open_questions": [
+    "基于你对工业软件与 CATIA / SOLIDWORKS 生态的实际工作认知，3DEXPERIENCE 云平台到底是在加深护城河，还是让客户感到臃肿而产生逃离冲动？",
+    "下一步是否需要手工录入近 5 年达索 IFRS 年报至 workbench/manual_financials/DSY.PA.json 以跑通查理计算器？"
+  ],
+  "human_judgment": {
+    "pending_human_review": true,
+    "my_stance": null,
+    "weight_rationale": null,
+    "falsification_metrics": [],
+    "feynman_checked_at": null
+  }
+}

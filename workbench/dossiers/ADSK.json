@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "ticker": "ADSK",
+  "name": "Autodesk, Inc.",
+  "updated_at": "2026-11-19",
+  "draft_source": "agent_draft",
+  "three_sentence_business": "向全球建筑工程（AEC）与机械制造业出售 AutoCAD、Revit、Fusion 等核心设计与建造云订阅软件，是工程领域事实上的图纸格式与协作标准。一旦进入项目工作流与产业链上下游格式锁定，客户更换工具的迁移风险与停工成本极高。轻资产订阅模式产生高毛利与充沛现金流，但需严格扣除高额员工股权激励（SBC）后再看真实股东回报。",
+  "latticework": {
+    "microeconomics": "极强的文件格式与上下游协同网络效应 + 极高工程师肌肉记忆转换成本；软件交付边际成本趋近于零，定价权稳固。",
+    "ecology": "在建筑（AEC）与中端离散制造 CAD 生态占据入口地位，与 Dassault、Bentley、PTC 形成寡头分工格局。",
+    "psychology_incentives": "工程师习惯路径依赖与“没人因为选行业标准而被解雇”的组织心理锁定续费；需关注管理层在自由现金流指标中是否长期剔除高额 SBC。",
+    "capital_allocation": "近年以股票回购抵消部分 SBC 稀释并持续投资云平台整合，需跟踪并购纪律与净股本缩减实效。"
+  },
+  "premortem": [
+    "建筑与制造业长期景气低迷导致席位扩张停滞，且提价过度引发中小客户向低成本替代工具或开源/新兴云 CAD 迁移。",
+    "SBC 长期占据经营现金流过高比例（>25%），若回购节奏放缓或溢价并购失败，真实每股股东盈余增长远低于表面 Non-GAAP 宣传。",
+    "AI 自动生成图纸与参数化建模重构按席位（per-seat）收费模式，削弱软件总授权席位上限。"
+  ],
+  "open_questions": [
+    "结合你的一线工程软件认知，Autodesk 在 Revit / AutoCAD 的格式壁垒在云化与 AI 辅助设计时代是在加强还是被绕过？",
+    "按扣除 SBC 后的严苛股东盈余计算，当前估值倍数是否充分计入了 SBC 这项真实人力成本？"
+  ],
+  "human_judgment": {
+    "pending_human_review": true,
+    "my_stance": null,
+    "weight_rationale": null,
+    "falsification_metrics": [],
+    "feynman_checked_at": null
+  }
+}

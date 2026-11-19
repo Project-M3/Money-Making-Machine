@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "ticker": "SNPS",
+  "name": "Synopsys, Inc.",
+  "updated_at": "2026-11-19",
+  "draft_source": "agent_draft",
+  "three_sentence_business": "向全球芯片设计与半导体制造企业出售电子设计自动化（EDA）软件与硅知识产权（IP）核，是先进制程芯片流片前不可或缺的“卖水人”与工业基准。由于晶圆厂工艺设计套件（PDK）认证绑定与数百万美元级流片容错成本为零，芯片设计团队几乎不可能轻易替换经过验证的 EDA 工具链。近年来因斥巨资收购仿真软件巨头 Ansys，需重点评估巨额债务、股本增发稀释与整合期真实股东盈余。",
+  "latticework": {
+    "microeconomics": "EDA 行业呈现近乎双寡头垄断（Synopsys + Cadence），软件成本仅占客户总研发与流片成本的一小部分却决定成败，具有极强定价权。",
+    "ecology": "连接上游晶圆代工厂（TSMC 等工艺节点）与下游全球芯片设计公司，处于类似 CADENAS 在机械领域但壁垒更高的强制卡位。",
+    "psychology_incentives": "芯片流片失败成本高达数千万美元，使工程师极度偏好经行业认证的保守选择；同时半导体研发团队高薪结构带来显著的 SBC 支出。",
+    "capital_allocation": "重大资本配置事件：为收购 Ansys 动用大量现金、新增巨额债务并发行新股，需用严苛股东盈余与净负债倍数重新核对整合后的财务健康度。"
+  },
+  "premortem": [
+    "Ansys 大型并购整合不及预期、文化冲突或监管附加条件削弱协同效应，留下长期高负债与低资本回报。",
+    "出口管制与地缘政治限制持续扩大，切断高毛利区域客户接入并刺激本土替代 EDA 工具加速成熟。",
+    "并购增发叠加持续高额 SBC 导致总股本稀释多年难以消化，回购能力被偿债优先级长期压制。"
+  ],
+  "open_questions": [
+    "仿真（Ansys）与 EDA 的结合究竟能否复制工业软件平台的多因素共振，还是类似达索收购 Medidata 的高溢价扩张？",
+    "在净负债显著升高与高 SBC 现状下，需要等待怎样的自由现金流去杠杆进度才算“公道价格”？"
+  ],
+  "human_judgment": {
+    "pending_human_review": true,
+    "my_stance": null,
+    "weight_rationale": null,
+    "falsification_metrics": [],
+    "feynman_checked_at": null
+  }
+}

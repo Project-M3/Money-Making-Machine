@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "benchmark_symbol": "^GSPC",
+  "default_target_return_pct": "10",
+  "companies": [
+    {
+      "ticker": "AAPL",
+      "name": "Apple Inc.",
+      "bucket": "core",
+      "source": "sec_edgar",
+      "cik": "0000320193",
+      "currency": "USD",
+      "circle": "消费生态 / 硬件+服务",
+      "too_hard_reason": null,
+      "assumptions": {
+        "multiple_low": "18",
+        "multiple_high": "22",
+        "target_return_pct": "10",
+        "expected_growth_pct": "7",
+        "strike_price_override": null
+      }
+    },
+    {
+      "ticker": "GOOGL",
+      "name": "Alphabet Inc.",
+      "bucket": "core",
+      "source": "sec_edgar",
+      "cik": "0001652044",
+      "currency": "USD",
+      "circle": "搜索+云+AI基建",
+      "too_hard_reason": null,
+      "assumptions": {
+        "multiple_low": "18",
+        "multiple_high": "22",
+        "target_return_pct": "10",
+        "expected_growth_pct": "8",
+        "strike_price_override": null
+      }
+    },
+    {
+      "ticker": "ADSK",
+      "name": "Autodesk, Inc.",
+      "bucket": "core",
+      "source": "sec_edgar",
+      "cik": "0000769397",
+      "currency": "USD",
+      "circle": "工业软件 / CAD",
+      "too_hard_reason": null,
+      "assumptions": {
+        "multiple_low": "18",
+        "multiple_high": "22",
+        "target_return_pct": "10",
+        "expected_growth_pct": "9",
+        "strike_price_override": null
+      }
+    },
+    {
+      "ticker": "PTC",
+      "name": "PTC Inc.",
+      "bucket": "core",
+      "source": "sec_edgar",
+      "cik": "0000857005",
+      "currency": "USD",
+      "circle": "工业软件 / PLM+CAD",
+      "too_hard_reason": null,
+      "assumptions": {
+        "multiple_low": "18",
+        "multiple_high": "22",
+        "target_return_pct": "10",
+        "expected_growth_pct": "9",
+        "strike_price_override": null
+      }
+    },
+    {
+      "ticker": "SNPS",
+      "name": "Synopsys, Inc.",
+      "bucket": "watch",
+      "source": "sec_edgar",
+      "cik": "0000883241",
+      "currency": "USD",
+      "circle": "EDA / 半导体设计工具",
+      "too_hard_reason": null,
+      "assumptions": {
+        "multiple_low": "18",
+        "multiple_high": "22",
+        "target_return_pct": "10",
+        "expected_growth_pct": "10",
+        "strike_price_override": null
+      }
+    },
+    {
+      "ticker": "COST",
+      "name": "Costco Wholesale Corp.",
+      "bucket": "watch",
+      "source": "sec_edgar",
+      "cik": "0000909832",
+      "currency": "USD",
+      "circle": "会员制零售 / 芒格标杆",
+      "too_hard_reason": null,
+      "assumptions": {
+        "multiple_low": "20",
+        "multiple_high": "25",
+        "target_return_pct": "10",
+        "expected_growth_pct": "8",
+        "strike_price_override": null
+      }
+    },
+    {
+      "ticker": "DSY.PA",
+      "name": "Dassault Systèmes SE",
+      "bucket": "watch",
+      "source": "manual",
+      "cik": null,
+      "currency": "EUR",
+      "circle": "工业软件 / CATIA+3DEXPERIENCE",
+      "too_hard_reason": null,
+      "assumptions": {
+        "multiple_low": "20",
+        "multiple_high": "24",
+        "target_return_pct": "10",
+        "expected_growth_pct": "8",
+        "strike_price_override": null
+      }
+    },
+    {
+      "ticker": "INTC",
+      "name": "Intel Corporation",
+      "bucket": "too_hard",
+      "source": "sec_edgar",
+      "cik": "0000050863",
+      "currency": "USD",
+      "circle": "晶圆代工 / 半导体制造",
+      "too_hard_reason": "重资产晶圆代工死磕期，现金流与竞争格局高度不可预测，属高难度困境反转",
+      "assumptions": {
+        "multiple_low": "12",
+        "multiple_high": "15",
+        "target_return_pct": "12",
+        "expected_growth_pct": "0",
+        "strike_price_override": null
+      }
+    },
+    {
+      "ticker": "1810.HK",
+      "name": "Xiaomi Corporation",
+      "bucket": "too_hard",
+      "source": "manual",
+      "cik": null,
+      "currency": "HKD",
+      "circle": "手机+IoT+智能电动车",
+      "too_hard_reason": "横跨消费电子与重资产造车两大极度内卷修罗场，5–10 年稳态自由现金流无法可靠估算",
+      "assumptions": {
+        "multiple_low": "12",
+        "multiple_high": "15",
+        "target_return_pct": "12",
+        "expected_growth_pct": "5",
+        "strike_price_override": null
+      }
+    }
+  ]
+}

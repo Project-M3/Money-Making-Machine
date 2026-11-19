@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "ticker": "PTC",
+  "name": "PTC Inc.",
+  "updated_at": "2026-11-19",
+  "draft_source": "agent_draft",
+  "three_sentence_business": "为工业制造企业提供核心产品生命周期管理（Windchill PLM）、参数化 CAD（Creo/Onshape）及工业物联网工具，掌控从研发设计到物料清单（BOM）与变更流程的中枢数据。由于 PLM 深度嵌入大型制造企业的研发合规与多厂区协同，替换周期长达数年且风险极高，客户留存率极稳。订阅转型完成后现金流趋稳，但历史多次外延并购留下了债务与商誉包袱，需核查净负债与真实内生增长。",
+  "latticework": {
+    "microeconomics": "PLM 与 CAD 双轮绑定带来极高的流程转换成本与经常性订阅现金流，软件毛利率稳定在高位。",
+    "ecology": "在高端制造 PLM/CAD 领域与 Dassault（3DEXPERIENCE）和 Siemens（Teamcenter/NX）三足鼎立，依托 Onshape 布局云原生 CAD。",
+    "psychology_incentives": "大型制造企业对研发中断的极度厌恶使既有 PLM 供应商享有“事实续约特权”；需盯紧管理层 SBC 与并购后去杠杆进度。",
+    "capital_allocation": "过去通过举债完成多笔大型软件并购（如 ServiceMax、Codebeamer），当前处于消化整合与优先偿债/回购的关键期。"
+  },
+  "premortem": [
+    "与达索、西门子在大型汽车/航空/高端装备客户群的正面竞争失利，PLM 核心大单被整体替换。",
+    "外延并购留下的高商誉与有息负债叠加宏观制造业萎缩，挤占自由现金流并限制回购弹性。",
+    "Onshape 等云原生投入长期未能夺取足够增量市场份额，同时 SBC 稀释侵蚀股东实际回报。"
+  ],
+  "open_questions": [
+    "从实际工业客户视角看，Windchill + Creo/Onshape 的组合与达索、西门子相比，真正的差异化护城河和短板各在哪里？",
+    "如果只看扣除债务利息与 SBC 后的净现金回报，PTC 相对于行业龙头是否需要更高的安全边际折扣？"
+  ],
+  "human_judgment": {
+    "pending_human_review": true,
+    "my_stance": null,
+    "weight_rationale": null,
+    "falsification_metrics": [],
+    "feynman_checked_at": null
+  }
+}

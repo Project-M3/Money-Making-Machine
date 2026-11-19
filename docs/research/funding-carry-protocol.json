@@ -1,0 +1,61 @@
+{
+  "experiment_id": "btc-carry-v1",
+  "registered_on": "2026-10-19",
+  "purpose": "Personal historical economic feasibility screen only: can a CNY 10000 fully funded spot-long / USDT-perpetual-short carry justify quote-only paper validation after all declared costs and capital constraints?",
+  "symbol": "BTCUSDT",
+  "years": [
+    2024,
+    2025
+  ],
+  "capital_cny": "10000",
+  "cny_per_usdt": "7.20",
+  "fx_note": "Fixed reporting conversion, not a market quote or a claim of USDT/USD/CNY parity; separate no-conversion-cost and 50bp-per-side conversion-haircut results; no assumed FX profit.",
+  "allocation": {
+    "spot_budget_fraction": "0.40",
+    "separate_futures_cash_fraction": "0.40",
+    "reserve_cash_fraction": "0.20"
+  },
+  "quantity_step_btc": "0.001",
+  "position_rule": "Buy spot and short identical BTC quantity; choose largest fixed step satisfying spot budget including entry fee and initial perpetual notional no greater than futures collateral budget. No borrowed cash/coin, no reinvestment or rebalancing, no fee-rate timing or selecting only positive future funding.",
+  "reserve_rule": "Cash reserve is part of initial capital, not income or expense. No automatic transfers from spot gains or reserve into futures wallet in primary path. Also report a diagnostic that hypothetically makes the entire initial reserve available; not an executable top-up policy.",
+  "holding_scenarios": {
+    "continuous_year": "Independent CNY10000 account at Jan1 for each complete UTC year. Enter after the first open, hold fixed quantity to Dec31 final close; monthly P&L is change in year-account net liquidation equity including all exit liabilities. No reset between months, no extra capital after losses.",
+    "independent_months": "Each calendar month starts a separate hypothetical CNY10000 account and includes all four fills and FX haircuts. Diagnostic of short holding-period economics; do not sum as a realizable income stream or silently refill a losing account."
+  },
+  "execution": "Entry uses synchronous first-hour spot/perpetual trade opens plus adverse slippage; exit and hypothetical liquidation use corresponding completed-hour closes plus adverse slippage. Historical OHLCV lacks bid/ask, depth, simultaneous fill or delay guarantees.",
+  "funding": "Prefer exact settled markPrice if lawfully accessible. Local official API HEAD returned HTTP451 before downloading outcomes, so use official archive calc_time/rate plus same-hour mark OPEN as labelled estimate. Bound every payment using that hour mark LOW/HIGH with signed-rate-aware ordering, and propagate cumulative lower/upper funding through net equity and margin. Never call these exact settlement payments. Actual timestamps and interval changes are retained; entry-boundary first minute funding excluded.",
+  "costs": [
+    {
+      "name": "base",
+      "spot_fee_bps": 10,
+      "futures_fee_bps": 5,
+      "slippage_bps": 5,
+      "conversion_each_side_bps": 50
+    },
+    {
+      "name": "stress",
+      "spot_fee_bps": 20,
+      "futures_fee_bps": 10,
+      "slippage_bps": 10,
+      "conversion_each_side_bps": 100
+    }
+  ],
+  "cost_note": "Fees are declared assumptions without VIP/BNB/maker discounts, not recovered account-specific historical rates. Conversion haircut is a sensitivity assumption, not a quoted channel fee. Margin and reserve lower deployed notional but are not subtracted as losses.",
+  "risk": {
+    "margin_diagnostic_fraction": "0.02",
+    "margin_note": "Separate short-wallet equity checked at each mark close and conservatively against each hourly mark high; compare with assumed 2% of short marked notional. This is a deliberately declared diagnostic proxy, not historical exchange maintenance brackets or liquidation price. Any breach makes subsequent buy-and-hold funding receipts non-executable under the primary assumptions; do not present theoretical full-year P&L as attainable.",
+    "liquidation_equity": "spot cash + spot hypothetical sale net + separate futures collateral + funding + short unrealized P&L - short hypothetical buyback fee + untouched reserve; then conversion exit haircut",
+    "drawdown": "hourly-close net liquidation equity including initial capital; conservative intrahour bounds reported separately, not as observed synchronized drawdown",
+    "stress_cases": [
+      "funding fixed at -0.01% per 8h for 30 days (synthetic)",
+      "perpetual premium widens 5 percentage points while spot is unchanged (synthetic)",
+      "spot and perpetual both double from entry; test separate short-wallet solvency (synthetic)",
+      "full initial reserve diagnostic exhausted",
+      "venue failure: all on-venue capital potentially lost; not estimated from benign history"
+    ]
+  },
+  "decision": "Only consider quote-only paper monitoring if both complete years have positive continuous-year FUNDING-LOWER-BOUND net profit under base AND stress and neither has a 2% separate-wallet diagnostic breach. Otherwise do not build/enable dual-leg execution; distinguish profitability, capital/margin incompatibility and data limits. If all payment bounds positive but exact data absent, only quote-only simulation can be proposed, never execution validation.",
+  "data_policy": "Full UTC 2024 and 2025 spot/perpetual trade and mark-price 1h archives plus fundingRate archives, published SHA256, raw CSV/ZIP, timestamps and interval columns preserved. Official funding API unavailable HTTP451, no bypass. Hourly mark-based funding estimates and low/high bounds replace unavailable exact settlement marks; bounds are conditional on accuracy of archived mark extrema, not venue guarantees. No invented bars or funding rows.",
+  "scope_boundary": "No accounts, keys, real trades, actual leverage/risk-limit settings, new recurring task, GUI rebuild or changes to previous paper account. Asset/stablecoin/FX/venue and account eligibility remain separate from this personal historical screen.",
+  "quantity_step_note": "0.001 BTC is a declared research lot-size assumption, not a verified current or historical exchange filter; public exchangeInfo returned HTTP451."
+}

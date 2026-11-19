@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "ticker": "1810.HK",
+  "name": "Xiaomi Corporation",
+  "updated_at": "2026-11-19",
+  "draft_source": "agent_draft",
+  "three_sentence_business": "以高性价比智能手机和 AIoT 硬件构建庞大消费生态入口，辅以互联网广告变现，并正重金投入智能纯电动汽车整车制造。虽然拥有极其勤奋卓越的企业家与供应链效率，但手机与汽车同属技术高频迭代、重资产投入、价格战白热化的红海修罗场。由于未来 5–10 年维持竞争力所需的产能与研发资本开支高度不可预测，按芒格原则明确放入 Too Hard 博物馆。",
+  "latticework": {
+    "microeconomics": "主打“感动人心、价格厚道”的低硬件毛利率模式限制了提价空间；而造车业务将公司推向高折旧、强周期的资金吞噬赛道。",
+    "ecology": "在手机端面对 Apple、Huawei 与安卓同行内卷，在电动车端直面 BYD、Tesla 及众多造车势力厮杀，护城河必须靠持续奔跑维持。",
+    "psychology_incentives": "强粉丝群体与爆款新品新闻极易激发投资者的叙事追高情绪，但“好产品、好企业家”并不自动等于“好算账的可预测自由现金流”。",
+    "capital_allocation": "手机与 IoT 产生的利润需持续输血汽车二三期工厂建设、智驾与底层研发，稳态可自由分配的股东盈余难以锁定。"
+  },
+  "premortem": [
+    "国内与海外新能源车进入残酷淘汰赛与持续价格战，吞噬高额研发与工厂折旧，汽车业务长期难以沉淀净自由现金流。",
+    "上游存储/SoC 芯片大幅涨价时，高性价比定位使硬件难以充分转嫁成本，压缩整体利润缓冲垫。",
+    "跨界多线作战分散资源与管理层精力，导致某个核心赛道的竞争优势出现缺口。"
+  ],
+  "open_questions": [
+    "作为 Too Hard 博物馆对照样本：在不否定雷军和产品优秀的前提下，用三句话讲清楚“为什么好公司也会落在能力圈之外（Too Hard）”？"
+  ],
+  "human_judgment": {
+    "pending_human_review": true,
+    "my_stance": null,
+    "weight_rationale": null,
+    "falsification_metrics": [],
+    "feynman_checked_at": null
+  }
+}

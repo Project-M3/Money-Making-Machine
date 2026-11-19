@@ -1,0 +1,32 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Environment & Secrets (NEVER COMMIT KEYS)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+keys/
+
+# Market Data & Local Databases
+data/
+*.parquet
+*.duckdb
+*.duckdb.wal
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs & Runtime Artifacts
+logs/
+*.log
+
+# OS & Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

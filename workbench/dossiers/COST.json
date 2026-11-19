@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "ticker": "COST",
+  "name": "Costco Wholesale Corp.",
+  "updated_at": "2026-11-19",
+  "draft_source": "agent_draft",
+  "three_sentence_business": "以极简精选 SKU、极限压缩商品加价率（14–15% 上限）及自有品牌 Kirkland 构建全渠道极低价供应链，并将几乎全部利润来源锚定在高度可预测的年度会员费上。规模越大、采购单品量越集中，对供应商议价越强，省下的成本直接让利给会员从而拉升续费率，形成芒格最推崇的“共享规模经济”飞轮。企业几乎无可挑剔，唯独二级市场常年给予极高估值溢价，考验投资者等待好球的极致耐心。",
+  "latticework": {
+    "microeconomics": "经典“规模经济共享（Scale Economies Shared）”模型：放弃商品端超额毛利以换取 90%+ 会员续费率与极快存货周转，把竞争对手挡在盈亏线外。",
+    "ecology": "处于零售生态食物链最底层成本中心，SKU 极少（约 4000 个）带来单品巨量采购权，自建物流与会员门店网络难以被电商简单复制。",
+    "psychology_incentives": "低价信任、寻宝心理（Treasure Hunt）与沉没成本效应（已交会员费更愿意集中消费）共同强化复购；管理层文化极度克制且 SBC 占比极低。",
+    "capital_allocation": "稳健开店扩张、维持极低净负债、定期派发特别股息并适度回购，无跨界乱并购黑历史。"
+  },
+  "premortem": [
+    "估值过高的时间风险：即便生意未来十年稳健增长 8%，以 45–50 倍严苛 FCF 买入仍可能导致长达数年的估值消化与低迷年化回报。",
+    "长期坚持的极限低毛利模式若遭遇严重物流/人工通胀且会员费提价受阻，营业利润率弹性较小。",
+    "国际新市场开店速度不及预期或本土会员渗透率逼近天花板，导致同店增长中枢下移。"
+  ],
+  "open_questions": [
+    "Costco 是商业模式满分但价格常年偏贵的典型：你设定的合理击球倍数（20–25 倍还是 25–30 倍）对应着几年不遇的市场恐慌机会？",
+    "如果永远等不到 20 倍，你会坚持等待，还是在确认前提下微调对这类极低风险永续企业的目标回报标尺？"
+  ],
+  "human_judgment": {
+    "pending_human_review": true,
+    "my_stance": null,
+    "weight_rationale": null,
+    "falsification_metrics": [],
+    "feynman_checked_at": null
+  }
+}

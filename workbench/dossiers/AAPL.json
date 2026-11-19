@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "ticker": "AAPL",
+  "name": "Apple Inc.",
+  "updated_at": "2026-11-19",
+  "draft_source": "agent_draft",
+  "three_sentence_business": "向全球消费者出售高品牌溢价的硬件终端（iPhone/Mac/可穿戴）作为入口，再以 App Store、iCloud、支付与订阅服务锁定高频软件复购。硬件组装外包带来极轻的资本开支结构，使经营现金流绝大部分可转化为真实自由现金流。赚取的现金通过大额持续回购注销股份，不断抬高每股股东权益含金量。",
+  "latticework": {
+    "microeconomics": "封闭软硬件一体化带来极高的转换成本与定价权，服务业务高毛利持续抬升整体利润率并平滑硬件换机周期。",
+    "ecology": "占据消费端个人计算操作系统与分发卡位，控制用户身份、支付与应用审核，对上游供应链具备极强议价权。",
+    "psychology_incentives": "社会认同、品牌心理账户与跨设备协同习惯形成强粘性；管理层长期将净现金中性与连续回购作为核心回报承诺。",
+    "capital_allocation": "CapEx 占比极低，极少进行高风险跨界大额并购，绝大部分自由现金流用于系统性股票回购与稳健分红。"
+  },
+  "premortem": [
+    "全球反垄断监管（欧美司法部与数字市场法）强制拆解 App Store 抽成与默认搜索/服务绑定，大幅压低高毛利服务收入。",
+    "下一代 AI 交互终端或操作系统入口绕开传统 App 生态，导致用户对 iOS 生态的转换成本在 5 年内显著下降。",
+    "大中华区与供应链地缘冲突迫使制造快速迁移，推高单位硬件成本与维持性 CapEx。"
+  ],
+  "open_questions": [
+    "按当前股价反推市场隐含的每股增速，多少来自服务业务内生增长、多少依赖未来回购速率（回购在高估值下的回报率已下降）？",
+    "近期 AI 端侧升级是否足以驱动实质性的换机周期与提价权，还是被迫增加研发与数据中心投入？"
+  ],
+  "human_judgment": {
+    "pending_human_review": true,
+    "my_stance": null,
+    "weight_rationale": null,
+    "falsification_metrics": [],
+    "feynman_checked_at": null
+  }
+}
