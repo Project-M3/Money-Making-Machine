@@ -66,6 +66,7 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).with_context(|| format!("解析失败 {}", path.display()))
 }
 
+#[derive(Debug, Clone)]
 pub struct WorkspacePaths {
     pub repo_root: PathBuf,
     pub workbench_dir: PathBuf,

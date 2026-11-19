@@ -1,3 +1,4 @@
+mod alan_interrogator;
 mod calculator;
 mod cli;
 mod edgar;
@@ -162,18 +163,20 @@ fn main() -> Result<()> {
                 let view = cx.new(|cx| {
                     cx.spawn(async move |this, cx| {
                         loop {
-                            let alive = this
-                                .update(cx, |this: &mut MungerWorkbench, cx| {
-                                    if this.poll_background_sync() {
-                                        cx.notify();
-                                    }
-                                })
-                                .is_ok();
-                            if !alive {
+                            let state = this.update(cx, |this: &mut MungerWorkbench, cx| {
+                                let sync_dirty = this.poll_background_sync();
+                                let alan_dirty = this.poll_alan_events();
+                                if sync_dirty || alan_dirty {
+                                    cx.notify();
+                                }
+                                this.is_alan_streaming()
+                            });
+                            let Ok(streaming) = state else {
                                 break;
-                            }
+                            };
+                            let interval_ms = if streaming { 60 } else { 250 };
                             cx.background_executor()
-                                .timer(Duration::from_millis(250))
+                                .timer(Duration::from_millis(interval_ms))
                                 .await;
                         }
                     })

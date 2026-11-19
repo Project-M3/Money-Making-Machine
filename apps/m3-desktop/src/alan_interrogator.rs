@@ -1,0 +1,2048 @@
+//! In-process `EmbeddedAlan` V2 interrogator for Project-M3 (`2 Alan 审讯台`).
+//!
+//! - Mounts read-only `/mnt/m3` exposing `watchlist.json`, `journal.json`,
+//!   `computed/<TICKER>.json`, and `dossiers/<TICKER>.json`.
+//! - Registers deterministic M3 tools (`m3_status`, `m3_report`, `m3_dossier`,
+//!   `m3_update_draft`) backed directly by `store.rs` and `calculator.rs`.
+//! - Enforces [`M3ToolPolicyHook`] unconditionally denying any tool call
+//!   touching `human_judgment`, `computed/`, `raw/`, `journal.json`, or `watchlist.json`.
+//! - Emits live streamed prose, `alanworks.app`-style Turing Tape rows, and
+//!   clickable Acme evidence tokens (`[report:TICKER]`, `[xbrl:TICKER]`, `[dossier:TICKER]`).
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
+
+use alan_agent_engine::TrustPosture;
+use alan_agent_engine::tools::{Tool, ToolCapability, ToolContext, ToolRegistry, ToolResult};
+use alan_ap::{ErrorCode, Fid, FileKind, FileServer, Offset, OpenMode, Qid, Stat, VersionTable};
+use alan_os_host::embed::{
+    Access, AgentProcessConfig, EmbedEvent, EmbeddedAlan, EmbeddedConfig, HookDecision, LlmSource,
+    RootAgentClient, SessionOptions, SystemPromptMode, ToolPolicyHook, UiInputStatus,
+};
+use alan_shell::Shell;
+use anyhow::{Context, Result};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex as AsyncMutex, mpsc as tokio_mpsc};
+
+use crate::model::{Bucket, Dossier, HumanJudgment, Latticework, MungerReport};
+use crate::store::{self, WorkspacePaths};
+
+const M3_INTERROGATOR_SYSTEM_PROMPT: &str = "\
+你是 Project-M3 的查理·芒格跨学科研究幕僚 Alan（费曼审讯台）。请严格遵循以下纪律：
+1. 严禁自行心算、编造或篡改任何财务数字、估值倍数、ROIC 或击球价；需要数据时必须调用 `m3_status`、`m3_report` 或 `m3_dossier`，或读取只读 `/mnt/m3` 挂载树。
+2. 允许通过 `m3_update_draft` 更新公司档案草稿区（`three_sentence_business`、`latticework`、`premortem`、`open_questions`），但严禁修改或代填 `human_judgment`、`computed/`、`raw/` 与 `journal.json`（系统会在工具策略层硬拦截）。
+3. 回答中引用确定性数据与档案时，附上可点击证据标记 `[report:TICKER]`、`[xbrl:TICKER]`、`[dossier:TICKER]`。
+4. 先核对财务与护城河事实，再提出锋利的 5 年逆向事前验尸问题与费曼追问；严禁直接给出买卖指令。";
+
+/// One entry in the `alanworks.app`-style Turing Tape displayed in `2 Alan 审讯台`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TuringTapeKind {
+    Input,
+    Tool,
+    Out,
+    Policy,
+    Error,
+}
+
+impl TuringTapeKind {
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Input => "in",
+            Self::Tool => "tool",
+            Self::Out => "out",
+            Self::Policy => "policy",
+            Self::Error => "err",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TuringTapeEntry {
+    pub seq: usize,
+    pub call_id: Option<String>,
+    pub kind: TuringTapeKind,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub status: String,
+}
+
+/// Clickable Acme evidence token resolved from Alan prose & tool executions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AcmeEvidenceKind {
+    Report,
+    Xbrl,
+    Dossier,
+}
+
+impl AcmeEvidenceKind {
+    pub fn prefix(&self) -> &'static str {
+        match self {
+            Self::Report => "report",
+            Self::Xbrl => "xbrl",
+            Self::Dossier => "dossier",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcmeEvidenceToken {
+    pub id: String,
+    pub kind: AcmeEvidenceKind,
+    pub ticker: String,
+    pub label: String,
+    pub summary: String,
+}
+
+/// Events drained on the GPUI timer into `MungerWorkbench`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InterrogatorEvent {
+    Ready,
+    UserSubmitted {
+        submission_id: String,
+        prompt: String,
+    },
+    ToolStarted {
+        call_id: String,
+        name: String,
+        title: String,
+    },
+    ToolProgress {
+        call_id: String,
+        preview: String,
+    },
+    ToolFinished {
+        call_id: String,
+        name: String,
+        status: String,
+        preview: String,
+    },
+    TextDelta {
+        submission_id: Option<String>,
+        chunk: String,
+        is_final: bool,
+    },
+    TurnDone {
+        submission_id: String,
+        completed: bool,
+        error: Option<String>,
+    },
+    ResetDone,
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Clone)]
+struct TreeSnapshot {
+    files: BTreeMap<String, Vec<u8>>,
+    dirs: BTreeMap<String, BTreeSet<String>>,
+    path_ids: HashMap<String, u64>,
+    versions: VersionTable,
+}
+
+impl TreeSnapshot {
+    fn from_paths(paths: &WorkspacePaths) -> Self {
+        let mut files = BTreeMap::new();
+
+        if let Ok(bytes) = std::fs::read(paths.watchlist_path()) {
+            files.insert("watchlist.json".to_string(), bytes);
+        }
+        if let Ok(bytes) = std::fs::read(paths.journal_path()) {
+            files.insert("journal.json".to_string(), bytes);
+        }
+
+        // Project deterministic computed reports without overwriting existing computed caches.
+        if let Ok(reports) = store::load_or_compute_reports(paths) {
+            for rep in reports {
+                let name = format!(
+                    "computed/{}.json",
+                    crate::market::safe_symbol_filename(&rep.ticker)
+                );
+                if let Ok(bytes) = serde_json::to_vec_pretty(&rep) {
+                    files.insert(name, bytes);
+                }
+            }
+        }
+        let computed_dir = paths.data_dir.join("computed");
+        if let Ok(entries) = std::fs::read_dir(&computed_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("json")
+                    && let Some(fname) = p.file_name().and_then(|n| n.to_str())
+                    && let Ok(bytes) = std::fs::read(&p)
+                {
+                    files.entry(format!("computed/{fname}")).or_insert(bytes);
+                }
+            }
+        }
+
+        let dossiers_dir = paths.workbench_dir.join("dossiers");
+        if let Ok(entries) = std::fs::read_dir(&dossiers_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("json")
+                    && let Some(fname) = p.file_name().and_then(|n| n.to_str())
+                    && let Ok(bytes) = std::fs::read(&p)
+                {
+                    files.insert(format!("dossiers/{fname}"), bytes);
+                }
+            }
+        }
+
+        let mut dirs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        dirs.entry(String::new()).or_default();
+        dirs.entry("computed".to_string()).or_default();
+        dirs.entry("dossiers".to_string()).or_default();
+        dirs.get_mut("").unwrap().insert("computed".to_string());
+        dirs.get_mut("").unwrap().insert("dossiers".to_string());
+
+        let mut path_ids = HashMap::new();
+        path_ids.insert(String::new(), 0);
+        let mut next_id = 1u64;
+        path_ids.insert("computed".to_string(), next_id);
+        next_id += 1;
+        path_ids.insert("dossiers".to_string(), next_id);
+        next_id += 1;
+
+        for rel in files.keys() {
+            let parts: Vec<&str> = rel.split('/').collect();
+            let mut cur_dir = String::new();
+            for dir_part in &parts[..parts.len() - 1] {
+                dirs.entry(cur_dir.clone())
+                    .or_default()
+                    .insert((*dir_part).to_string());
+                cur_dir = if cur_dir.is_empty() {
+                    (*dir_part).to_string()
+                } else {
+                    format!("{cur_dir}/{dir_part}")
+                };
+                dirs.entry(cur_dir.clone()).or_default();
+                path_ids.entry(cur_dir.clone()).or_insert_with(|| {
+                    let id = next_id;
+                    next_id += 1;
+                    id
+                });
+            }
+            let file_name = parts[parts.len() - 1];
+            dirs.entry(cur_dir)
+                .or_default()
+                .insert(file_name.to_string());
+            path_ids.entry(rel.clone()).or_insert_with(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            });
+        }
+
+        Self {
+            files,
+            dirs,
+            path_ids,
+            versions: VersionTable::new(),
+        }
+    }
+
+    fn qid_for(&self, rel: &str, kind: FileKind) -> Qid {
+        let path_id = *self.path_ids.get(rel).unwrap_or(&0);
+        Qid {
+            kind,
+            version: self.versions.get(path_id),
+            path: path_id,
+        }
+    }
+}
+
+enum FidNode {
+    Dir {
+        rel_path: String,
+        listing: Vec<u8>,
+        qid: Qid,
+    },
+    File {
+        rel_path: String,
+        bytes: Vec<u8>,
+        qid: Qid,
+    },
+}
+
+struct FidState {
+    node: FidNode,
+    mode: Option<OpenMode>,
+}
+
+/// Read-only `FileServer` projected at `/mnt/m3`.
+pub struct M3WorkbenchFs {
+    paths: WorkspacePaths,
+    tree: RwLock<TreeSnapshot>,
+    fids: AsyncMutex<HashMap<Fid, FidState>>,
+}
+
+impl M3WorkbenchFs {
+    pub fn new(paths: WorkspacePaths) -> Self {
+        let tree = TreeSnapshot::from_paths(&paths);
+        Self {
+            paths,
+            tree: RwLock::new(tree),
+            fids: AsyncMutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn refresh(&self) {
+        let mut updated = TreeSnapshot::from_paths(&self.paths);
+        if let Ok(mut guard) = self.tree.write() {
+            for path_id in updated.path_ids.values() {
+                updated.versions.bump(*path_id);
+            }
+            *guard = updated;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl FileServer for M3WorkbenchFs {
+    async fn walk(&self, fid: Fid, newfid: Fid, names: &[String]) -> Result<Qid, ErrorCode> {
+        let mut fids = self.fids.lock().await;
+        if newfid == Fid::ROOT || fids.contains_key(&newfid) {
+            return Err(ErrorCode::BadRequest);
+        }
+
+        let start_path = if fid == Fid::ROOT {
+            String::new()
+        } else {
+            match &fids.get(&fid).ok_or(ErrorCode::NotFound)?.node {
+                FidNode::Dir { rel_path, .. } => rel_path.clone(),
+                FidNode::File { .. } => {
+                    if !names.is_empty() {
+                        return Err(ErrorCode::NotDirectory);
+                    }
+                    let existing = &fids.get(&fid).ok_or(ErrorCode::NotFound)?.node;
+                    let FidNode::File {
+                        rel_path,
+                        bytes,
+                        qid,
+                    } = existing
+                    else {
+                        unreachable!();
+                    };
+                    let rel_copy = rel_path.clone();
+                    let bytes_copy = bytes.clone();
+                    let qid_copy = *qid;
+                    fids.insert(
+                        newfid,
+                        FidState {
+                            node: FidNode::File {
+                                rel_path: rel_copy,
+                                bytes: bytes_copy,
+                                qid: qid_copy,
+                            },
+                            mode: None,
+                        },
+                    );
+                    return Ok(qid_copy);
+                }
+            }
+        };
+
+        let tree = self.tree.read().map_err(|_| ErrorCode::Io)?;
+        let mut current = start_path;
+        for name in names {
+            if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+                return Err(ErrorCode::BadRequest);
+            }
+            let children = tree.dirs.get(&current).ok_or(ErrorCode::NotDirectory)?;
+            if !children.contains(name) {
+                return Err(ErrorCode::NotFound);
+            }
+            current = if current.is_empty() {
+                name.clone()
+            } else {
+                format!("{current}/{name}")
+            };
+        }
+
+        let node = if let Some(entries) = tree.dirs.get(&current) {
+            let listing = entries
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into_bytes();
+            let qid = tree.qid_for(&current, FileKind::Dir);
+            FidNode::Dir {
+                rel_path: current,
+                listing,
+                qid,
+            }
+        } else if let Some(bytes) = tree.files.get(&current) {
+            let qid = tree.qid_for(&current, FileKind::File);
+            FidNode::File {
+                rel_path: current,
+                bytes: bytes.clone(),
+                qid,
+            }
+        } else {
+            return Err(ErrorCode::NotFound);
+        };
+
+        let qid = match &node {
+            FidNode::Dir { qid, .. } | FidNode::File { qid, .. } => *qid,
+        };
+        fids.insert(newfid, FidState { node, mode: None });
+        Ok(qid)
+    }
+
+    async fn open(&self, fid: Fid, mode: OpenMode) -> Result<Qid, ErrorCode> {
+        if !matches!(mode, OpenMode::Read) {
+            return Err(ErrorCode::NoAccess);
+        }
+        if fid == Fid::ROOT {
+            return Ok(Qid {
+                kind: FileKind::Dir,
+                version: 0,
+                path: 0,
+            });
+        }
+        let mut fids = self.fids.lock().await;
+        let state = fids.get_mut(&fid).ok_or(ErrorCode::NotFound)?;
+        if state.mode.is_some() {
+            return Err(ErrorCode::BadRequest);
+        }
+        state.mode = Some(mode);
+        let qid = match &state.node {
+            FidNode::Dir { qid, .. } | FidNode::File { qid, .. } => *qid,
+        };
+        Ok(qid)
+    }
+
+    async fn read(&self, fid: Fid, offset: Offset, count: u32) -> Result<Vec<u8>, ErrorCode> {
+        let fids = self.fids.lock().await;
+        let state = fids.get(&fid).ok_or(ErrorCode::NotFound)?;
+        if !matches!(state.mode, Some(OpenMode::Read)) {
+            return Err(ErrorCode::NoAccess);
+        }
+        let data = match &state.node {
+            FidNode::Dir { listing, .. } => listing,
+            FidNode::File { bytes, .. } => bytes,
+        };
+        let start = (offset as usize).min(data.len());
+        let end = data.len().min(start + count as usize);
+        Ok(data[start..end].to_vec())
+    }
+
+    async fn write(&self, _fid: Fid, _offset: Offset, _data: &[u8]) -> Result<u32, ErrorCode> {
+        Err(ErrorCode::NoAccess)
+    }
+
+    async fn stat(&self, fid: Fid) -> Result<Stat, ErrorCode> {
+        if fid == Fid::ROOT {
+            return Ok(Stat {
+                name: String::new(),
+                qid: Qid {
+                    kind: FileKind::Dir,
+                    version: 0,
+                    path: 0,
+                },
+                length: 0,
+                executable: false,
+                writable: false,
+            });
+        }
+        let fids = self.fids.lock().await;
+        let state = fids.get(&fid).ok_or(ErrorCode::NotFound)?;
+        let (name, qid, length) = match &state.node {
+            FidNode::Dir { rel_path, qid, .. } => (rel_path.clone(), *qid, 0),
+            FidNode::File {
+                rel_path,
+                bytes,
+                qid,
+            } => (rel_path.clone(), *qid, bytes.len() as u64),
+        };
+        Ok(Stat {
+            name,
+            qid,
+            length,
+            executable: false,
+            writable: false,
+        })
+    }
+
+    async fn create(
+        &self,
+        _fid: Fid,
+        _newfid: Fid,
+        _name: &str,
+        _kind: FileKind,
+    ) -> Result<Qid, ErrorCode> {
+        Err(ErrorCode::NoAccess)
+    }
+
+    async fn remove(&self, _fid: Fid) -> Result<(), ErrorCode> {
+        Err(ErrorCode::NoAccess)
+    }
+
+    async fn clunk(&self, fid: Fid) -> Result<(), ErrorCode> {
+        if fid == Fid::ROOT {
+            return Ok(());
+        }
+        let mut fids = self.fids.lock().await;
+        fids.remove(&fid).ok_or(ErrorCode::NotFound)?;
+        Ok(())
+    }
+}
+
+/// Synchronous policy hook enforcing Project-M3's ironclad red lines:
+/// unconditionally denies any tool invocation touching `human_judgment`,
+/// `computed/`, `raw/`, `journal.json`, or `watchlist.json`, as well as any
+/// arbitrary write tool outside `m3_update_draft`'s draft-only schema.
+#[derive(Debug, Default)]
+pub struct M3ToolPolicyHook;
+
+impl M3ToolPolicyHook {
+    fn inspect_value_for_redline(value: &Value) -> Option<&'static str> {
+        match value {
+            Value::Object(map) => {
+                for (k, v) in map {
+                    let lk = k.to_ascii_lowercase();
+                    if lk == "human_judgment"
+                        || lk.contains("human_judgment")
+                        || matches!(
+                            lk.as_str(),
+                            "my_stance"
+                                | "weight_rationale"
+                                | "falsification_metrics"
+                                | "feynman_checked_at"
+                                | "pending_human_review"
+                        )
+                    {
+                        return Some("human_judgment");
+                    }
+                    if matches!(lk.as_str(), "computed" | "computed_path" | "computed_report") {
+                        return Some("computed/");
+                    }
+                    if matches!(lk.as_str(), "raw" | "raw_path" | "sec_raw") {
+                        return Some("raw/");
+                    }
+                    if matches!(lk.as_str(), "journal" | "journal_path" | "watchlist") {
+                        return Some("journal.json");
+                    }
+                    if let Some(hit) = Self::inspect_value_for_redline(v) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            Value::Array(items) => items.iter().find_map(Self::inspect_value_for_redline),
+            Value::String(s) => Self::inspect_str_for_redline(s),
+            _ => None,
+        }
+    }
+
+    fn inspect_str_for_redline(s: &str) -> Option<&'static str> {
+        let lower = s.trim().to_ascii_lowercase().replace('\\', "/");
+        if lower.contains("human_judgment")
+            || lower.contains("pending_human_review")
+            || lower.contains("my_stance")
+            || lower.contains("weight_rationale")
+            || lower.contains("falsification_metrics")
+            || lower.contains("feynman_checked_at")
+        {
+            return Some("human_judgment");
+        }
+        if lower == "computed"
+            || lower.starts_with("computed/")
+            || lower.contains("/computed/")
+            || lower.ends_with("/computed")
+            || lower.contains("data/munger/computed")
+        {
+            return Some("computed/");
+        }
+        if lower == "raw"
+            || lower.starts_with("raw/")
+            || lower.contains("/raw/")
+            || lower.ends_with("/raw")
+            || lower.contains("data/munger/raw")
+        {
+            return Some("raw/");
+        }
+        if lower.contains("journal.json")
+            || lower == "journal"
+            || lower.ends_with("/journal")
+            || lower.contains("watchlist.json")
+        {
+            return Some("journal.json");
+        }
+        None
+    }
+}
+
+impl ToolPolicyHook for M3ToolPolicyHook {
+    fn evaluate(
+        &self,
+        tool_name: &str,
+        args: &Value,
+        capability: ToolCapability,
+    ) -> HookDecision {
+        if let Some(target) = Self::inspect_value_for_redline(args) {
+            return HookDecision::Deny(format!(
+                "红线拦截：{target} 属于不可篡改事实源或人类判断主权区，严禁 Alan 写入或覆盖。"
+            ));
+        }
+
+        match capability {
+            ToolCapability::Read => HookDecision::Allow,
+            ToolCapability::Write => {
+                if tool_name != "m3_update_draft" {
+                    return HookDecision::Deny(format!(
+                        "红线拦截：仅允许通过 m3_update_draft 更新 AI 草稿区，拒绝执行 {tool_name}。"
+                    ));
+                }
+                const ALLOWED_DRAFT_KEYS: &[&str] = &[
+                    "ticker",
+                    "three_sentence_business",
+                    "latticework",
+                    "premortem",
+                    "open_questions",
+                    "draft_source",
+                ];
+                if let Some(obj) = args.as_object() {
+                    for key in obj.keys() {
+                        if !ALLOWED_DRAFT_KEYS.contains(&key.as_str()) {
+                            return HookDecision::Deny(format!(
+                                "红线拦截：m3_update_draft 不允许修改字段 `{key}`。"
+                            ));
+                        }
+                    }
+                    HookDecision::Allow
+                } else {
+                    HookDecision::Deny("红线拦截：m3_update_draft 参数必须是 JSON 对象。".into())
+                }
+            }
+            ToolCapability::Network | ToolCapability::Unknown => HookDecision::Deny(format!(
+                "红线拦截：嵌入式 Alan 禁止执行网络或未知高危工具 {tool_name}。"
+            )),
+        }
+    }
+}
+
+struct M3StatusTool {
+    paths: WorkspacePaths,
+}
+
+impl Tool for M3StatusTool {
+    fn name(&self) -> &str {
+        "m3_status"
+    }
+
+    fn description(&self) -> &str {
+        "读取 Project-M3 观察池总览、击球价状态、ROIC 均值、预警数量及决策账本概况。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, _arguments: Value, ctx: &ToolContext) -> ToolResult {
+        let paths = self.paths.clone();
+        let ns = ctx.namespace().cloned();
+        Box::pin(async move {
+            let ns_watchlist = if let Some(ns) = ns.as_ref() {
+                Shell::new(ns.clone())
+                    .cat("/mnt/m3/watchlist.json")
+                    .await
+                    .ok()
+                    .map(|b| b.len())
+            } else {
+                None
+            };
+            let wl = store::load_watchlist(&paths)?;
+            let reports = store::load_or_compute_reports(&paths)?;
+            let journal = store::load_journal(&paths)?;
+            let companies: Vec<Value> = reports
+                .iter()
+                .map(|r| {
+                    let val = r.ttm_valuation.as_ref().or(r.fy_valuation.as_ref());
+                    json!({
+                        "ticker": r.ticker,
+                        "name": r.name,
+                        "bucket": r.bucket,
+                        "status": r.status,
+                        "currency": r.currency,
+                        "price": r.price.as_ref().map(|p| p.price.normalize().to_string()),
+                        "strike_price": val.and_then(|v| v.strike_price.map(|s| s.normalize().to_string())),
+                        "distance_to_strike_pct": val.and_then(|v| v.distance_to_strike_pct.map(|d| format!("{:.2}", d))),
+                        "strict_fcf_yield_pct": val.and_then(|v| v.strict_fcf_yield_mcap_pct.map(|y| format!("{:.2}", y))),
+                        "roic_5y_avg_pct": r.roic_5y_avg_pct.map(|v| format!("{:.2}", v)),
+                        "warnings": r.warnings.len(),
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "ok": true,
+                "benchmark_symbol": wl.benchmark_symbol,
+                "namespace_watchlist_bytes": ns_watchlist,
+                "companies": companies,
+                "journal_entries": journal.entries.len(),
+                "cash_balance": journal.cash_balance.normalize().to_string(),
+            }))
+        })
+    }
+}
+
+struct M3ReportTool {
+    paths: WorkspacePaths,
+}
+
+impl Tool for M3ReportTool {
+    fn name(&self) -> &str {
+        "m3_report"
+    }
+
+    fn description(&self) -> &str {
+        "获取指定公司由 store.rs / calculator.rs 生成的确定性查理计算器报告（含 ROIC、严格股东盈余、击球价、反推增速及 XBRL 溯源）。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "股票代码，例如 AAPL"
+                },
+                "recompute": {
+                    "type": "boolean",
+                    "description": "是否强制用 calculator.rs 重算；默认 false 优先读取一致缓存或按需计算"
+                }
+            },
+            "required": ["ticker"],
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, ctx: &ToolContext) -> ToolResult {
+        let paths = self.paths.clone();
+        let ns = ctx.namespace().cloned();
+        Box::pin(async move {
+            let ticker = arguments
+                .get("ticker")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .context("m3_report 缺少 ticker 参数")?
+                .to_ascii_uppercase();
+            let force_recompute = arguments
+                .get("recompute")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            let report: MungerReport = if force_recompute {
+                store::recompute_ticker(&paths, &ticker)?
+            } else {
+                let computed_path = paths.computed_report_path(&ticker);
+                if computed_path.exists()
+                    && let Ok(cached) = store::read_json::<MungerReport>(&computed_path)
+                {
+                    cached
+                } else {
+                    store::recompute_ticker(&paths, &ticker)?
+                }
+            };
+
+            let ns_path = format!(
+                "/mnt/m3/computed/{}.json",
+                crate::market::safe_symbol_filename(&report.ticker)
+            );
+            let namespace_verified = if let Some(ns) = ns.as_ref() {
+                Shell::new(ns.clone()).cat(&ns_path).await.is_ok()
+            } else {
+                false
+            };
+
+            let mut value = serde_json::to_value(&report)?;
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("namespace_path".to_string(), Value::String(ns_path));
+                obj.insert(
+                    "namespace_verified".to_string(),
+                    Value::Bool(namespace_verified),
+                );
+            }
+            Ok(value)
+        })
+    }
+}
+
+struct M3DossierTool {
+    paths: WorkspacePaths,
+}
+
+impl Tool for M3DossierTool {
+    fn name(&self) -> &str {
+        "m3_dossier"
+    }
+
+    fn description(&self) -> &str {
+        "读取指定公司的人机审讯档案 workbench/dossiers/<TICKER>.json（含三句话过滤、跨学科格栅、事前验尸及只读 human_judgment 状态）。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "股票代码，例如 AAPL"
+                }
+            },
+            "required": ["ticker"],
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, ctx: &ToolContext) -> ToolResult {
+        let paths = self.paths.clone();
+        let ns = ctx.namespace().cloned();
+        Box::pin(async move {
+            let ticker = arguments
+                .get("ticker")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .context("m3_dossier 缺少 ticker 参数")?
+                .to_ascii_uppercase();
+            let ns_path = format!(
+                "/mnt/m3/dossiers/{}.json",
+                crate::market::safe_symbol_filename(&ticker)
+            );
+            let namespace_hit = if let Some(ns) = ns.as_ref() {
+                Shell::new(ns.clone())
+                    .cat(&ns_path)
+                    .await
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Dossier>(&bytes).ok())
+            } else {
+                None
+            };
+            let dossier = store::load_dossier(&paths, &ticker)?.or(namespace_hit);
+            Ok(json!({
+                "ticker": ticker,
+                "exists": dossier.is_some(),
+                "namespace_path": ns_path,
+                "dossier": dossier,
+            }))
+        })
+    }
+}
+
+struct M3UpdateDraftTool {
+    paths: WorkspacePaths,
+    fs: Arc<M3WorkbenchFs>,
+}
+
+impl Tool for M3UpdateDraftTool {
+    fn name(&self) -> &str {
+        "m3_update_draft"
+    }
+
+    fn description(&self) -> &str {
+        "仅更新指定公司 dossier 中的 AI 幕僚草稿字段（three_sentence_business / latticework / premortem / open_questions），严禁触及 human_judgment。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "ticker": { "type": "string" },
+                "three_sentence_business": { "type": "string" },
+                "latticework": {
+                    "type": "object",
+                    "properties": {
+                        "microeconomics": { "type": "string" },
+                        "ecology": { "type": "string" },
+                        "psychology_incentives": { "type": "string" },
+                        "capital_allocation": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                },
+                "premortem": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "open_questions": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "draft_source": { "type": "string" }
+            },
+            "required": ["ticker"],
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Write
+    }
+
+    fn execute(&self, arguments: Value, _ctx: &ToolContext) -> ToolResult {
+        let paths = self.paths.clone();
+        let fs = Arc::clone(&self.fs);
+        Box::pin(async move {
+            // Defense-in-depth inside execute even though M3ToolPolicyHook runs first.
+            if let Some(hit) = M3ToolPolicyHook::inspect_value_for_redline(&arguments) {
+                anyhow::bail!("红线拦截：禁止写入 {hit}");
+            }
+
+            let ticker = arguments
+                .get("ticker")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .context("m3_update_draft 缺少 ticker 参数")?
+                .to_ascii_uppercase();
+
+            let wl = store::load_watchlist(&paths)?;
+            let company = wl
+                .companies
+                .iter()
+                .find(|c| c.ticker.eq_ignore_ascii_case(&ticker))
+                .with_context(|| format!("观察池中不存在 {ticker}"))?;
+
+            let existing = store::load_dossier(&paths, &company.ticker)?;
+            let preserved_judgment = existing
+                .as_ref()
+                .map(|d| d.human_judgment.clone())
+                .unwrap_or(HumanJudgment {
+                    pending_human_review: true,
+                    my_stance: None,
+                    weight_rationale: None,
+                    falsification_metrics: Vec::new(),
+                    feynman_checked_at: None,
+                });
+
+            let mut dossier = existing.unwrap_or_else(|| Dossier {
+                schema_version: 1,
+                ticker: company.ticker.clone(),
+                name: company.name.clone(),
+                updated_at: store::civil_today_iso(),
+                draft_source: "alan_embed_v2".to_string(),
+                three_sentence_business: String::new(),
+                latticework: Latticework {
+                    microeconomics: String::new(),
+                    ecology: String::new(),
+                    psychology_incentives: String::new(),
+                    capital_allocation: String::new(),
+                },
+                premortem: Vec::new(),
+                open_questions: Vec::new(),
+                human_judgment: preserved_judgment.clone(),
+            });
+
+            if let Some(s) = arguments
+                .get("three_sentence_business")
+                .and_then(Value::as_str)
+            {
+                dossier.three_sentence_business = s.to_string();
+            }
+            if let Some(lat) = arguments.get("latticework").and_then(Value::as_object) {
+                if let Some(v) = lat.get("microeconomics").and_then(Value::as_str) {
+                    dossier.latticework.microeconomics = v.to_string();
+                }
+                if let Some(v) = lat.get("ecology").and_then(Value::as_str) {
+                    dossier.latticework.ecology = v.to_string();
+                }
+                if let Some(v) = lat.get("psychology_incentives").and_then(Value::as_str) {
+                    dossier.latticework.psychology_incentives = v.to_string();
+                }
+                if let Some(v) = lat.get("capital_allocation").and_then(Value::as_str) {
+                    dossier.latticework.capital_allocation = v.to_string();
+                }
+            }
+            if let Some(arr) = arguments.get("premortem").and_then(Value::as_array) {
+                dossier.premortem = arr
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+            }
+            if let Some(arr) = arguments.get("open_questions").and_then(Value::as_array) {
+                dossier.open_questions = arr
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+            }
+            if let Some(src) = arguments.get("draft_source").and_then(Value::as_str) {
+                dossier.draft_source = src.to_string();
+            } else {
+                dossier.draft_source = "alan_embed_v2".to_string();
+            }
+            dossier.updated_at = store::civil_today_iso();
+            dossier.human_judgment = preserved_judgment;
+
+            store::write_json_atomic(&paths.dossier_path(&company.ticker), &dossier)?;
+            fs.refresh();
+
+            Ok(json!({
+                "ok": true,
+                "ticker": dossier.ticker,
+                "updated_at": dossier.updated_at,
+                "human_judgment_preserved": true,
+                "pending_human_review": dossier.human_judgment.pending_human_review,
+            }))
+        })
+    }
+}
+
+enum InterrogatorCommand {
+    Submit {
+        ticker: String,
+        name: String,
+        bucket: Bucket,
+        question: String,
+    },
+    Interrupt,
+    Reset,
+    RefreshFs,
+    Shutdown,
+}
+
+/// Asynchronous controller hosting `EmbeddedAlan` V2 for `2 Alan 审讯台`.
+#[derive(Clone)]
+pub struct M3InterrogatorHandle {
+    fs: Arc<M3WorkbenchFs>,
+    cmd_tx: tokio_mpsc::UnboundedSender<InterrogatorCommand>,
+    events: Arc<StdMutex<Vec<InterrogatorEvent>>>,
+}
+
+impl M3InterrogatorHandle {
+    pub fn start_shared_credentials(paths: WorkspacePaths) -> Self {
+        Self::start_with_llm(paths, LlmSource::SharedProductCredentials)
+    }
+
+    pub fn start_with_llm(paths: WorkspacePaths, llm: LlmSource) -> Self {
+        let fs = Arc::new(M3WorkbenchFs::new(paths.clone()));
+        let (cmd_tx, mut cmd_rx) = tokio_mpsc::unbounded_channel::<InterrogatorCommand>();
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let fs_worker = Arc::clone(&fs);
+        let events_worker = Arc::clone(&events);
+
+        std::thread::Builder::new()
+            .name("m3-alan-interrogator".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(err) => {
+                        push_event(
+                            &events_worker,
+                            InterrogatorEvent::Error {
+                                message: format!("无法启动 Alan 异步运行时: {err}"),
+                            },
+                        );
+                        return;
+                    }
+                };
+
+                rt.block_on(async move {
+                    let app =
+                        match boot_m3_embedded(paths, Arc::clone(&fs_worker), llm).await {
+                            Ok(app) => app,
+                            Err(err) => {
+                                push_event(
+                                    &events_worker,
+                                    InterrogatorEvent::Error {
+                                        message: friendly_m3_credentials_error(&format!(
+                                            "{err:#}"
+                                        )),
+                                    },
+                                );
+                                return;
+                            }
+                        };
+
+                    let mut client: RootAgentClient = app.root_agent();
+                    let mut stream = match client.event_stream().await {
+                        Ok(s) => s,
+                        Err(err) => {
+                            push_event(
+                                &events_worker,
+                                InterrogatorEvent::Error {
+                                    message: format!("打开 Alan 事件流失败: {err:#}"),
+                                },
+                            );
+                            let _ = app.shutdown().await;
+                            return;
+                        }
+                    };
+                    push_event(&events_worker, InterrogatorEvent::Ready);
+
+                    let mut active_submission: Option<String> = None;
+
+                    loop {
+                        tokio::select! {
+                            maybe_cmd = cmd_rx.recv() => {
+                                let Some(cmd) = maybe_cmd else {
+                                    break;
+                                };
+                                match cmd {
+                                    InterrogatorCommand::Submit { ticker, name, bucket, question } => {
+                                        fs_worker.refresh();
+                                        let prompt = compose_interrogation_turn(&ticker, &name, bucket, &question);
+                                        match client.submit_text(prompt.clone()).await {
+                                            Ok(submission_id) => {
+                                                active_submission = Some(submission_id.clone());
+                                                push_event(&events_worker, InterrogatorEvent::UserSubmitted {
+                                                    submission_id,
+                                                    prompt: question,
+                                                });
+                                            }
+                                            Err(err) => {
+                                                push_event(&events_worker, InterrogatorEvent::Error {
+                                                    message: friendly_m3_credentials_error(&format!("{err:#}")),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    InterrogatorCommand::Interrupt => {
+                                        let _ = client.interrupt(active_submission.as_deref()).await;
+                                    }
+                                    InterrogatorCommand::Reset => {
+                                        active_submission = None;
+                                        let opts = SessionOptions::default().with_system_prompt_mode(
+                                            SystemPromptMode::Replace {
+                                                prompt: M3_INTERROGATOR_SYSTEM_PROMPT.to_string(),
+                                            },
+                                        );
+                                        match app.reset_session(opts).await {
+                                            Ok(_) => {
+                                                client = app.root_agent();
+                                                match client.event_stream().await {
+                                                    Ok(next_stream) => {
+                                                        stream = next_stream;
+                                                        push_event(&events_worker, InterrogatorEvent::ResetDone);
+                                                    }
+                                                    Err(err) => {
+                                                        push_event(&events_worker, InterrogatorEvent::Error {
+                                                            message: format!("重置事件流失败: {err:#}"),
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                            Err(err) => {
+                                                push_event(&events_worker, InterrogatorEvent::Error {
+                                                    message: format!("重置审讯会话失败: {err:#}"),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    InterrogatorCommand::RefreshFs => {
+                                        fs_worker.refresh();
+                                    }
+                                    InterrogatorCommand::Shutdown => break,
+                                }
+                            }
+                            ev = stream.next_event() => {
+                                match ev {
+                                    Ok(event) => match event {
+                                        EmbedEvent::TextDelta { submission_id, chunk, is_final } => {
+                                            push_event(&events_worker, InterrogatorEvent::TextDelta {
+                                                submission_id,
+                                                chunk,
+                                                is_final,
+                                            });
+                                        }
+                                        EmbedEvent::ToolStarted { call_id, name, title } => {
+                                            push_event(&events_worker, InterrogatorEvent::ToolStarted {
+                                                call_id,
+                                                name,
+                                                title,
+                                            });
+                                        }
+                                        EmbedEvent::ToolProgress { call_id, preview } => {
+                                            push_event(&events_worker, InterrogatorEvent::ToolProgress {
+                                                call_id,
+                                                preview,
+                                            });
+                                        }
+                                        EmbedEvent::ToolFinished { call_id, name, status, preview } => {
+                                            push_event(&events_worker, InterrogatorEvent::ToolFinished {
+                                                call_id,
+                                                name,
+                                                status,
+                                                preview: preview.unwrap_or_default(),
+                                            });
+                                        }
+                                        EmbedEvent::Error { message, .. } => {
+                                            push_event(&events_worker, InterrogatorEvent::Error {
+                                                message: friendly_m3_credentials_error(&message),
+                                            });
+                                        }
+                                        EmbedEvent::TurnFinished { submission_id, status, error } => {
+                                            active_submission = None;
+                                            push_event(&events_worker, InterrogatorEvent::TurnDone {
+                                                submission_id,
+                                                completed: status == UiInputStatus::Completed,
+                                                error: error.map(|e| friendly_m3_credentials_error(&e)),
+                                            });
+                                        }
+                                        EmbedEvent::ThinkingDelta { .. }
+                                        | EmbedEvent::PendingRequest { .. }
+                                        | EmbedEvent::Usage { .. } => {}
+                                    }
+                                    Err(err) => {
+                                        push_event(&events_worker, InterrogatorEvent::Error {
+                                            message: format!("Alan 事件流中断: {err:#}"),
+                                        });
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let _ = app.shutdown().await;
+                });
+            })
+            .expect("spawn m3-alan-interrogator thread");
+
+        Self {
+            fs,
+            cmd_tx,
+            events,
+        }
+    }
+
+    pub fn refresh_fs(&self) {
+        self.fs.refresh();
+        let _ = self.cmd_tx.send(InterrogatorCommand::RefreshFs);
+    }
+
+    pub fn submit(&self, ticker: impl Into<String>, name: impl Into<String>, bucket: Bucket, question: impl Into<String>) {
+        let q = question.into();
+        if q.trim().is_empty() {
+            return;
+        }
+        let _ = self.cmd_tx.send(InterrogatorCommand::Submit {
+            ticker: ticker.into(),
+            name: name.into(),
+            bucket,
+            question: q,
+        });
+    }
+
+    pub fn interrupt(&self) {
+        let _ = self.cmd_tx.send(InterrogatorCommand::Interrupt);
+    }
+
+    pub fn reset(&self) {
+        let _ = self.cmd_tx.send(InterrogatorCommand::Reset);
+    }
+
+    pub fn shutdown(&self) {
+        let _ = self.cmd_tx.send(InterrogatorCommand::Shutdown);
+    }
+
+    pub fn drain_events(&self) -> Vec<InterrogatorEvent> {
+        self.events
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default()
+    }
+}
+
+fn push_event(queue: &Arc<StdMutex<Vec<InterrogatorEvent>>>, event: InterrogatorEvent) {
+    if let Ok(mut guard) = queue.lock() {
+        guard.push(event);
+    }
+}
+
+pub fn compose_interrogation_turn(
+    ticker: &str,
+    name: &str,
+    bucket: Bucket,
+    question: &str,
+) -> String {
+    format!(
+        "[当前审讯标的: {ticker} · {name} · 分桶 {}]\n\
+         请先借助 `m3_report` / `m3_dossier` 核对确定性数据，再用 `[report:{ticker}]`、`[xbrl:{ticker}]`、`[dossier:{ticker}]` 标注核心依据：\n\n\
+         {question}",
+        bucket.code()
+    )
+}
+
+/// Builds and boots Project-M3's isolated `EmbeddedAlan` V2 instance.
+pub async fn boot_m3_embedded(
+    paths: WorkspacePaths,
+    fs: Arc<M3WorkbenchFs>,
+    llm: LlmSource,
+) -> Result<EmbeddedAlan> {
+    let mut tools = ToolRegistry::new();
+    tools.register(M3StatusTool {
+        paths: paths.clone(),
+    });
+    tools.register(M3ReportTool {
+        paths: paths.clone(),
+    });
+    tools.register(M3DossierTool {
+        paths: paths.clone(),
+    });
+    tools.register(M3UpdateDraftTool {
+        paths,
+        fs: Arc::clone(&fs),
+    });
+
+    let process = AgentProcessConfig {
+        trust_posture: TrustPosture::ConfinedTrusted,
+        ..Default::default()
+    };
+
+    let config = EmbeddedConfig::ephemeral(llm)
+        .with_process_config(process)
+        .with_mount("/mnt/m3", fs as Arc<dyn FileServer>, Access::ReadOnly)
+        .with_tools(tools)
+        .with_tool_policy_hook(Arc::new(M3ToolPolicyHook))
+        .with_builtin_skills(false)
+        .with_system_prompt_mode(SystemPromptMode::Replace {
+            prompt: M3_INTERROGATOR_SYSTEM_PROMPT.to_string(),
+        });
+
+    EmbeddedAlan::boot(config).await
+}
+
+pub fn friendly_m3_credentials_error(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("no connection service profile")
+        || lower.contains("connection profile")
+        || lower.contains("missing secret")
+        || lower.contains("api key")
+        || lower.contains("unconfigured")
+        || lower.contains("not configured")
+    {
+        return "尚未配置 Alan 模型连接（不影响计算器底表与手动档案）。\n\
+                可在终端运行：\n  \
+                alan connection add openrouter --profile main\n  \
+                alan connection set-secret main\n  \
+                alan connection default set main\n\
+                或直接点击右上角「复制审讯 Prompt (p)」交由外部会话运行。"
+            .to_string();
+    }
+    raw.to_string()
+}
+
+/// Parses clickable Acme evidence tokens such as `[report:AAPL]`, `[xbrl:AAPL]`,
+/// `[xbrl]`, and `[dossier:AAPL]` from Alan's response, anchored to real `MungerReport`s.
+pub fn parse_acme_evidence_tokens(
+    raw: &str,
+    default_ticker: &str,
+    reports: &[MungerReport],
+    dossiers: &HashMap<String, Option<Dossier>>,
+) -> (String, Vec<AcmeEvidenceToken>) {
+    let mut cleaned = String::with_capacity(raw.len());
+    let mut tokens = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut rest = raw;
+
+    while let Some(start) = rest.find('[') {
+        cleaned.push_str(&rest[..start]);
+        let after_open = &rest[start + 1..];
+        if let Some(end) = after_open.find(']') {
+            let inner = after_open[..end].trim();
+            if let Some((kind, ticker)) = parse_bracket_token(inner, default_ticker) {
+                let id = format!("{}:{ticker}", kind.prefix());
+                if seen.insert(id.clone()) {
+                    tokens.push(build_evidence_token(kind.clone(), &ticker, reports, dossiers));
+                }
+                cleaned.push_str(&format!("[{}:{ticker}]", kind.prefix()));
+            } else {
+                cleaned.push_str(&rest[start..start + 1 + end + 1]);
+            }
+            rest = &after_open[end + 1..];
+        } else {
+            cleaned.push('[');
+            rest = after_open;
+        }
+    }
+    cleaned.push_str(rest);
+
+    // Ensure any mentioned known ticker also carries its clickable [report:TICKER] / [xbrl:TICKER].
+    for rep in reports {
+        if contains_ticker_word(&cleaned, &rep.ticker) {
+            let id = format!("report:{}", rep.ticker);
+            if seen.insert(id) {
+                tokens.push(build_evidence_token(
+                    AcmeEvidenceKind::Report,
+                    &rep.ticker,
+                    reports,
+                    dossiers,
+                ));
+            }
+        }
+    }
+
+    (cleaned, tokens)
+}
+
+fn parse_bracket_token(inner: &str, default_ticker: &str) -> Option<(AcmeEvidenceKind, String)> {
+    let lower = inner.to_ascii_lowercase();
+    if lower == "xbrl" && !default_ticker.trim().is_empty() {
+        return Some((AcmeEvidenceKind::Xbrl, default_ticker.to_ascii_uppercase()));
+    }
+    if lower == "report" && !default_ticker.trim().is_empty() {
+        return Some((AcmeEvidenceKind::Report, default_ticker.to_ascii_uppercase()));
+    }
+    if lower == "dossier" && !default_ticker.trim().is_empty() {
+        return Some((AcmeEvidenceKind::Dossier, default_ticker.to_ascii_uppercase()));
+    }
+    let (prefix, sym) = inner.split_once(':')?;
+    let sym = sym.trim().to_ascii_uppercase();
+    if sym.is_empty() || sym.len() > 16 || !sym.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return None;
+    }
+    match prefix.trim().to_ascii_lowercase().as_str() {
+        "report" => Some((AcmeEvidenceKind::Report, sym)),
+        "xbrl" => Some((AcmeEvidenceKind::Xbrl, sym)),
+        "dossier" => Some((AcmeEvidenceKind::Dossier, sym)),
+        _ => None,
+    }
+}
+
+fn contains_ticker_word(haystack: &str, ticker: &str) -> bool {
+    if ticker.is_empty() {
+        return false;
+    }
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(ticker) {
+        let abs = start + pos;
+        let before_ok = haystack[..abs]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        let after_ok = haystack[abs + ticker.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + ticker.len();
+    }
+    false
+}
+
+fn build_evidence_token(
+    kind: AcmeEvidenceKind,
+    ticker: &str,
+    reports: &[MungerReport],
+    dossiers: &HashMap<String, Option<Dossier>>,
+) -> AcmeEvidenceToken {
+    let rep = reports
+        .iter()
+        .find(|r| r.ticker.eq_ignore_ascii_case(ticker));
+    let dossier = dossiers.get(ticker).and_then(|d| d.as_ref());
+
+    match kind {
+        AcmeEvidenceKind::Report => {
+            let summary = if let Some(r) = rep {
+                let val = r.ttm_valuation.as_ref().or(r.fy_valuation.as_ref());
+                let strike = val
+                    .and_then(|v| v.strike_price.map(|s| format!("${}", s.round_dp(2))))
+                    .unwrap_or_else(|| "—".into());
+                let roic = r
+                    .roic_5y_avg_pct
+                    .map(|v| format!("{:.1}%", v))
+                    .unwrap_or_else(|| "—".into());
+                format!(
+                    "{} ({}) · 分桶 {} · 状态 {} · 5Y ROIC均值 {roic} · 击球价 {strike} · 预警 {} 项",
+                    r.name,
+                    r.ticker,
+                    r.bucket.code(),
+                    r.status.label(),
+                    r.warnings.len()
+                )
+            } else {
+                format!("暂未在计算报告中找到 {ticker}。")
+            };
+            AcmeEvidenceToken {
+                id: format!("report:{ticker}"),
+                kind,
+                ticker: ticker.to_string(),
+                label: format!("[report:{ticker}]"),
+                summary,
+            }
+        }
+        AcmeEvidenceKind::Xbrl => {
+            let summary = if let Some(r) = rep {
+                let filing = r.latest_filing_end.as_deref().unwrap_or("—");
+                let prov = r
+                    .provenance_summary
+                    .first()
+                    .map(|p| format!("{} · {}", p.field, p.source_tag))
+                    .unwrap_or_else(|| "SEC EDGAR XBRL 底表".into());
+                let sha = r
+                    .raw_sha256
+                    .as_deref()
+                    .map(|s| s.chars().take(12).collect::<String>())
+                    .unwrap_or_else(|| "manual".into());
+                format!(
+                    "{} XBRL 底表 · 最近财报期 {filing} · 样本溯源 {prov} · SHA {sha} · 点击可直达「3 XBRL 底表」",
+                    r.ticker
+                )
+            } else {
+                format!("点击前往「3 XBRL 底表」查看 {ticker} 原始财务溯源。")
+            };
+            AcmeEvidenceToken {
+                id: format!("xbrl:{ticker}"),
+                kind,
+                ticker: ticker.to_string(),
+                label: format!("[xbrl:{ticker}]"),
+                summary,
+            }
+        }
+        AcmeEvidenceKind::Dossier => {
+            let summary = if let Some(d) = dossier {
+                let review = if d.human_judgment.pending_human_review {
+                    "human_judgment 待人类答辩拍板"
+                } else {
+                    "已完成人类答辩"
+                };
+                format!(
+                    "{} 审讯档案（更新 {} · {review}）：{}",
+                    d.ticker, d.updated_at, d.three_sentence_business
+                )
+            } else {
+                format!("尚无 workbench/dossiers/{ticker}.json 草稿，可要求 Alan 起草。")
+            };
+            AcmeEvidenceToken {
+                id: format!("dossier:{ticker}"),
+                kind,
+                ticker: ticker.to_string(),
+                label: format!("[dossier:{ticker}]"),
+                summary,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{
+        AnnualFinancials, Bucket, DataSource, DecisionJournal, FieldProvenance, PriceSnapshot,
+        RawCompanyFactsSummary, ValuationAssumptions, WatchlistFile, CompanyEntry,
+    };
+    use alan_llm::{GenerationResponse, MockLlmProvider, TokenUsage, ToolCall};
+    use alan_os_host::embed::LlmClient;
+    use rust_decimal::Decimal;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    fn temp_m3_workspace(label: &str) -> (PathBuf, WorkspacePaths) {
+        let dir = std::env::temp_dir().join(format!(
+            "m3-alan-test-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = WorkspacePaths::from_root(dir.clone());
+        std::fs::create_dir_all(&paths.workbench_dir).unwrap();
+        std::fs::create_dir_all(paths.workbench_dir.join("dossiers")).unwrap();
+        std::fs::create_dir_all(paths.data_dir.join("raw/sec")).unwrap();
+        std::fs::create_dir_all(paths.data_dir.join("raw/prices")).unwrap();
+        std::fs::create_dir_all(paths.data_dir.join("computed")).unwrap();
+
+        let wl = WatchlistFile {
+            schema_version: 1,
+            benchmark_symbol: "^GSPC".into(),
+            default_target_return_pct: Decimal::from(10),
+            companies: vec![CompanyEntry {
+                ticker: "AAPL".into(),
+                name: "Apple Inc.".into(),
+                bucket: Bucket::Core,
+                source: DataSource::SecEdgar,
+                cik: Some("0000320193".into()),
+                currency: "USD".into(),
+                circle: "消费生态 / 硬件+服务".into(),
+                too_hard_reason: None,
+                assumptions: ValuationAssumptions {
+                    multiple_low: Decimal::from(18),
+                    multiple_high: Decimal::from(22),
+                    target_return_pct: Decimal::from(10),
+                    expected_growth_pct: Decimal::from(8),
+                    strike_price_override: None,
+                },
+            }],
+        };
+        store::save_watchlist(&paths, &wl).unwrap();
+
+        let journal = DecisionJournal {
+            schema_version: 1,
+            account_note: "TEST".into(),
+            currency: "USD".into(),
+            starting_cash: Decimal::from(100_000),
+            cash_balance: Decimal::from(100_000),
+            benchmark_symbol: "^GSPC".into(),
+            benchmark_start_price: None,
+            positions: Vec::new(),
+            entries: Vec::new(),
+        };
+        store::save_journal(&paths, &journal).unwrap();
+
+        let facts = RawCompanyFactsSummary {
+            schema_version: 1,
+            ticker: "AAPL".into(),
+            entity_name: "Apple Inc.".into(),
+            cik: "0000320193".into(),
+            source_url: "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json".into(),
+            raw_sha256: "deadbeef12345678".into(),
+            fetched_at_ms: 1_700_000_000_000,
+            annuals: vec![AnnualFinancials {
+                fiscal_year: 2025,
+                period_end: "2025-09-27".into(),
+                filed: Some("2025-11-01".into()),
+                revenue: Decimal::from(400_000_000_000i64),
+                gross_profit: Decimal::from(185_000_000_000i64),
+                ebit: Decimal::from(125_000_000_000i64),
+                tax_expense: Decimal::from(20_000_000_000i64),
+                pretax_income: Decimal::from(124_000_000_000i64),
+                ocf: Decimal::from(118_000_000_000i64),
+                capex: Decimal::from(10_000_000_000i64),
+                sbc: Decimal::from(12_000_000_000i64),
+                buybacks: Decimal::from(90_000_000_000i64),
+                cash_and_st: Decimal::from(65_000_000_000i64),
+                total_debt: Decimal::from(100_000_000_000i64),
+                equity: Decimal::from(60_000_000_000i64),
+                diluted_shares: Decimal::from(15_200_000_000i64),
+                ending_shares: Decimal::from(15_000_000_000i64),
+                provenance: vec![FieldProvenance {
+                    field: "ocf".into(),
+                    source_tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities".into(),
+                    filed: Some("2025-11-01".into()),
+                    period_end: "2025-09-27".into(),
+                    note: None,
+                }],
+            }],
+            ttm: None,
+            manual_note: None,
+        };
+        store::write_json_atomic(&paths.sec_facts_summary_path("AAPL"), &facts).unwrap();
+
+        let price = PriceSnapshot {
+            schema_version: 1,
+            symbol: "AAPL".into(),
+            price: Decimal::from(180),
+            previous_close: Some(Decimal::from(179)),
+            currency: "USD".into(),
+            exchange: "NMS".into(),
+            market_time_ms: Some(1_700_000_000_000),
+            fetched_at_ms: 1_700_000_000_000,
+            source_url: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL".into(),
+        };
+        store::write_json_atomic(&paths.price_path("AAPL"), &price).unwrap();
+
+        let dossier = Dossier {
+            schema_version: 1,
+            ticker: "AAPL".into(),
+            name: "Apple Inc.".into(),
+            updated_at: "2026-11-18".into(),
+            draft_source: "manual_seed".into(),
+            three_sentence_business: "端到端软硬件生态锁定高留存用户并用回购放大每股股东盈余。".into(),
+            latticework: Latticework {
+                microeconomics: "生态转换成本高".into(),
+                ecology: "端侧 AI 与服务黏性".into(),
+                psychology_incentives: "以每股自由现金流为核心配资".into(),
+                capital_allocation: "持续净回购压缩股本".into(),
+            },
+            premortem: vec!["硬件换机周期拉长叠加强监管拆分 App Store".into()],
+            open_questions: vec!["服务业务毛利率能否维持 70% 以上？".into()],
+            human_judgment: HumanJudgment {
+                pending_human_review: true,
+                my_stance: Some("WAITING_FOR_STRIKE_150".into()),
+                weight_rationale: Some("核心能力圈保留".into()),
+                falsification_metrics: vec!["活跃设备增长转负".into()],
+                feynman_checked_at: Some("2026-11-18".into()),
+            },
+        };
+        store::write_json_atomic(&paths.dossier_path("AAPL"), &dossier).unwrap();
+
+        (dir, paths)
+    }
+
+    fn tool_call_response(id: &str, name: &str, arguments: Value) -> GenerationResponse {
+        GenerationResponse {
+            content: String::new(),
+            thinking: None,
+            thinking_signature: None,
+            redacted_thinking: Vec::new(),
+            tool_calls: vec![ToolCall {
+                id: Some(id.to_string()),
+                name: name.to_string(),
+                arguments,
+            }],
+            usage: Some(TokenUsage {
+                prompt_tokens: 16,
+                cached_prompt_tokens: None,
+                completion_tokens: 8,
+                total_tokens: 24,
+                reasoning_tokens: None,
+                ..Default::default()
+            }),
+            finish_reason: None,
+            warnings: Vec::new(),
+            provider_response_id: None,
+            provider_response_status: None,
+        }
+    }
+
+    fn text_response(text: &str) -> GenerationResponse {
+        GenerationResponse {
+            content: text.to_string(),
+            thinking: None,
+            thinking_signature: None,
+            redacted_thinking: Vec::new(),
+            tool_calls: Vec::new(),
+            usage: Some(TokenUsage {
+                prompt_tokens: 24,
+                cached_prompt_tokens: None,
+                completion_tokens: 18,
+                total_tokens: 42,
+                reasoning_tokens: None,
+                ..Default::default()
+            }),
+            finish_reason: None,
+            warnings: Vec::new(),
+            provider_response_id: None,
+            provider_response_status: None,
+        }
+    }
+
+    #[test]
+    fn m3_tool_policy_hook_denies_all_redline_paths_and_human_judgment() {
+        let hook = M3ToolPolicyHook;
+
+        assert!(matches!(
+            hook.evaluate(
+                "m3_update_draft",
+                &json!({
+                    "ticker": "AAPL",
+                    "human_judgment": {"my_stance": "BUY_NOW"}
+                }),
+                ToolCapability::Write
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "m3_update_draft",
+                &json!({
+                    "ticker": "AAPL",
+                    "pending_human_review": false
+                }),
+                ToolCapability::Write
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "write_file",
+                &json!({
+                    "path": "data/munger/computed/AAPL.json",
+                    "content": "{}"
+                }),
+                ToolCapability::Write
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "write_file",
+                &json!({
+                    "path": "data/munger/raw/sec/AAPL_facts.json",
+                    "content": "{}"
+                }),
+                ToolCapability::Write
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "edit_file",
+                &json!({
+                    "path": "workbench/journal.json",
+                    "patch": "tamper"
+                }),
+                ToolCapability::Write
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "m3_update_draft",
+                &json!({
+                    "ticker": "AAPL",
+                    "open_questions": ["如果服务毛利跌破 65%，估值中枢下移多少？"]
+                }),
+                ToolCapability::Write
+            ),
+            HookDecision::Allow
+        ));
+        assert!(matches!(
+            hook.evaluate("m3_report", &json!({"ticker": "AAPL"}), ToolCapability::Read),
+            HookDecision::Allow
+        ));
+    }
+
+    #[test]
+    fn embedded_m3_runs_report_and_dossier_and_blocks_redline_writes_in_process() {
+        let handle = std::thread::Builder::new()
+            .name("m3-test-embedded".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+        let (dir, paths) = temp_m3_workspace("e2e");
+        let fs = Arc::new(M3WorkbenchFs::new(paths.clone()));
+
+        let provider = MockLlmProvider::new().with_responses(vec![
+            tool_call_response("call_rep", "m3_report", json!({"ticker": "AAPL"})),
+            tool_call_response("call_dos", "m3_dossier", json!({"ticker": "AAPL"})),
+            // Blocked write attempt 1: touch human_judgment
+            tool_call_response(
+                "call_bad_judgment",
+                "m3_update_draft",
+                json!({
+                    "ticker": "AAPL",
+                    "human_judgment": {"my_stance": "FORCE_BUY", "pending_human_review": false}
+                }),
+            ),
+            // Blocked write attempt 2: touch computed/*
+            tool_call_response(
+                "call_bad_computed",
+                "write_computed",
+                json!({
+                    "path": "computed/AAPL.json",
+                    "value": 999
+                }),
+            ),
+            // Allowed AI draft update (must preserve existing human_judgment!)
+            tool_call_response(
+                "call_good_draft",
+                "m3_update_draft",
+                json!({
+                    "ticker": "AAPL",
+                    "open_questions": ["服务增速放缓时回购收益率还能支撑几倍估值？"]
+                }),
+            ),
+            text_response(
+                "已核对 AAPL 确定性报告 [report:AAPL]、XBRL 溯源 [xbrl:AAPL] 与审讯档案 [dossier:AAPL]。",
+            ),
+        ]);
+
+        // Also register an extra dummy write tool to prove hook blocks non-draft write tools too.
+        struct DummyComputedWriteTool(Arc<AtomicBool>);
+        impl Tool for DummyComputedWriteTool {
+            fn name(&self) -> &str {
+                "write_computed"
+            }
+            fn description(&self) -> &str {
+                "test-only forbidden write tool"
+            }
+            fn parameters_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn capability(&self, _arguments: &Value) -> ToolCapability {
+                ToolCapability::Write
+            }
+            fn execute(&self, _arguments: Value, _ctx: &ToolContext) -> ToolResult {
+                self.0.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok(json!({"hacked": true})) })
+            }
+        }
+
+        let forbidden_ran = Arc::new(AtomicBool::new(false));
+        let mut tools = ToolRegistry::new();
+        tools.register(M3StatusTool {
+            paths: paths.clone(),
+        });
+        tools.register(M3ReportTool {
+            paths: paths.clone(),
+        });
+        tools.register(M3DossierTool {
+            paths: paths.clone(),
+        });
+        tools.register(M3UpdateDraftTool {
+            paths: paths.clone(),
+            fs: Arc::clone(&fs),
+        });
+        tools.register(DummyComputedWriteTool(Arc::clone(&forbidden_ran)));
+
+        let process = AgentProcessConfig {
+            trust_posture: TrustPosture::ConfinedTrusted,
+            ..Default::default()
+        };
+
+        let app = EmbeddedAlan::boot(
+            EmbeddedConfig::ephemeral(LlmSource::Client(LlmClient::new(provider.clone())))
+                .with_process_config(process)
+                .with_mount("/mnt/m3", Arc::clone(&fs) as Arc<dyn FileServer>, Access::ReadOnly)
+                .with_tools(tools)
+                .with_tool_policy_hook(Arc::new(M3ToolPolicyHook))
+                .with_builtin_skills(false)
+                .with_system_prompt_mode(SystemPromptMode::Replace {
+                    prompt: M3_INTERROGATOR_SYSTEM_PROMPT.to_string(),
+                }),
+        )
+        .await
+        .expect("boot m3 embedded");
+
+        let client = app.root_agent();
+        let mut stream = client.event_stream().await.unwrap();
+        let sub_id = client
+            .submit_text("请审讯 AAPL 的确定性财务与档案草稿")
+            .await
+            .unwrap();
+
+        let mut finished_tools = Vec::new();
+        let mut prose = String::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let ev = tokio::time::timeout_at(deadline, stream.next_event())
+                .await
+                .expect("timed out waiting for turn finish")
+                .expect("event stream ok");
+            match ev {
+                EmbedEvent::TextDelta { chunk, .. } => prose.push_str(&chunk),
+                EmbedEvent::ToolFinished {
+                    name,
+                    status,
+                    preview,
+                    ..
+                } => {
+                    finished_tools.push((name, status, preview.unwrap_or_default()));
+                }
+                EmbedEvent::TurnFinished {
+                    submission_id,
+                    status,
+                    ..
+                } if submission_id == sub_id => {
+                    assert_eq!(status, UiInputStatus::Completed);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        // Verify deterministic m3_report and m3_dossier ran cleanly.
+        assert!(finished_tools
+            .iter()
+            .any(|(name, status, _)| name == "m3_report" && status == "completed"));
+        assert!(finished_tools
+            .iter()
+            .any(|(name, status, _)| name == "m3_dossier" && status == "completed"));
+        assert!(finished_tools
+            .iter()
+            .any(|(name, status, _)| name == "m3_update_draft" && status == "completed"));
+
+        // Verify red-line hook prevented both write attempts cleanly.
+        assert!(!forbidden_ran.load(Ordering::SeqCst));
+        let recorded = provider.recorded_requests();
+        assert!(
+            recorded.iter().any(|req| {
+                req.messages
+                    .iter()
+                    .any(|m| m.content.contains("红线拦截") && m.content.contains("human_judgment"))
+            }),
+            "expected ToolPolicyHook denial feedback for human_judgment"
+        );
+        assert!(
+            recorded.iter().any(|req| {
+                req.messages
+                    .iter()
+                    .any(|m| m.content.contains("红线拦截") && m.content.contains("computed/"))
+            }),
+            "expected ToolPolicyHook denial feedback for computed/"
+        );
+
+        // Verify human_judgment on disk stayed completely intact while open_questions updated.
+        let disk_dossier = store::load_dossier(&paths, "AAPL").unwrap().unwrap();
+        assert_eq!(
+            disk_dossier.human_judgment.my_stance.as_deref(),
+            Some("WAITING_FOR_STRIKE_150")
+        );
+        assert!(disk_dossier.human_judgment.pending_human_review);
+        assert_eq!(
+            disk_dossier.open_questions,
+            vec!["服务增速放缓时回购收益率还能支撑几倍估值？".to_string()]
+        );
+
+        // Verify Acme evidence parser picks up clickable report/xbrl/dossier tokens.
+        let reports = store::load_or_compute_reports(&paths).unwrap();
+        let mut dossier_map = HashMap::new();
+        dossier_map.insert("AAPL".to_string(), Some(disk_dossier));
+        let (cleaned, tokens) = parse_acme_evidence_tokens(&prose, "AAPL", &reports, &dossier_map);
+        assert!(cleaned.contains("[report:AAPL]"));
+        assert!(tokens.iter().any(|t| t.id == "report:AAPL"));
+        assert!(tokens.iter().any(|t| t.id == "xbrl:AAPL"));
+        assert!(tokens.iter().any(|t| t.id == "dossier:AAPL"));
+
+        let _ = app.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+                });
+            })
+            .expect("spawn test thread");
+        handle.join().expect("embedded m3 test panicked");
+    }
+
+    #[test]
+    fn parse_acme_evidence_tokens_supports_shorthand_xbrl_and_grounded_summaries() {
+        let (dir, paths) = temp_m3_workspace("tokens");
+        let reports = store::load_or_compute_reports(&paths).unwrap();
+        let dossier = store::load_dossier(&paths, "AAPL").unwrap();
+        let mut dossiers = HashMap::new();
+        dossiers.insert("AAPL".to_string(), dossier);
+
+        let (cleaned, tokens) = parse_acme_evidence_tokens(
+            "参考 AAPL 现金流与 [xbrl] 数据",
+            "AAPL",
+            &reports,
+            &dossiers,
+        );
+        assert_eq!(cleaned, "参考 AAPL 现金流与 [xbrl:AAPL] 数据");
+        assert!(tokens.iter().any(|t| t.id == "xbrl:AAPL" && t.summary.contains("XBRL 底表")));
+        assert!(tokens.iter().any(|t| t.id == "report:AAPL" && t.summary.contains("Apple Inc.")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

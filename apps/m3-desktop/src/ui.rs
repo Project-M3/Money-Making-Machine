@@ -1,4 +1,8 @@
 use crate::{
+    alan_interrogator::{
+        AcmeEvidenceKind, AcmeEvidenceToken, InterrogatorEvent, M3InterrogatorHandle,
+        TuringTapeEntry, TuringTapeKind, parse_acme_evidence_tokens,
+    },
     calculator,
     model::{
         AnnualMetricRow, Bucket, DecisionJournal, Dossier, JournalAction, MungerReport, OhlcBar,
@@ -15,7 +19,7 @@ use gpui::{
 use rust_decimal::Decimal;
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::mpsc,
 };
 
@@ -119,6 +123,23 @@ pub enum NavView {
 pub enum DossierTab {
     Overview,
     Inspector,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentMessageRole {
+    User,
+    Assistant,
+    SystemNote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentUiMessage {
+    id: String,
+    role: AgentMessageRole,
+    raw_text: String,
+    text: String,
+    tokens: Vec<AcmeEvidenceToken>,
+    streaming: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +260,17 @@ pub struct MungerWorkbench {
     syncing: bool,
     sync_rx: Option<mpsc::Receiver<Result<SyncStatusFile, String>>>,
     banner: Option<(String, bool)>,
+    alan_handle: Option<M3InterrogatorHandle>,
+    agent_session_ticker: Option<String>,
+    agent_input_focused: bool,
+    agent_input_draft: String,
+    agent_streaming: bool,
+    agent_status_hint: Option<String>,
+    agent_messages: Vec<AgentUiMessage>,
+    agent_tape: Vec<TuringTapeEntry>,
+    agent_expanded_evidence: Option<String>,
+    agent_expanded_tape: Option<usize>,
+    agent_seq: usize,
 }
 
 impl MungerWorkbench {
@@ -286,6 +318,17 @@ impl MungerWorkbench {
             syncing: false,
             sync_rx: None,
             banner: None,
+            alan_handle: None,
+            agent_session_ticker: None,
+            agent_input_focused: false,
+            agent_input_draft: String::new(),
+            agent_streaming: false,
+            agent_status_hint: None,
+            agent_messages: Vec::new(),
+            agent_tape: Vec::new(),
+            agent_expanded_evidence: None,
+            agent_expanded_tape: None,
+            agent_seq: 1,
             paths,
         };
         wb.reload_from_disk();
@@ -327,6 +370,11 @@ impl MungerWorkbench {
 
     fn load_selection(&mut self, ticker: &str) {
         self.selected_ticker = ticker.to_owned();
+        self.agent_input_focused = false;
+        self.agent_expanded_evidence = None;
+        if let Some(handle) = &self.alan_handle {
+            handle.refresh_fs();
+        }
         self.selected_dossier = store::load_dossier(&self.paths, ticker).ok().flatten();
         self.selected_history_wk = store::load_cached_price_history(&self.paths, ticker, "1wk");
         self.selected_history_1d = store::load_cached_price_history(&self.paths, ticker, "1d");
@@ -381,7 +429,175 @@ impl MungerWorkbench {
         if view == NavView::Dossier {
             self.dossier_tab = DossierTab::Overview;
         }
+        if view != NavView::Agent {
+            self.agent_input_focused = false;
+        }
         self.active_view = view;
+    }
+
+    pub fn is_alan_streaming(&self) -> bool {
+        self.agent_streaming
+    }
+
+    fn ensure_alan_handle(&mut self) -> M3InterrogatorHandle {
+        if let Some(existing) = &self.alan_handle {
+            existing.refresh_fs();
+            return existing.clone();
+        }
+        let handle = M3InterrogatorHandle::start_shared_credentials(self.paths.clone());
+        self.alan_handle = Some(handle.clone());
+        handle
+    }
+
+    fn next_agent_seq(&mut self) -> usize {
+        let seq = self.agent_seq;
+        self.agent_seq += 1;
+        seq
+    }
+
+    fn append_tape(
+        &mut self,
+        call_id: Option<String>,
+        kind: TuringTapeKind,
+        summary: String,
+        detail: Option<String>,
+        status: String,
+    ) {
+        let seq = self.agent_tape.len() + 1;
+        self.agent_tape.push(TuringTapeEntry {
+            seq,
+            call_id,
+            kind,
+            summary,
+            detail,
+            status,
+        });
+    }
+
+    fn submit_alan_question(
+        &mut self,
+        ticker: &str,
+        name: &str,
+        bucket: Bucket,
+        raw_question: String,
+    ) {
+        let question = raw_question.trim().to_string();
+        if question.is_empty() {
+            return;
+        }
+        self.agent_input_draft.clear();
+        self.agent_input_focused = false;
+        self.agent_session_ticker = Some(ticker.to_string());
+        self.agent_streaming = true;
+        self.agent_status_hint = Some("正在连接 EmbeddedAlan V2…".to_string());
+
+        let short_q: String = question.chars().take(72).collect();
+        self.append_tape(
+            None,
+            TuringTapeKind::Input,
+            format!("{ticker} · {short_q}"),
+            Some(question.clone()),
+            "sent".to_string(),
+        );
+
+        let user_seq = self.next_agent_seq();
+        let asst_seq = self.next_agent_seq();
+        self.agent_messages.push(AgentUiMessage {
+            id: format!("user-{user_seq}"),
+            role: AgentMessageRole::User,
+            raw_text: question.clone(),
+            text: question.clone(),
+            tokens: Vec::new(),
+            streaming: false,
+        });
+        self.agent_messages.push(AgentUiMessage {
+            id: format!("assistant-{asst_seq}"),
+            role: AgentMessageRole::Assistant,
+            raw_text: String::new(),
+            text: String::new(),
+            tokens: Vec::new(),
+            streaming: true,
+        });
+
+        let handle = self.ensure_alan_handle();
+        handle.submit(ticker, name, bucket, question);
+    }
+
+    fn start_feynman_interrogation(&mut self, ticker: &str, name: &str, bucket: Bucket) {
+        let starter = format!(
+            "请使用 m3_report 与 m3_dossier 获取 {ticker}（{name}）的确定性财务报告与现有审讯档案，指出当前估值与护城河中最脆弱的核心假设，并向我发起一轮费曼审讯追问。"
+        );
+        self.submit_alan_question(ticker, name, bucket, starter);
+    }
+
+    fn interrupt_alan(&mut self) {
+        if let Some(handle) = &self.alan_handle {
+            handle.interrupt();
+        }
+        self.agent_streaming = false;
+        self.agent_status_hint = Some("已中断当前审讯".to_string());
+        if let Some(last) = self
+            .agent_messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == AgentMessageRole::Assistant)
+        {
+            last.streaming = false;
+        }
+    }
+
+    fn reset_alan_session(&mut self) {
+        if let Some(handle) = &self.alan_handle {
+            handle.reset();
+        }
+        self.agent_messages.clear();
+        self.agent_tape.clear();
+        self.agent_expanded_evidence = None;
+        self.agent_expanded_tape = None;
+        self.agent_streaming = false;
+        self.agent_status_hint = None;
+    }
+
+    pub fn poll_alan_events(&mut self) -> bool {
+        let Some(handle) = self.alan_handle.as_ref() else {
+            return false;
+        };
+        let events = handle.drain_events();
+        if events.is_empty() {
+            return false;
+        }
+
+        let mut reload_disk = false;
+        let focus_ticker = self
+            .agent_session_ticker
+            .clone()
+            .unwrap_or_else(|| self.selected_ticker.clone());
+        let mut dossier_map = HashMap::new();
+        for rep in &self.reports {
+            if rep.ticker == self.selected_ticker {
+                dossier_map.insert(rep.ticker.clone(), self.selected_dossier.clone());
+            } else if let Ok(d) = store::load_dossier(&self.paths, &rep.ticker) {
+                dossier_map.insert(rep.ticker.clone(), d);
+            }
+        }
+
+        for ev in events {
+            let mut slice = AgentPanelSlice {
+                streaming: &mut self.agent_streaming,
+                status_hint: &mut self.agent_status_hint,
+                messages: &mut self.agent_messages,
+                tape: &mut self.agent_tape,
+                seq: &mut self.agent_seq,
+            };
+            if apply_interrogator_event(&mut slice, &ev, &focus_ticker, &self.reports, &dossier_map) {
+                reload_disk = true;
+            }
+        }
+
+        if reload_disk {
+            self.reload_from_disk();
+        }
+        true
     }
 
     pub fn focus_basket(&mut self, bucket: Option<Bucket>) {
@@ -908,6 +1124,45 @@ impl MungerWorkbench {
         }
 
         if mods.control || mods.alt {
+            return;
+        }
+
+        if self.active_view == NavView::Agent && self.agent_input_focused {
+            match key {
+                "escape" => {
+                    self.agent_input_focused = false;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "backspace" => {
+                    self.agent_input_draft.pop();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "enter" => {
+                    let draft = self.agent_input_draft.clone();
+                    let ticker = self.selected_ticker.clone();
+                    let (name, bucket) = self
+                        .reports
+                        .iter()
+                        .find(|r| r.ticker == ticker)
+                        .map(|r| (r.name.clone(), r.bucket))
+                        .unwrap_or_else(|| (ticker.clone(), Bucket::Watch));
+                    self.submit_alan_question(&ticker, &name, bucket, draft);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                _ => {
+                    if let Some(ch) = ev.keystroke.key_char.as_deref()
+                        && !ch.is_empty()
+                        && !ch.chars().any(char::is_control)
+                    {
+                        self.agent_input_draft.push_str(ch);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }
+            }
             return;
         }
 
@@ -4871,6 +5126,8 @@ impl MungerWorkbench {
         let dossier_cmd = format!("./apps/m3-desktop/m3 dossier {}", rep.ticker);
         let ticker_cli = rep.ticker.clone();
 
+        canvas_el = self.render_embedded_alan_console(canvas_el, rep, cx);
+
         canvas_el = canvas_el.child(
             div()
                 .flex()
@@ -5154,6 +5411,560 @@ impl MungerWorkbench {
                         .child(kbd("c", &self.fonts)),
                 ),
         )
+    }
+
+    fn render_embedded_alan_console(
+        &self,
+        mut canvas_el: gpui::Stateful<gpui::Div>,
+        rep: &MungerReport,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let start_ticker = rep.ticker.clone();
+        let start_name = rep.name.clone();
+        let start_bucket = rep.bucket;
+
+        let submit_ticker = rep.ticker.clone();
+        let submit_name = rep.name.clone();
+        let submit_bucket = rep.bucket;
+
+        let status_pill = if self.agent_streaming {
+            badge(
+                self.agent_status_hint
+                    .clone()
+                    .unwrap_or_else(|| "Alan 审讯运行中…".into()),
+                VIOLET_FG,
+                VIOLET_BG,
+                VIOLET_BORDER,
+                &self.fonts,
+            )
+        } else {
+            badge(
+                "只读 /mnt/m3 · 确定性工具".into(),
+                EMERALD_FG,
+                EMERALD_BG,
+                EMERALD_BORDER,
+                &self.fonts,
+            )
+        };
+
+        let mut header = div()
+            .px_4()
+            .py_2p5()
+            .bg(rgb(BG_WELL))
+            .border_b_1()
+            .border_color(rgb(BORDER_HAIRLINE))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(VIOLET_FG)))
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(INK_HERO))
+                            .child(format!("Alan 费曼审讯台 · {}", rep.ticker)),
+                    )
+                    .child(status_pill),
+            );
+
+        let mut actions = div().flex().items_center().gap_2();
+        if self.agent_streaming {
+            actions = actions.child(
+                div()
+                    .id("ag-interrupt")
+                    .px_2p5()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgba(CORAL_BG))
+                    .border_1()
+                    .border_color(rgba(CORAL_BORDER))
+                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                    .cursor_pointer()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgb(CORAL_FG))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.interrupt_alan();
+                        cx.notify();
+                    }))
+                    .child("中断生成"),
+            );
+        } else {
+            actions = actions.child(
+                div()
+                    .id("ag-start-feynman")
+                    .px_2p5()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(CTA_BG))
+                    .hover(|s| s.bg(rgb(CTA_BG_HOVER)))
+                    .cursor_pointer()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgb(CTA_INK))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.start_feynman_interrogation(
+                            &start_ticker,
+                            &start_name,
+                            start_bucket,
+                        );
+                        cx.notify();
+                    }))
+                    .child("启动费曼审讯"),
+            );
+        }
+
+        if !self.agent_messages.is_empty() || !self.agent_tape.is_empty() {
+            actions = actions.child(
+                div()
+                    .id("ag-reset-session")
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(BG_SURFACE))
+                    .border_1()
+                    .border_color(rgb(BORDER_PILL))
+                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                    .cursor_pointer()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .text_color(rgb(INK_SECONDARY))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.reset_alan_session();
+                        cx.notify();
+                    }))
+                    .child("清空"),
+            );
+        }
+
+        header = header.child(actions);
+
+        let draft_empty = self.agent_input_draft.trim().is_empty();
+        let input_border = if self.agent_input_focused {
+            rgba(VIOLET_BORDER)
+        } else {
+            rgb(BORDER_PILL)
+        };
+        let input_display = if self.agent_input_draft.is_empty() {
+            if self.agent_input_focused {
+                "_".to_string()
+            } else {
+                format!(
+                    "点击输入对 {} 的费曼追问（按 Enter 发送，Esc 退出输入）…",
+                    rep.ticker
+                )
+            }
+        } else if self.agent_input_focused {
+            format!("{}_", self.agent_input_draft)
+        } else {
+            self.agent_input_draft.clone()
+        };
+
+        let composer_row = div()
+            .p_3()
+            .border_b_1()
+            .border_color(rgb(BORDER_HAIRLINE))
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .id("ag-question-input")
+                    .flex_1()
+                    .min_w_0()
+                    .px_3()
+                    .py_1p5()
+                    .rounded_sm()
+                    .bg(rgb(BG_WELL))
+                    .border_1()
+                    .border_color(input_border)
+                    .cursor_pointer()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .text_color(if self.agent_input_draft.is_empty() {
+                        rgb(INK_MUTED)
+                    } else {
+                        rgb(INK_PRIMARY)
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.agent_input_focused = true;
+                        cx.notify();
+                    }))
+                    .child(input_display),
+            )
+            .child(
+                div()
+                    .id("ag-send-question")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_sm()
+                    .bg(if draft_empty {
+                        rgb(BG_WELL)
+                    } else {
+                        rgb(CTA_BG)
+                    })
+                    .border_1()
+                    .border_color(if draft_empty {
+                        rgb(BORDER_PILL)
+                    } else {
+                        rgb(CTA_BG)
+                    })
+                    .cursor_pointer()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(if draft_empty {
+                        rgb(INK_MUTED)
+                    } else {
+                        rgb(CTA_INK)
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let draft = this.agent_input_draft.clone();
+                        this.submit_alan_question(
+                            &submit_ticker,
+                            &submit_name,
+                            submit_bucket,
+                            draft,
+                        );
+                        cx.notify();
+                    }))
+                    .child("发送"),
+            );
+
+        // Flatten expanded evidence lookup across messages.
+        let expanded_token = self.agent_expanded_evidence.as_ref().and_then(|eid| {
+            self.agent_messages
+                .iter()
+                .flat_map(|m| m.tokens.iter())
+                .find(|t| &t.id == eid)
+                .cloned()
+        });
+
+        let mut stream_col = div().p_4().flex().flex_col().gap_3();
+        if self.agent_messages.is_empty() {
+            stream_col = stream_col.child(
+                div()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .line_height(px(20.))
+                    .text_color(rgb(INK_MUTED))
+                    .child("点击「启动费曼审讯」或在上方输入追问，直接驱动进程内 EmbeddedAlan V2；工具受红线策略钩子硬保护（严禁触碰 human_judgment 与 computed/*），右上角「复制审讯 Prompt」仍可作为外部会话兜底。"),
+            );
+        } else {
+            for (msg_idx, msg) in self.agent_messages.iter().enumerate() {
+                match msg.role {
+                    AgentMessageRole::User => {
+                        stream_col = stream_col.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded_sm()
+                                .bg(rgb(BG_WELL))
+                                .border_1()
+                                .border_color(rgb(BORDER_HAIRLINE))
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .line_height(px(19.))
+                                .text_color(rgb(INK_HERO))
+                                .child(format!("你  ·  {}", msg.text)),
+                        );
+                    }
+                    AgentMessageRole::SystemNote => {
+                        stream_col = stream_col.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded_sm()
+                                .bg(rgba(GOLD_BG))
+                                .border_1()
+                                .border_color(rgba(GOLD_BORDER))
+                                .font_family(self.fonts.mono_term.clone())
+                                .text_xs()
+                                .line_height(px(19.))
+                                .text_color(rgb(GOLD_FG))
+                                .child(msg.text.clone()),
+                        );
+                    }
+                    AgentMessageRole::Assistant => {
+                        let body = if msg.text.is_empty() && msg.streaming {
+                            "Alan 正在读取 /mnt/m3 与确定性报告…".to_string()
+                        } else {
+                            msg.text.clone()
+                        };
+                        let mut box_el = div().flex().flex_col().gap_2().child(
+                            div()
+                                .font_family(self.fonts.ui.clone())
+                                .text_size(px(13.))
+                                .line_height(px(22.))
+                                .text_color(if msg.text.is_empty() && msg.streaming {
+                                    rgb(INK_MUTED)
+                                } else {
+                                    rgb(INK_PRIMARY)
+                                })
+                                .child(body),
+                        );
+                        if !msg.tokens.is_empty() {
+                            let mut row = div().flex().flex_wrap().gap_1p5();
+                            for (tok_idx, tok) in msg.tokens.iter().enumerate() {
+                                let tok_id = tok.id.clone();
+                                let selected =
+                                    self.agent_expanded_evidence.as_deref() == Some(&tok_id);
+                                let (fg, bg, border) = match tok.kind {
+                                    AcmeEvidenceKind::Report => {
+                                        (EMERALD_FG, EMERALD_BG, EMERALD_BORDER)
+                                    }
+                                    AcmeEvidenceKind::Xbrl => (SKY_FG, SKY_BG, SKY_BORDER),
+                                    AcmeEvidenceKind::Dossier => (GOLD_FG, GOLD_BG, GOLD_BORDER),
+                                };
+                                row = row.child(
+                                    div()
+                                        .id(("ag-acme-tok", msg_idx * 32 + tok_idx))
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_sm()
+                                        .bg(if selected {
+                                            rgb(BG_ACTIVE)
+                                        } else {
+                                            rgba(bg)
+                                        })
+                                        .border_1()
+                                        .border_color(rgba(border))
+                                        .hover(|s| s.bg(rgb(BG_HOVER)))
+                                        .cursor_pointer()
+                                        .font_family(self.fonts.mono_term.clone())
+                                        .text_xs()
+                                        .text_color(rgb(fg))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if this.agent_expanded_evidence.as_deref()
+                                                == Some(tok_id.as_str())
+                                            {
+                                                this.agent_expanded_evidence = None;
+                                            } else {
+                                                this.agent_expanded_evidence =
+                                                    Some(tok_id.clone());
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(tok.label.clone()),
+                                );
+                            }
+                            box_el = box_el.child(row);
+                        }
+                        stream_col = stream_col.child(box_el);
+                    }
+                }
+            }
+        }
+
+        if let Some(tok) = expanded_token {
+            let jump_ticker = tok.ticker.clone();
+            let is_xbrl = tok.kind == AcmeEvidenceKind::Xbrl;
+            stream_col = stream_col.child(
+                div()
+                    .p_3()
+                    .rounded_sm()
+                    .bg(rgb(BG_WELL))
+                    .border_1()
+                    .border_color(rgb(BORDER_PILL))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .font_family(self.fonts.mono_term.clone())
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_HERO))
+                                    .child(format!("Acme 证据核验 · {}", tok.label)),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .when(is_xbrl, |d| {
+                                        d.child(
+                                            div()
+                                                .id("ag-jump-xbrl")
+                                                .px_2()
+                                                .py_0p5()
+                                                .rounded_sm()
+                                                .bg(rgba(SKY_BG))
+                                                .border_1()
+                                                .border_color(rgba(SKY_BORDER))
+                                                .cursor_pointer()
+                                                .font_family(self.fonts.ui.clone())
+                                                .text_xs()
+                                                .text_color(rgb(SKY_FG))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if this.reports.iter().any(|r| {
+                                                        r.ticker.eq_ignore_ascii_case(&jump_ticker)
+                                                    }) {
+                                                        this.load_selection(&jump_ticker);
+                                                    }
+                                                    this.dossier_tab = DossierTab::Inspector;
+                                                    this.active_view = NavView::Dossier;
+                                                    cx.notify();
+                                                }))
+                                                .child("跳至 3 XBRL 底表 →"),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .id("ag-close-evidence")
+                                            .px_2()
+                                            .py_0p5()
+                                            .cursor_pointer()
+                                            .font_family(self.fonts.ui.clone())
+                                            .text_xs()
+                                            .text_color(rgb(INK_MUTED))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.agent_expanded_evidence = None;
+                                                cx.notify();
+                                            }))
+                                            .child("收起"),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .line_height(px(19.))
+                            .text_color(rgb(INK_SECONDARY))
+                            .child(tok.summary),
+                    ),
+            );
+        }
+
+        let mut console_card = card_shell()
+            .child(header)
+            .child(composer_row)
+            .child(stream_col);
+
+        if !self.agent_tape.is_empty() {
+            let tape_len = self.agent_tape.len();
+            let mut tape_box = div()
+                .border_t_1()
+                .border_color(rgb(BORDER_HAIRLINE))
+                .bg(rgb(BG_WELL))
+                .px_4()
+                .py_2p5()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .pb_1p5()
+                        .font_family(self.fonts.mono_term.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(INK_MUTED))
+                        .child("TURING TAPE · DETERMINISTIC TRACE"),
+                );
+
+            for (idx, row) in self.agent_tape.iter().enumerate() {
+                let row_seq = row.seq;
+                let expanded = self.agent_expanded_tape == Some(row_seq);
+                let tag_color = match row.kind {
+                    TuringTapeKind::Input => INK_MUTED,
+                    TuringTapeKind::Tool => SKY_FG,
+                    TuringTapeKind::Out => EMERALD_FG,
+                    TuringTapeKind::Policy => CORAL_FG,
+                    TuringTapeKind::Error => GOLD_FG,
+                };
+                tape_box = tape_box.child(
+                    div()
+                        .id(("ag-tape-row", idx))
+                        .py_1()
+                        .when(idx + 1 < tape_len, |d| {
+                            d.border_b_1().border_color(rgb(BORDER_HAIRLINE))
+                        })
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(BG_HOVER)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.agent_expanded_tape == Some(row_seq) {
+                                this.agent_expanded_tape = None;
+                            } else {
+                                this.agent_expanded_tape = Some(row_seq);
+                            }
+                            cx.notify();
+                        }))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .font_family(self.fonts.mono_term.clone())
+                                                .text_size(px(11.))
+                                                .text_color(rgb(INK_MUTED))
+                                                .child(format!("{:04}", row.seq)),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family(self.fonts.mono_term.clone())
+                                                .text_size(px(11.))
+                                                .text_color(rgb(tag_color))
+                                                .child(format!("[{}]", row.kind.tag())),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family(self.fonts.mono_term.clone())
+                                                .text_size(px(11.))
+                                                .text_color(rgb(INK_PRIMARY))
+                                                .truncate()
+                                                .child(row.summary.clone()),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .font_family(self.fonts.mono_term.clone())
+                                        .text_size(px(10.))
+                                        .text_color(rgb(INK_MUTED))
+                                        .child(row.status.clone()),
+                                ),
+                        )
+                        .when(expanded && row.detail.is_some(), |d| {
+                            d.child(
+                                div()
+                                    .pl_6()
+                                    .font_family(self.fonts.mono_term.clone())
+                                    .text_size(px(11.))
+                                    .line_height(px(17.))
+                                    .text_color(rgb(INK_SECONDARY))
+                                    .child(row.detail.clone().unwrap_or_default()),
+                            )
+                        }),
+                );
+            }
+            console_card = console_card.child(tape_box);
+        }
+
+        canvas_el = canvas_el.child(console_card);
+        canvas_el
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6563,7 +7374,11 @@ impl MungerWorkbench {
                     .font_family(self.fonts.mono_term.clone())
                     .text_size(px(10.))
                     .text_color(rgb(INK_MUTED))
-                    .child("ZERO-LLM · PAPER ONLY"),
+                    .child(if self.active_view == NavView::Agent {
+                        "EMBEDDED ALAN · PAPER ONLY"
+                    } else {
+                        "ZERO-LLM · PAPER ONLY"
+                    }),
             )
     }
 }
@@ -6860,6 +7675,253 @@ fn render_warning_panel(warnings: &[WarningFlag], fonts: &FontRoles) -> gpui::Di
         }))
 }
 
+impl Drop for MungerWorkbench {
+    fn drop(&mut self) {
+        if let Some(handle) = self.alan_handle.take() {
+            handle.shutdown();
+        }
+    }
+}
+
+struct AgentPanelSlice<'a> {
+    streaming: &'a mut bool,
+    status_hint: &'a mut Option<String>,
+    messages: &'a mut Vec<AgentUiMessage>,
+    tape: &'a mut Vec<TuringTapeEntry>,
+    seq: &'a mut usize,
+}
+
+fn apply_interrogator_event(
+    state: &mut AgentPanelSlice<'_>,
+    ev: &InterrogatorEvent,
+    focus_ticker: &str,
+    reports: &[MungerReport],
+    dossiers: &HashMap<String, Option<Dossier>>,
+) -> bool {
+    match ev {
+        InterrogatorEvent::Ready | InterrogatorEvent::UserSubmitted { .. } => {
+            if state
+                .status_hint
+                .as_deref()
+                .is_some_and(|h| h.contains("正在连接"))
+            {
+                *state.status_hint = None;
+            }
+            false
+        }
+        InterrogatorEvent::ToolStarted {
+            call_id,
+            name,
+            title,
+        } => {
+            *state.status_hint = Some(format!("正在执行 {name}…"));
+            let seq = state.tape.len() + 1;
+            state.tape.push(TuringTapeEntry {
+                seq,
+                call_id: Some(call_id.clone()),
+                kind: TuringTapeKind::Tool,
+                summary: if title.is_empty() || title == name {
+                    format!("{name} {focus_ticker}")
+                } else {
+                    format!("{name} · {title}")
+                },
+                detail: None,
+                status: "running".to_string(),
+            });
+            false
+        }
+        InterrogatorEvent::ToolProgress { call_id, preview } => {
+            if let Some(row) = state
+                .tape
+                .iter_mut()
+                .rev()
+                .find(|r| r.call_id.as_deref() == Some(call_id.as_str()))
+            {
+                row.detail = Some(preview.clone());
+            }
+            false
+        }
+        InterrogatorEvent::ToolFinished {
+            call_id,
+            name,
+            status,
+            preview,
+        } => {
+            let blocked_by_redline = preview.contains("红线拦截");
+            if let Some(row) = state
+                .tape
+                .iter_mut()
+                .rev()
+                .find(|r| r.call_id.as_deref() == Some(call_id.as_str()))
+            {
+                row.status = if blocked_by_redline {
+                    "denied".to_string()
+                } else {
+                    status.clone()
+                };
+                if blocked_by_redline {
+                    row.kind = TuringTapeKind::Policy;
+                }
+                if !preview.is_empty() {
+                    row.detail = Some(preview.clone());
+                }
+            } else {
+                let seq = state.tape.len() + 1;
+                state.tape.push(TuringTapeEntry {
+                    seq,
+                    call_id: Some(call_id.clone()),
+                    kind: if blocked_by_redline {
+                        TuringTapeKind::Policy
+                    } else {
+                        TuringTapeKind::Tool
+                    },
+                    summary: format!("{name} {focus_ticker}"),
+                    detail: (!preview.is_empty()).then(|| preview.clone()),
+                    status: if blocked_by_redline {
+                        "denied".to_string()
+                    } else {
+                        status.clone()
+                    },
+                });
+            }
+            name == "m3_update_draft" && status == "completed" && !blocked_by_redline
+        }
+        InterrogatorEvent::TextDelta {
+            chunk, is_final, ..
+        } => {
+            *state.status_hint = None;
+            if let Some(last) = state
+                .messages
+                .iter_mut()
+                .rev()
+                .find(|m| m.role == AgentMessageRole::Assistant && m.streaming)
+            {
+                last.raw_text.push_str(chunk);
+                let (cleaned, tokens) =
+                    parse_acme_evidence_tokens(&last.raw_text, focus_ticker, reports, dossiers);
+                last.text = cleaned;
+                last.tokens = tokens;
+                if *is_final {
+                    last.streaming = false;
+                }
+            } else {
+                let id = *state.seq;
+                *state.seq += 1;
+                let (cleaned, tokens) =
+                    parse_acme_evidence_tokens(chunk, focus_ticker, reports, dossiers);
+                state.messages.push(AgentUiMessage {
+                    id: format!("assistant-{id}"),
+                    role: AgentMessageRole::Assistant,
+                    raw_text: chunk.clone(),
+                    text: cleaned,
+                    tokens,
+                    streaming: !is_final,
+                });
+            }
+            false
+        }
+        InterrogatorEvent::TurnDone { error, .. } => {
+            *state.streaming = false;
+            *state.status_hint = None;
+            let mut token_count = 0usize;
+            if let Some(last) = state
+                .messages
+                .iter_mut()
+                .rev()
+                .find(|m| m.role == AgentMessageRole::Assistant)
+            {
+                last.streaming = false;
+                token_count = last.tokens.len();
+            }
+            if let Some(err) = error {
+                if state
+                    .messages
+                    .last()
+                    .is_some_and(|m| m.role == AgentMessageRole::Assistant && m.text.is_empty())
+                {
+                    state.messages.pop();
+                }
+                let seq = state.tape.len() + 1;
+                state.tape.push(TuringTapeEntry {
+                    seq,
+                    call_id: None,
+                    kind: TuringTapeKind::Error,
+                    summary: "审讯未能完成".to_string(),
+                    detail: Some(err.clone()),
+                    status: "error".to_string(),
+                });
+                let id = *state.seq;
+                *state.seq += 1;
+                state.messages.push(AgentUiMessage {
+                    id: format!("note-{id}"),
+                    role: AgentMessageRole::SystemNote,
+                    raw_text: err.clone(),
+                    text: err.clone(),
+                    tokens: Vec::new(),
+                    streaming: false,
+                });
+                false
+            } else {
+                if state
+                    .messages
+                    .last()
+                    .is_some_and(|m| m.role == AgentMessageRole::Assistant && m.text.is_empty())
+                {
+                    state.messages.pop();
+                }
+                let seq = state.tape.len() + 1;
+                state.tape.push(TuringTapeEntry {
+                    seq,
+                    call_id: None,
+                    kind: TuringTapeKind::Out,
+                    summary: format!("回答完成 · 引用 Acme 证据 {token_count} 项"),
+                    detail: None,
+                    status: "done".to_string(),
+                });
+                true
+            }
+        }
+        InterrogatorEvent::ResetDone => {
+            *state.streaming = false;
+            *state.status_hint = None;
+            state.messages.clear();
+            state.tape.clear();
+            false
+        }
+        InterrogatorEvent::Error { message } => {
+            *state.streaming = false;
+            *state.status_hint = None;
+            if state
+                .messages
+                .last()
+                .is_some_and(|m| m.role == AgentMessageRole::Assistant && m.text.is_empty())
+            {
+                state.messages.pop();
+            }
+            let seq = state.tape.len() + 1;
+            state.tape.push(TuringTapeEntry {
+                seq,
+                call_id: None,
+                kind: TuringTapeKind::Error,
+                summary: "EmbeddedAlan 状态提示".to_string(),
+                detail: Some(message.clone()),
+                status: "error".to_string(),
+            });
+            let id = *state.seq;
+            *state.seq += 1;
+            state.messages.push(AgentUiMessage {
+                id: format!("err-{id}"),
+                role: AgentMessageRole::SystemNote,
+                raw_text: message.clone(),
+                text: message.clone(),
+                tokens: Vec::new(),
+                streaming: false,
+            });
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7148,5 +8210,91 @@ mod tests {
         assert_eq!(xbrl.len(), 1);
         assert_eq!(xbrl[0].action, PaletteAction::ToggleInspector);
         assert!(filter_palette_items(&items, "nonexistent-ticker").is_empty());
+    }
+
+    #[test]
+    fn alan_interrogator_tape_and_evidence_wire_cleanly() {
+        let rep = make_rep(
+            "AAPL",
+            Bucket::Core,
+            "消费生态",
+            Some(Decimal::from(150)),
+            Some(Decimal::from(15)),
+        );
+        let reports = vec![rep];
+        let dossiers = HashMap::new();
+        let mut streaming = true;
+        let mut status_hint = Some("正在连接…".to_string());
+        let mut messages = vec![AgentUiMessage {
+            id: "a1".into(),
+            role: AgentMessageRole::Assistant,
+            raw_text: String::new(),
+            text: String::new(),
+            tokens: Vec::new(),
+            streaming: true,
+        }];
+        let mut tape = Vec::new();
+        let mut seq = 2usize;
+
+        let events = [
+            InterrogatorEvent::ToolStarted {
+                call_id: "c1".into(),
+                name: "m3_report".into(),
+                title: "AAPL".into(),
+            },
+            InterrogatorEvent::ToolFinished {
+                call_id: "c1".into(),
+                name: "m3_report".into(),
+                status: "completed".into(),
+                preview: "{\"ticker\":\"AAPL\"}".into(),
+            },
+            InterrogatorEvent::ToolStarted {
+                call_id: "c2".into(),
+                name: "m3_update_draft".into(),
+                title: "guard".into(),
+            },
+            InterrogatorEvent::ToolFinished {
+                call_id: "c2".into(),
+                name: "m3_update_draft".into(),
+                status: "error".into(),
+                preview: "红线拦截：human_judgment 不可写入".into(),
+            },
+            InterrogatorEvent::TextDelta {
+                submission_id: Some("s1".into()),
+                chunk: "已核对 [report:AAPL] 与 [xbrl:AAPL]。".into(),
+                is_final: false,
+            },
+            InterrogatorEvent::TurnDone {
+                submission_id: "s1".into(),
+                completed: true,
+                error: None,
+            },
+        ];
+
+        let mut reload = false;
+        for ev in &events {
+            let mut slice = AgentPanelSlice {
+                streaming: &mut streaming,
+                status_hint: &mut status_hint,
+                messages: &mut messages,
+                tape: &mut tape,
+                seq: &mut seq,
+            };
+            if apply_interrogator_event(&mut slice, ev, "AAPL", &reports, &dossiers) {
+                reload = true;
+            }
+        }
+
+        assert!(reload);
+        assert!(!streaming);
+        assert_eq!(tape.len(), 3);
+        assert_eq!(tape[0].kind, TuringTapeKind::Tool);
+        assert_eq!(tape[0].status, "completed");
+        assert_eq!(tape[1].kind, TuringTapeKind::Policy);
+        assert_eq!(tape[1].status, "denied");
+        assert_eq!(tape[2].kind, TuringTapeKind::Out);
+        assert_eq!(messages[0].tokens.len(), 2);
+        assert_eq!(messages[0].tokens[0].id, "report:AAPL");
+        assert_eq!(messages[0].tokens[1].id, "xbrl:AAPL");
     }
 }
