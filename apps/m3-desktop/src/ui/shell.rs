@@ -15,6 +15,13 @@ impl MungerWorkbench {
                 INK_HERO,
             ),
             (
+                NavView::Universe,
+                "全市场雷达",
+                "⌘5",
+                self.active_view == NavView::Universe,
+                SKY_FG,
+            ),
+            (
                 NavView::Journal,
                 "决策账本",
                 "⌘4",
@@ -52,37 +59,34 @@ impl MungerWorkbench {
             )
             // Single Command Palette Trigger Bar
             .child(
-                div()
-                    .px_2p5()
-                    .pb_2()
-                    .child(
-                        div()
-                            .id("sidebar-cmd-trigger")
-                            .px_2p5()
-                            .py_1p5()
-                            .rounded_md()
-                            .bg(rgb(0x13131B))
-                            .border_1()
-                            .border_color(rgb(0x222230))
-                            .hover(|s| s.bg(rgb(0x1A1A26)))
-                            .active(|s| s.bg(rgb(BG_ACTIVE)))
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_palette(window);
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .font_family(self.fonts.mono_term.clone())
-                                    .text_size(px(11.))
-                                    .text_color(rgb(INK_MUTED))
-                                    .child("> 跳转 / 命令…"),
-                            )
-                            .child(kbd("⌘K", &self.fonts)),
-                    ),
+                div().px_2p5().pb_2().child(
+                    div()
+                        .id("sidebar-cmd-trigger")
+                        .px_2p5()
+                        .py_1p5()
+                        .rounded_md()
+                        .bg(rgb(0x13131B))
+                        .border_1()
+                        .border_color(rgb(0x222230))
+                        .hover(|s| s.bg(rgb(0x1A1A26)))
+                        .active(|s| s.bg(rgb(BG_ACTIVE)))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_palette(window);
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .font_family(self.fonts.mono_term.clone())
+                                .text_size(px(11.))
+                                .text_color(rgb(INK_MUTED))
+                                .child("> 跳转 / 命令…"),
+                        )
+                        .child(kbd("⌘K", &self.fonts)),
+                ),
             )
             // Portfolio-Level Workspaces (Overview + Decision Journal)
             .child(
@@ -101,63 +105,61 @@ impl MungerWorkbench {
                             .text_color(rgb(INK_MUTED))
                             .child("工作台"),
                     )
-                    .children(
-                        nav_items
-                            .into_iter()
-                            .map(|(view, title, key, selected, rail_col)| {
-                                div()
-                                    .id(gpui::SharedString::from(format!("nav-{key}")))
-                                    .px_2()
-                                    .py_1p5()
-                                    .mb_0p5()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .when(selected, |d| d.bg(rgba(RAIL_SELECTED)))
-                                    .hover(|s| s.bg(rgba(RAIL_HOVER)))
-                                    .active(|s| s.bg(rgba(RAIL_ACTIVE)))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if view == NavView::Baskets {
-                                            this.focus_basket(None);
-                                        } else {
-                                            this.switch_view(view);
-                                        }
-                                        cx.notify();
-                                    }))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .w(px(2.))
-                                                    .h(px(13.))
-                                                    .rounded_full()
-                                                    .when(selected, |d| d.bg(rgb(rail_col))),
-                                            )
-                                            .child(
-                                                div()
-                                                    .font_family(self.fonts.ui.clone())
-                                                    .text_xs()
-                                                    .font_weight(if selected {
-                                                        gpui::FontWeight::SEMIBOLD
-                                                    } else {
-                                                        gpui::FontWeight::NORMAL
-                                                    })
-                                                    .text_color(rgb(if selected {
-                                                        INK_HERO
-                                                    } else {
-                                                        INK_SECONDARY
-                                                    }))
-                                                    .child(title),
-                                            ),
-                                    )
-                                    .child(kbd(key, &self.fonts))
-                            }),
-                    ),
+                    .children(nav_items.into_iter().map(
+                        |(view, title, key, selected, rail_col)| {
+                            div()
+                                .id(gpui::SharedString::from(format!("nav-{key}")))
+                                .px_2()
+                                .py_1p5()
+                                .mb_0p5()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .when(selected, |d| d.bg(rgba(RAIL_SELECTED)))
+                                .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                                .active(|s| s.bg(rgba(RAIL_ACTIVE)))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if view == NavView::Baskets {
+                                        this.focus_basket(None);
+                                    } else {
+                                        this.switch_view(view);
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .w(px(2.))
+                                                .h(px(13.))
+                                                .rounded_full()
+                                                .when(selected, |d| d.bg(rgb(rail_col))),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family(self.fonts.ui.clone())
+                                                .text_xs()
+                                                .font_weight(if selected {
+                                                    gpui::FontWeight::SEMIBOLD
+                                                } else {
+                                                    gpui::FontWeight::NORMAL
+                                                })
+                                                .text_color(rgb(if selected {
+                                                    INK_HERO
+                                                } else {
+                                                    INK_SECONDARY
+                                                }))
+                                                .child(title),
+                                        ),
+                                )
+                                .child(kbd(key, &self.fonts))
+                        },
+                    )),
             )
             // Unified Scrollable Basket Tree (Click header to filter basket; click ticker to open workspace)
             .child(
@@ -183,8 +185,8 @@ impl MungerWorkbench {
                             self.reports.iter().filter(|r| r.bucket == b).collect();
                         let cnt = members.len();
                         let (fg, _, _) = bucket_colors(b);
-                        let bkt_active = self.active_view == NavView::Baskets
-                            && self.basket_filter == Some(b);
+                        let bkt_active =
+                            self.active_view == NavView::Baskets && self.basket_filter == Some(b);
 
                         div()
                             .mb_2()
@@ -266,10 +268,8 @@ impl MungerWorkbench {
                                     );
                                 let dot_col = status_dot_color(rep.status);
                                 let ticker = rep.ticker.clone();
-                                let price_str = fmt_price(
-                                    rep.price.as_ref().map(|p| p.price),
-                                    &rep.currency,
-                                );
+                                let price_str =
+                                    fmt_price(rep.price.as_ref().map(|p| p.price), &rep.currency);
                                 div()
                                     .id(gpui::SharedString::from(format!("pick-{}", rep.ticker)))
                                     .pl_3p5()
@@ -359,6 +359,7 @@ impl MungerWorkbench {
                 format!("{} · {}", self.selected_ticker, selected_name)
             }
             NavView::Journal => "决策账本".to_owned(),
+            NavView::Universe => "全市场雷达 · US Lakehouse L0".to_owned(),
         };
 
         div()
@@ -510,7 +511,11 @@ impl MungerWorkbench {
                                     } else {
                                         INK_PRIMARY
                                     }))
-                                    .child(if self.syncing { "同步中…" } else { "同步" }),
+                                    .child(if self.syncing {
+                                        "同步中…"
+                                    } else {
+                                        "同步"
+                                    }),
                             )
                             .child(kbd("⌘R", &self.fonts)),
                     ),
@@ -519,10 +524,7 @@ impl MungerWorkbench {
 
     pub(super) fn render_statusline(&self) -> gpui::Div {
         let (dot_col, legend) = if self.palette_open {
-            (
-                SKY_FG,
-                "↑/↓ 选择 · ↵ 执行 · esc 关闭命令面板",
-            )
+            (SKY_FG, "↑/↓ 选择 · ↵ 执行 · esc 关闭命令面板")
         } else {
             match self.active_view {
                 NavView::Baskets => (
@@ -540,6 +542,10 @@ impl MungerWorkbench {
                 NavView::Journal => (
                     GOLD_FG,
                     "/ 或 ⌘K 命令面板 · c 复制 journal CLI · esc 返回总览",
+                ),
+                NavView::Universe => (
+                    SKY_FG,
+                    "/ 搜索 · j/k 选择 · ↵ 打开已入池研报 · r 刷新 · ⌘K 命令 · esc 返回总览",
                 ),
             }
         };
@@ -574,10 +580,10 @@ impl MungerWorkbench {
                     .font_family(self.fonts.mono_term.clone())
                     .text_size(px(10.))
                     .text_color(rgb(INK_MUTED))
-                    .child(if self.active_view == NavView::Agent {
-                        "EMBEDDED ALAN · PAPER ONLY"
-                    } else {
-                        "ZERO-LLM · PAPER ONLY"
+                    .child(match self.active_view {
+                        NavView::Agent => "EMBEDDED ALAN · PAPER ONLY",
+                        NavView::Universe => "DUCKDB L0 · ZERO-LLM",
+                        _ => "ZERO-LLM · PAPER ONLY",
                     }),
             )
     }

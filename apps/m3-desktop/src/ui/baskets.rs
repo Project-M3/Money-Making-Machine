@@ -291,9 +291,7 @@ impl MungerWorkbench {
                                 .py_0p5()
                                 .rounded_xs()
                                 .cursor_pointer()
-                                .when(active, |d| {
-                                    d.bg(rgba(bg)).border_1().border_color(rgba(br))
-                                })
+                                .when(active, |d| d.bg(rgba(bg)).border_1().border_color(rgba(br)))
                                 .hover(|s| s.bg(rgba(RAIL_HOVER)))
                                 .flex()
                                 .items_center()
@@ -544,7 +542,11 @@ impl MungerWorkbench {
                             bucket.short_label()
                         )
                     } else {
-                        format!("当前 [{} · {}] 暂无标的。", bucket.code(), bucket.short_label())
+                        format!(
+                            "当前 [{} · {}] 暂无标的。",
+                            bucket.code(),
+                            bucket.short_label()
+                        )
                     };
                     block = block.child(
                         div()
@@ -831,9 +833,10 @@ impl MungerWorkbench {
                         let latest_row = rep.ttm_row.as_ref().or_else(|| rep.annual_rows.last());
                         let price_txt =
                             fmt_price(rep.price.as_ref().map(|p| p.price), &rep.currency);
-                        let oe_txt = latest_row
-                            .map(|r| fmt_money_compact(r.strict_owner_earnings, &rep.currency))
-                            .unwrap_or_else(|| "—".into());
+                        let oe_txt = fmt_money_compact_opt(
+                            latest_row.and_then(|r| r.strict_owner_earnings),
+                            &rep.currency,
+                        );
 
                         block = block.child(
                             div()
@@ -1059,11 +1062,7 @@ impl MungerWorkbench {
                                     BG_SURFACE
                                 }))
                                 .border_1()
-                                .border_color(rgb(if is_cursor {
-                                    INK_HERO
-                                } else {
-                                    BORDER_SUBTLE
-                                }))
+                                .border_color(rgb(if is_cursor { INK_HERO } else { BORDER_SUBTLE }))
                                 .hover(|s| s.bg(rgb(BG_HOVER)))
                                 .cursor_pointer()
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1127,7 +1126,9 @@ impl MungerWorkbench {
                                                 .text_size(px(10.))
                                                 .text_color(rgb(INK_MUTED))
                                                 .truncate()
-                                                .child(format!("边际 {dist_txt} · ROIC {roic_txt}")),
+                                                .child(format!(
+                                                    "边际 {dist_txt} · ROIC {roic_txt}"
+                                                )),
                                         )
                                         .child(badge(
                                             rep.status.label().to_owned(),

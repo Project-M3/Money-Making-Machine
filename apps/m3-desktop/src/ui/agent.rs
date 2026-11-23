@@ -1,11 +1,10 @@
 use super::{
-    AgentMessageRole, AgentUiMessage, DossierTab, MungerWorkbench, NavView, components::*,
-    theme::*,
+    AgentMessageRole, AgentUiMessage, DossierTab, MungerWorkbench, NavView, components::*, theme::*,
 };
 use crate::{
     alan_interrogator::{
-        AcmeEvidenceKind, InterrogatorEvent, M3InterrogatorHandle, TuringTapeEntry,
-        TuringTapeKind, parse_acme_evidence_tokens,
+        AcmeEvidenceKind, InterrogatorEvent, M3InterrogatorHandle, TuringTapeEntry, TuringTapeKind,
+        parse_acme_evidence_tokens,
     },
     model::{Bucket, Dossier, MungerReport},
     store,
@@ -168,7 +167,8 @@ impl MungerWorkbench {
                 tape: &mut self.agent_tape,
                 seq: &mut self.agent_seq,
             };
-            if apply_interrogator_event(&mut slice, &ev, &focus_ticker, &self.reports, &dossier_map) {
+            if apply_interrogator_event(&mut slice, &ev, &focus_ticker, &self.reports, &dossier_map)
+            {
                 reload_disk = true;
             }
         }
@@ -311,11 +311,17 @@ impl MungerWorkbench {
                         div()
                             .flex()
                             .child(
-                                quad("心理学与管理层激励", &dossier.latticework.psychology_incentives)
-                                    .border_r_1()
-                                    .border_color(rgb(BORDER_HAIRLINE)),
+                                quad(
+                                    "心理学与管理层激励",
+                                    &dossier.latticework.psychology_incentives,
+                                )
+                                .border_r_1()
+                                .border_color(rgb(BORDER_HAIRLINE)),
                             )
-                            .child(quad("资本配置历史", &dossier.latticework.capital_allocation)),
+                            .child(quad(
+                                "资本配置历史",
+                                &dossier.latticework.capital_allocation,
+                            )),
                     ),
             );
 
@@ -584,11 +590,7 @@ impl MungerWorkbench {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(CTA_INK))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.start_feynman_interrogation(
-                            &start_ticker,
-                            &start_name,
-                            start_bucket,
-                        );
+                        this.start_feynman_interrogation(&start_ticker, &start_name, start_bucket);
                         cx.notify();
                     }))
                     .child("启动费曼审讯"),
@@ -803,11 +805,7 @@ impl MungerWorkbench {
                                         .px_2()
                                         .py_0p5()
                                         .rounded_sm()
-                                        .bg(if selected {
-                                            rgb(BG_ACTIVE)
-                                        } else {
-                                            rgba(bg)
-                                        })
+                                        .bg(if selected { rgb(BG_ACTIVE) } else { rgba(bg) })
                                         .border_1()
                                         .border_color(rgba(border))
                                         .hover(|s| s.bg(rgb(BG_HOVER)))
@@ -821,8 +819,7 @@ impl MungerWorkbench {
                                             {
                                                 this.agent_expanded_evidence = None;
                                             } else {
-                                                this.agent_expanded_evidence =
-                                                    Some(tok_id.clone());
+                                                this.agent_expanded_evidence = Some(tok_id.clone());
                                             }
                                             cx.notify();
                                         }))

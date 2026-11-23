@@ -176,11 +176,7 @@ impl MungerWorkbench {
                                 .flex()
                                 .px_3()
                                 .py_3()
-                                .bg(rgb(if i % 2 == 0 {
-                                    BG_SURFACE
-                                } else {
-                                    BG_ROW_ALT
-                                }))
+                                .bg(rgb(if i % 2 == 0 { BG_SURFACE } else { BG_ROW_ALT }))
                                 .border_b_1()
                                 .border_color(rgb(BORDER_HAIRLINE))
                                 .child(mono_left(

@@ -7,32 +7,31 @@ mod format;
 mod journal;
 mod palette;
 mod shell;
-mod theme;
 #[cfg(test)]
 mod tests;
+mod theme;
+mod universe;
 
-use format::{
-    build_alan_interrogation_prompt, filter_palette_items, filter_reports_for_basket,
-};
+use format::{build_alan_interrogation_prompt, filter_palette_items, filter_reports_for_basket};
 
 use crate::{
     alan_interrogator::{AcmeEvidenceToken, M3InterrogatorHandle, TuringTapeEntry},
+    lake::{LakeAnnualRow, PeerComparison, UniverseRow, UniverseSummary},
     model::{
         Bucket, DecisionJournal, Dossier, MungerReport, PriceHistorySnapshot, PriceSnapshot,
         SyncStatusFile, ValuationAssumptions,
     },
     store::{self, WorkspacePaths},
+    universe::UniverseSyncReport,
 };
 use gpui::{
     ClipboardItem, Context, FocusHandle, KeyDownEvent, SharedString, Window, div, prelude::*, px,
     rgb, rgba,
 };
 use rust_decimal::Decimal;
-use std::{
-    collections::HashSet,
-    sync::mpsc,
-};
+use std::{collections::HashSet, sync::mpsc};
 use theme::*;
+use universe::UniverseViewState;
 
 #[derive(Clone)]
 pub struct FontRoles {
@@ -47,6 +46,7 @@ pub enum NavView {
     Dossier,
     Agent,
     Journal,
+    Universe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +144,7 @@ pub enum PaletteAction {
     ToggleInspector,
     CopyCli(String, String),
     SyncNow,
+    SyncUniverseNow,
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +202,20 @@ pub struct MungerWorkbench {
     agent_expanded_evidence: Option<String>,
     agent_expanded_tape: Option<usize>,
     agent_seq: usize,
+    universe_state: UniverseViewState,
+    universe_lake_present: bool,
+    universe_summary: Option<UniverseSummary>,
+    universe_rows: Vec<UniverseRow>,
+    universe_strike_zone_ciks: HashSet<String>,
+    universe_selected_cik: Option<String>,
+    universe_selected_row: Option<UniverseRow>,
+    universe_selected_annuals: Vec<LakeAnnualRow>,
+    universe_selected_peers: Option<PeerComparison>,
+    universe_error: Option<String>,
+    universe_syncing: bool,
+    universe_sync_progress: Option<String>,
+    universe_sync_rx: Option<mpsc::Receiver<Result<UniverseSyncReport, String>>>,
+    universe_progress_rx: Option<mpsc::Receiver<String>>,
 }
 
 impl MungerWorkbench {
@@ -259,9 +274,24 @@ impl MungerWorkbench {
             agent_expanded_evidence: None,
             agent_expanded_tape: None,
             agent_seq: 1,
+            universe_state: UniverseViewState::default(),
+            universe_lake_present: false,
+            universe_summary: None,
+            universe_rows: Vec::new(),
+            universe_strike_zone_ciks: HashSet::new(),
+            universe_selected_cik: None,
+            universe_selected_row: None,
+            universe_selected_annuals: Vec::new(),
+            universe_selected_peers: None,
+            universe_error: None,
+            universe_syncing: false,
+            universe_sync_progress: None,
+            universe_sync_rx: None,
+            universe_progress_rx: None,
             paths,
         };
         wb.reload_from_disk();
+        wb.reload_universe_from_lake();
         wb
     }
 
@@ -321,6 +351,9 @@ impl MungerWorkbench {
             if view == NavView::Dossier && self.active_view != NavView::Dossier {
                 self.dossier_tab = DossierTab::Overview;
             }
+            if view != NavView::Universe {
+                self.universe_state.search_focused = false;
+            }
             self.active_view = view;
         }
     }
@@ -362,6 +395,11 @@ impl MungerWorkbench {
         if view != NavView::Agent {
             self.agent_input_focused = false;
         }
+        if view != NavView::Universe {
+            self.universe_state.search_focused = false;
+        } else {
+            self.reload_universe_from_lake();
+        }
         self.active_view = view;
     }
 
@@ -371,6 +409,7 @@ impl MungerWorkbench {
             self.collapsed_baskets.remove(&b);
         }
         self.cursor_index = 0;
+        self.universe_state.search_focused = false;
         self.active_view = NavView::Baskets;
     }
 
@@ -378,6 +417,7 @@ impl MungerWorkbench {
         self.circle_filter = Some(tag);
         self.basket_filter = None;
         self.cursor_index = 0;
+        self.universe_state.search_focused = false;
         self.active_view = NavView::Baskets;
     }
 
@@ -420,11 +460,21 @@ impl MungerWorkbench {
     }
 
     pub fn start_sync(&mut self, cx: &mut Context<Self>) {
-        if self.syncing {
+        if self.syncing || self.universe_syncing {
+            if self.universe_syncing {
+                self.banner = Some((
+                    "全美股 L0 正在后台同步中，请等待完成后再同步自选池".into(),
+                    false,
+                ));
+                cx.notify();
+            }
             return;
         }
         self.syncing = true;
-        self.banner = Some(("正在同步 SEC EDGAR 财报、公开股价与 K 线历史…".into(), false));
+        self.banner = Some((
+            "正在同步 SEC EDGAR 财报、公开股价与 K 线历史…".into(),
+            false,
+        ));
         let root = self.paths.repo_root.clone();
         let (tx, rx) = mpsc::channel();
         self.sync_rx = Some(rx);
@@ -437,8 +487,9 @@ impl MungerWorkbench {
     }
 
     pub fn poll_background_sync(&mut self) -> bool {
+        let dirty = self.poll_universe_sync();
         let Some(rx) = self.sync_rx.as_ref() else {
-            return false;
+            return dirty;
         };
         match rx.try_recv() {
             Ok(Ok(status)) => {
@@ -470,7 +521,7 @@ impl MungerWorkbench {
                 self.banner = Some((format!("同步失败：{err}"), true));
                 true
             }
-            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Empty) => dirty,
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.syncing = false;
                 self.sync_rx = None;
@@ -516,7 +567,11 @@ impl MungerWorkbench {
     }
 
     fn reset_sandbox_to_saved(&mut self) {
-        if let Some(rep) = self.reports.iter().find(|r| r.ticker == self.selected_ticker) {
+        if let Some(rep) = self
+            .reports
+            .iter()
+            .find(|r| r.ticker == self.selected_ticker)
+        {
             self.sandbox_multiple = rep.assumptions.multiple_low;
             self.sandbox_target_return = rep.assumptions.target_return_pct;
             self.sandbox_expected_growth = rep.assumptions.expected_growth_pct;
@@ -553,7 +608,9 @@ impl MungerWorkbench {
         let mut out = Vec::new();
         let order: Vec<Bucket> = match self.baskets_view_mode {
             BasketsViewMode::List => self.visible_baskets_order(),
-            BasketsViewMode::Board => vec![Bucket::Watch, Bucket::Core, Bucket::Out, Bucket::TooHard],
+            BasketsViewMode::Board => {
+                vec![Bucket::Watch, Bucket::Core, Bucket::Out, Bucket::TooHard]
+            }
         };
         for b in order {
             if self.baskets_view_mode == BasketsViewMode::List
@@ -580,6 +637,14 @@ impl MungerWorkbench {
     fn handle_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
         let mods = &ev.keystroke.modifiers;
+
+        if mods.platform && !mods.control && !mods.alt && !mods.shift && key == "5" {
+            self.palette_open = false;
+            self.switch_view(NavView::Universe);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
 
         if mods.platform {
             return;
@@ -687,8 +752,53 @@ impl MungerWorkbench {
             return;
         }
 
+        if self.active_view == NavView::Universe && self.universe_state.search_focused {
+            match key {
+                "escape" => {
+                    self.universe_state.search_focused = false;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "backspace" => {
+                    self.universe_state.query.pop();
+                    self.apply_universe_query_change();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "enter" => {
+                    self.universe_state.search_focused = false;
+                    self.apply_universe_query_change();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                _ => {
+                    if let Some(ch) = ev.keystroke.key_char.as_deref()
+                        && !ch.is_empty()
+                        && !ch.chars().any(char::is_control)
+                    {
+                        self.universe_state.query.push_str(ch);
+                        self.apply_universe_query_change();
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }
+            }
+            return;
+        }
+
         if key == "/" || ev.keystroke.key_char.as_deref() == Some("/") {
-            self.toggle_palette(window);
+            if self.active_view == NavView::Universe {
+                self.universe_state.search_focused = true;
+            } else {
+                self.toggle_palette(window);
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+
+        if key == "u" && !mods.shift {
+            self.switch_view(NavView::Universe);
             cx.stop_propagation();
             cx.notify();
             return;
@@ -873,6 +983,46 @@ impl MungerWorkbench {
                 }
                 _ => {}
             },
+            NavView::Universe => match key {
+                "escape" => {
+                    if !self.universe_state.query.is_empty() {
+                        self.universe_state.query.clear();
+                        self.apply_universe_query_change();
+                    } else {
+                        self.switch_view(NavView::Baskets);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "j" | "down" => {
+                    self.step_universe_cursor(1);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "k" | "up" => {
+                    self.step_universe_cursor(-1);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "r" => {
+                    self.reload_universe_from_lake();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "enter" => {
+                    if let Some(sel) = self.active_universe_row().map(|r| r.ticker.clone())
+                        && self
+                            .reports
+                            .iter()
+                            .any(|r| r.ticker.eq_ignore_ascii_case(&sel))
+                    {
+                        self.select_company(&sel, Some(NavView::Dossier));
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }
+                _ => {}
+            },
         }
     }
 }
@@ -959,11 +1109,14 @@ impl Render for MungerWorkbench {
                                 )
                             })
                             .when(in_company, |d| d.child(self.render_company_shell(cx)))
-                            .when(!in_company, |d| {
+                            .when(self.active_view == NavView::Universe, |d| {
+                                d.child(self.render_universe_view(cx))
+                            })
+                            .when(!in_company && self.active_view != NavView::Universe, |d| {
                                 let content = match self.active_view {
                                     NavView::Baskets => self.render_baskets_view(cx),
                                     NavView::Journal => self.render_journal_view(cx),
-                                    NavView::Dossier | NavView::Agent => div(),
+                                    NavView::Dossier | NavView::Agent | NavView::Universe => div(),
                                 };
                                 d.child(
                                     div()
@@ -977,7 +1130,9 @@ impl Render for MungerWorkbench {
                             .child(self.render_statusline()),
                     ),
             )
-            .when(self.palette_open, |d| d.child(self.render_command_palette(cx)))
+            .when(self.palette_open, |d| {
+                d.child(self.render_command_palette(cx))
+            })
     }
 }
 

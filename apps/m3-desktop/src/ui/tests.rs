@@ -1,9 +1,17 @@
 use super::agent::{AgentPanelSlice, apply_interrogator_event};
+use super::company::roic_unavailable_label;
 use super::format::*;
 use super::theme::*;
+use super::universe::{
+    UniversePreset, UniverseViewState, apply_ui_row_guards, build_scatter_model,
+    format_watch_promote_banner, is_lake_empty, resolve_active_universe_row,
+};
 use super::*;
 use crate::alan_interrogator::{InterrogatorEvent, TuringTapeKind};
-use crate::model::{DataSource, OhlcBar, StrikeZoneStatus, ValuationAssumptions, ValuationSnapshot};
+use crate::lake::{UniverseRow, UniverseSortBy, UniverseSummary};
+use crate::model::{
+    DataSource, OhlcBar, StrikeZoneStatus, ValuationAssumptions, ValuationSnapshot,
+};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 
@@ -50,7 +58,7 @@ fn make_rep(
         ttm_valuation: margin.map(|d| ValuationSnapshot {
             basis_label: "TTM".into(),
             period_end: "2026-09-30".into(),
-            strict_owner_earnings: Decimal::ZERO,
+            strict_owner_earnings: Some(Decimal::ZERO),
             shares_basis: Decimal::ONE,
             owner_earnings_per_share: None,
             market_cap: None,
@@ -120,21 +128,30 @@ fn sort_reports_puts_none_last_in_both_directions() {
     let mut rows_desc = vec![&a, &b, &c];
     sort_reports(&mut rows_desc, SortCol::Roic, false);
     assert_eq!(
-        rows_desc.iter().map(|r| r.ticker.as_str()).collect::<Vec<_>>(),
+        rows_desc
+            .iter()
+            .map(|r| r.ticker.as_str())
+            .collect::<Vec<_>>(),
         vec!["AAPL", "PTC", "DSY.PA"]
     );
 
     let mut rows_asc = vec![&b, &a, &c];
     sort_reports(&mut rows_asc, SortCol::Roic, true);
     assert_eq!(
-        rows_asc.iter().map(|r| r.ticker.as_str()).collect::<Vec<_>>(),
+        rows_asc
+            .iter()
+            .map(|r| r.ticker.as_str())
+            .collect::<Vec<_>>(),
         vec!["PTC", "AAPL", "DSY.PA"]
     );
 
     let mut rows_margin = vec![&b, &a, &c];
     sort_reports(&mut rows_margin, SortCol::Margin, true);
     assert_eq!(
-        rows_margin.iter().map(|r| r.ticker.as_str()).collect::<Vec<_>>(),
+        rows_margin
+            .iter()
+            .map(|r| r.ticker.as_str())
+            .collect::<Vec<_>>(),
         vec!["PTC", "AAPL", "DSY.PA"]
     );
 }
@@ -242,14 +259,12 @@ fn compute_kline_domain_includes_strike_and_handles_empty() {
     ];
 
     let (ymin, ymax, maxv) =
-        compute_kline_domain(&bars, Some(Decimal::from(120)), Some(Decimal::from(145)))
-            .unwrap();
+        compute_kline_domain(&bars, Some(Decimal::from(120)), Some(Decimal::from(145))).unwrap();
     assert!(ymin < 120.0);
     assert!(ymax > 240.0);
     assert_eq!(maxv, 8200);
 
-    let (ymin2, ymax2, _) =
-        compute_kline_domain(&bars, Some(Decimal::from(30)), None).unwrap();
+    let (ymin2, ymax2, _) = compute_kline_domain(&bars, Some(Decimal::from(30)), None).unwrap();
     assert!(ymin2 > 110.0);
     assert!(ymax2 > 240.0);
 }
@@ -376,4 +391,316 @@ fn alan_interrogator_tape_and_evidence_wire_cleanly() {
     assert_eq!(messages[0].tokens.len(), 2);
     assert_eq!(messages[0].tokens[0].id, "report:AAPL");
     assert_eq!(messages[0].tokens[1].id, "xbrl:AAPL");
+}
+
+fn make_universe_row(
+    cik: &str,
+    ticker: &str,
+    years_of_data: usize,
+    roic: Option<i64>,
+    fcf_yield: Option<i64>,
+    distance: Option<i64>,
+    in_watchlist: bool,
+) -> UniverseRow {
+    UniverseRow {
+        ticker: ticker.into(),
+        cik: cik.into(),
+        name: format!("{ticker} Corp."),
+        exchange: "NASDAQ".into(),
+        sic: Some(7372),
+        sic_description: Some("Prepackaged Software".into()),
+        is_financial: false,
+        latest_filing_end: Some("2025-12-31".into()),
+        years_of_data,
+        quality_score: Decimal::from(85),
+        in_price_pool: fcf_yield.is_some(),
+        in_watchlist,
+        bucket_opt: in_watchlist.then_some(Bucket::Watch),
+        latest_price: fcf_yield.map(|_| Decimal::from(100)),
+        strike_price: distance.map(|_| Decimal::from(90)),
+        distance_to_strike_pct: distance.map(Decimal::from),
+        strict_fcf_yield_pct: fcf_yield.map(Decimal::from),
+        roic_5y_avg_pct: roic.map(Decimal::from),
+        roic_5y_stddev_pct: Some(Decimal::from(2)),
+        gross_margin_5y_avg_pct: Some(Decimal::from(68)),
+        gross_margin_5y_stddev_pct: Some(Decimal::from(1)),
+        share_change_3y_pct: Some(Decimal::from(-3)),
+        sbc_to_ocf_pct: Some(Decimal::from(8)),
+        net_debt_to_oe: Some(Decimal::from(0)),
+        strict_owner_earnings: Some(Decimal::from(1_000_000_000i64)),
+        warnings_count: 0,
+        warnings_json: "[]".into(),
+        raw_sha256: Some("deadbeef".into()),
+    }
+}
+
+#[test]
+fn universe_view_state_presets_and_toggles_build_accurate_filters() {
+    let mut state = UniverseViewState::default();
+    assert!(state.is_default());
+    assert!(state.require_5y_history);
+    let f0 = state.to_lake_filter();
+    assert!(f0.exclude_financials);
+    assert_eq!(f0.min_years_of_data, Some(5));
+    assert_eq!(f0.sort_by, UniverseSortBy::QualityScore);
+    assert!(!f0.sort_asc);
+    assert!(f0.query.is_none());
+
+    state.toggle_require_5y_history();
+    assert!(!state.require_5y_history);
+    assert!(!state.is_default());
+    assert_eq!(state.to_lake_filter().min_years_of_data, None);
+
+    state.query = "  software ".into();
+    state.apply_preset(UniversePreset::HighRoicCompounders);
+    assert!(state.require_5y_history);
+    assert!(!state.is_default());
+    let f1 = state.to_lake_filter();
+    assert_eq!(f1.min_roic_5y, Some(Decimal::from(20)));
+    assert_eq!(f1.min_years_of_data, Some(5));
+    assert!(f1.positive_strict_oe_only);
+    assert_eq!(f1.sort_by, UniverseSortBy::Roic5yAvg);
+    assert_eq!(f1.query.as_deref(), Some("software"));
+
+    state.apply_preset(UniversePreset::LowSbcCashCows);
+    assert!(state.require_5y_history);
+    let f2 = state.to_lake_filter();
+    assert_eq!(f2.min_roic_5y, Some(Decimal::from(15)));
+    assert_eq!(f2.max_sbc_to_ocf, Some(Decimal::from(10)));
+    assert_eq!(f2.max_share_change_3y, Some(Decimal::from(2)));
+    assert_eq!(f2.max_net_debt_to_oe, Some(Decimal::from(3)));
+    assert_eq!(f2.min_years_of_data, Some(5));
+    assert_eq!(f2.sort_by, UniverseSortBy::StrictFcfYield);
+
+    state.apply_preset(UniversePreset::StrikeZone);
+    assert!(state.require_5y_history);
+    state.toggle_exclude_financials();
+    let f3 = state.to_lake_filter();
+    assert!(!f3.exclude_financials);
+    assert_eq!(f3.min_years_of_data, Some(5));
+    assert!(f3.strike_zone_only);
+    assert!(f3.in_price_pool_only);
+    assert_eq!(f3.sort_by, UniverseSortBy::DistanceToStrike);
+    assert!(f3.sort_asc);
+
+    state.toggle_sort(UniverseSortBy::DistanceToStrike);
+    assert!(!state.sort_asc);
+    state.toggle_sort(UniverseSortBy::Ticker);
+    assert!(state.sort_asc);
+
+    state.reset();
+    assert!(state.is_default());
+    assert!(state.exclude_financials);
+    assert!(state.require_5y_history);
+
+    let short_hist =
+        make_universe_row("0000000099", "NEWIPO", 3, Some(30), Some(6), Some(5), false);
+    let full_hist = make_universe_row("0000000100", "MATURE", 5, Some(30), Some(6), Some(5), false);
+    let guarded = apply_ui_row_guards(vec![short_hist.clone(), full_hist.clone()], true);
+    assert_eq!(guarded.len(), 1);
+    assert_eq!(guarded[0].cik, "0000000100");
+    assert_eq!(
+        apply_ui_row_guards(vec![short_hist, full_hist], false).len(),
+        2
+    );
+}
+
+#[test]
+fn universe_empty_lake_detection_handles_missing_and_zero_company_states() {
+    assert!(is_lake_empty(false, None));
+    assert!(is_lake_empty(true, None));
+    assert!(is_lake_empty(true, Some(&UniverseSummary::default())));
+    assert!(!is_lake_empty(
+        true,
+        Some(&UniverseSummary {
+            total_companies: 120,
+            ..UniverseSummary::default()
+        })
+    ));
+}
+
+#[test]
+fn universe_scatter_model_clamps_outliers_and_prioritizes_selected_point() {
+    let empty_strikes = HashSet::new();
+    let unpriced = make_universe_row("0000000001", "NOPRICE", 5, Some(25), None, None, false);
+    assert!(build_scatter_model(std::slice::from_ref(&unpriced), &empty_strikes, None).is_none());
+
+    let normal = make_universe_row("0000769397", "ADSK", 8, Some(32), Some(6), Some(15), true);
+    let strike = make_universe_row(
+        "0000000002",
+        "CHEAP",
+        6,
+        Some(22),
+        Some(9),
+        Some(-12),
+        false,
+    );
+    let stale_strike = make_universe_row(
+        "0000000004",
+        "STALE",
+        6,
+        Some(20),
+        Some(8),
+        Some(-18),
+        false,
+    );
+    let outlier = make_universe_row(
+        "0000000003",
+        "HYPER",
+        5,
+        Some(250),
+        Some(45),
+        Some(5),
+        false,
+    );
+
+    let fresh_strikes = HashSet::from([strike.cik.clone()]);
+    let model = build_scatter_model(
+        &[unpriced, outlier, normal, strike, stale_strike],
+        &fresh_strikes,
+        Some("0000769397"),
+    )
+    .unwrap();
+    assert_eq!(model.points.len(), 4);
+    assert!(model.ref_roic_norm.is_some());
+    assert!(model.ref_fcf_norm.is_some());
+    assert!(model.clipped_count >= 1);
+    assert!(model.x_max <= 80.0);
+    assert!(model.y_max <= 25.0);
+
+    // Selected point must be painted last so crosshair + halo sit on top.
+    let last = model.points.last().unwrap();
+    assert_eq!(last.cik, "0000769397");
+    assert_eq!(last.ticker, "ADSK");
+    assert!(last.is_selected);
+    assert!(last.in_watchlist);
+
+    let cheap_pt = model.points.iter().find(|p| p.ticker == "CHEAP").unwrap();
+    assert!(cheap_pt.in_strike_zone);
+    let stale_pt = model.points.iter().find(|p| p.ticker == "STALE").unwrap();
+    assert!(!stale_pt.in_strike_zone);
+
+    let hyper = model.points.iter().find(|p| p.ticker == "HYPER").unwrap();
+    assert!(hyper.clipped);
+    assert!((0.0..=1.0).contains(&hyper.x_norm));
+    assert!((0.0..=1.0).contains(&hyper.y_norm));
+}
+
+#[test]
+fn universe_palette_action_matches_chinese_and_english_queries() {
+    let items = vec![
+        PaletteItem {
+            group: "VIEW".into(),
+            title: "全市场雷达 · US Lakehouse L0".into(),
+            subtitle: "DuckDB 全美股筛选、ROIC × FCF 散点图与一键入观察池".into(),
+            shortcut: Some("⌘5"),
+            dot_color: SKY_FG,
+            action: PaletteAction::SwitchView(NavView::Universe),
+        },
+        PaletteItem {
+            group: "DATA".into(),
+            title: "同步全美股 L0 湖仓 (SEC Bulk + 价格分层)".into(),
+            subtitle: "下载 companyfacts.zip".into(),
+            shortcut: None,
+            dot_color: SKY_FG,
+            action: PaletteAction::SyncUniverseNow,
+        },
+    ];
+
+    let view_hits = filter_palette_items(&items, "全市场雷达");
+    assert_eq!(view_hits.len(), 1);
+    assert_eq!(
+        view_hits[0].action,
+        PaletteAction::SwitchView(NavView::Universe)
+    );
+
+    let l0_hits = filter_palette_items(&items, "l0");
+    assert_eq!(l0_hits.len(), 2);
+}
+
+#[test]
+fn fmt_money_compact_opt_and_roic_note_render_unavailable_values_as_dash() {
+    assert_eq!(fmt_money_compact_opt(None, "USD"), "—");
+    assert_eq!(fmt_money_compact_opt(Some(Decimal::ZERO), "USD"), "$0");
+    assert_eq!(
+        fmt_money_compact_opt(Some(Decimal::from(1_500_000_000i64)), "USD"),
+        "$1.50B"
+    );
+    assert_eq!(
+        fmt_money_compact_opt(Some(Decimal::from(-25_000_000i64)), "USD"),
+        "-$25.0M"
+    );
+
+    assert_eq!(
+        roic_unavailable_label(Some("total_debt_unavailable")),
+        "— (Debt Unavailable)"
+    );
+    assert_eq!(
+        roic_unavailable_label(Some("cash_and_st_unavailable")),
+        "— (Cash Unavailable)"
+    );
+    assert_eq!(
+        roic_unavailable_label(Some("tax_expense_unavailable")),
+        "— (Tax Unavailable)"
+    );
+    assert_eq!(
+        roic_unavailable_label(Some("net_cash_exceeds_book_capital")),
+        "Net Cash > Book Capital"
+    );
+    assert_eq!(roic_unavailable_label(None), "—");
+}
+
+#[test]
+fn resolve_active_universe_row_prefers_matching_drawer_snapshot_copy() {
+    let mut table_row =
+        make_universe_row("0000320193", "AAPL", 8, Some(45), Some(4), Some(10), true);
+    table_row.latest_price = Some(Decimal::from(100));
+    let other_row = make_universe_row("0000769397", "ADSK", 8, Some(32), Some(6), Some(15), false);
+
+    let mut drawer_row = table_row.clone();
+    drawer_row.latest_price = Some(Decimal::from(112));
+
+    let rows = vec![table_row.clone(), other_row.clone()];
+    let resolved = resolve_active_universe_row(Some("0000320193"), Some(&drawer_row), &rows)
+        .expect("should match drawer snapshot row");
+    assert_eq!(resolved.cik, "0000320193");
+    assert_eq!(resolved.latest_price, Some(Decimal::from(112)));
+
+    let mismatched_drawer =
+        resolve_active_universe_row(Some("0000769397"), Some(&drawer_row), &rows)
+            .expect("should fall back to matching row in table when drawer cik differs");
+    assert_eq!(mismatched_drawer.cik, "0000769397");
+    assert_eq!(mismatched_drawer.ticker, "ADSK");
+}
+
+#[test]
+fn format_watch_promote_banner_surfaces_duckdb_and_reload_errors() {
+    let ok = format_watch_promote_banner("ADSK", "Autodesk", None, None, None, false);
+    assert!(!ok.1);
+    assert!(ok.0.contains("ADSK"));
+
+    let syncing = format_watch_promote_banner("ADSK", "Autodesk", None, None, None, true);
+    assert!(!syncing.1);
+    assert!(syncing.0.contains("后台全市场同步完成后"));
+
+    let lake_err =
+        format_watch_promote_banner("ADSK", "Autodesk", None, Some("duckdb locked"), None, false);
+    assert!(lake_err.1);
+    assert!(lake_err.0.contains("duckdb locked"));
+
+    let reload_err =
+        format_watch_promote_banner("ADSK", "Autodesk", None, None, Some("bad snapshot"), false);
+    assert!(reload_err.1);
+    assert!(reload_err.0.contains("bad snapshot"));
+
+    let disk_err = format_watch_promote_banner(
+        "ADSK",
+        "Autodesk",
+        Some("report corrupt"),
+        None,
+        None,
+        false,
+    );
+    assert!(disk_err.1);
+    assert!(disk_err.0.contains("report corrupt"));
 }

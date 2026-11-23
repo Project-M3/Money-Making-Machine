@@ -1,6 +1,4 @@
-use super::{
-    DossierTab, MungerWorkbench, NavView, components::*, format::*, theme::*,
-};
+use super::{DossierTab, MungerWorkbench, NavView, components::*, format::*, theme::*};
 use crate::{
     calculator,
     model::{
@@ -10,6 +8,17 @@ use crate::{
 };
 use gpui::{Context, div, prelude::*, px, rgb, rgba};
 use rust_decimal::Decimal;
+
+pub(super) fn roic_unavailable_label(roic_note: Option<&str>) -> String {
+    match roic_note {
+        Some("net_cash_exceeds_book_capital") => "Net Cash > Book Capital".into(),
+        Some("total_debt_unavailable") => "— (Debt Unavailable)".into(),
+        Some("cash_and_st_unavailable") => "— (Cash Unavailable)".into(),
+        Some("tax_expense_unavailable") => "— (Tax Unavailable)".into(),
+        Some(note) => format!("— ({note})"),
+        None => "—".into(),
+    }
+}
 
 impl MungerWorkbench {
     pub(super) fn render_company_shell(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -331,12 +340,15 @@ impl MungerWorkbench {
             let (s3_str, s3_pol) = fmt_pct_clean(rep.share_change_3y_pct, true);
             let s3_col = share_delta_color(rep.share_change_3y_pct, s3_pol);
             let (s5_str, s5_pol) = fmt_pct_clean(rep.share_change_5y_pct, true);
-            let s5_col = if s5_pol == 0 { INK_MUTED } else { INK_SECONDARY };
+            let s5_col = if s5_pol == 0 {
+                INK_MUTED
+            } else {
+                INK_SECONDARY
+            };
 
             let (ym_str, ym_pol) =
                 fmt_pct_clean(val_opt.and_then(|v| v.strict_fcf_yield_mcap_pct), false);
-            let (ye_str, _) =
-                fmt_pct_clean(val_opt.and_then(|v| v.strict_fcf_yield_ev_pct), false);
+            let (ye_str, _) = fmt_pct_clean(val_opt.and_then(|v| v.strict_fcf_yield_ev_pct), false);
             let ytd_callout = rep.latest_ytd.as_ref().map(|y| {
                 let q_part = match (
                     &y.latest_quarter_label,
@@ -353,8 +365,8 @@ impl MungerWorkbench {
                 format!(
                     "{}: OCF {} vs CapEx {}{}",
                     y.period_label,
-                    fmt_money_compact(y.ocf, &rep.currency),
-                    fmt_money_compact(y.capex, &rep.currency),
+                    fmt_money_compact_opt(y.ocf, &rep.currency),
+                    fmt_money_compact_opt(y.capex, &rep.currency),
                     q_part
                 )
             });
@@ -373,11 +385,11 @@ impl MungerWorkbench {
                             .child(kv_line("5Y 毛利率", gm_display, INK_PRIMARY, &self.fonts))
                             .child(kv_line(
                                 "当期净负债",
-                                fmt_money_compact(row.net_debt, &rep.currency),
-                                if row.net_debt <= Decimal::ZERO {
-                                    EMERALD_FG
-                                } else {
-                                    INK_PRIMARY
+                                fmt_money_compact_opt(row.net_debt, &rep.currency),
+                                match row.net_debt {
+                                    Some(v) if v <= Decimal::ZERO => EMERALD_FG,
+                                    Some(_) => INK_PRIMARY,
+                                    None => INK_MUTED,
                                 },
                                 &self.fonts,
                             ))
@@ -413,31 +425,37 @@ impl MungerWorkbench {
                             ))
                             .child(kv_line(
                                 "严苛 OE (OCF−CapEx−SBC)",
-                                fmt_money_compact(row.strict_owner_earnings, &rep.currency),
-                                if row.strict_owner_earnings > Decimal::ZERO {
-                                    EMERALD_FG
-                                } else {
-                                    CORAL_FG
+                                fmt_money_compact_opt(row.strict_owner_earnings, &rep.currency),
+                                match row.strict_owner_earnings {
+                                    Some(v) if v > Decimal::ZERO => EMERALD_FG,
+                                    Some(_) => CORAL_FG,
+                                    None => INK_MUTED,
                                 },
                                 &self.fonts,
                             ))
                             .child(kv_line(
                                 "严苛 FCF% (市值 / EV)",
                                 format!("{ym_str} / {ye_str}"),
-                                if ym_pol < 0 { CORAL_FG } else { INK_PRIMARY },
+                                if ym_pol < 0 {
+                                    CORAL_FG
+                                } else if ym_str == "—" && ye_str == "—" {
+                                    INK_MUTED
+                                } else {
+                                    INK_PRIMARY
+                                },
                                 &self.fonts,
                             ))
                             .child(ratio_bar(
                                 "CapEx 开支".into(),
                                 fmt_money_compact(row.capex, &rep.currency),
-                                row.capex,
+                                Some(row.capex),
                                 row.ocf,
                                 GOLD_FG,
                                 &self.fonts,
                             ))
                             .child(ratio_bar(
                                 "SBC 激励".into(),
-                                fmt_money_compact(row.sbc, &rep.currency),
+                                fmt_money_compact_opt(row.sbc, &rep.currency),
                                 row.sbc,
                                 row.ocf,
                                 CORAL_FG,
@@ -445,8 +463,8 @@ impl MungerWorkbench {
                             ))
                             .child(ratio_bar(
                                 "剩余严苛 OE".into(),
-                                fmt_money_compact(row.strict_owner_earnings, &rep.currency),
-                                row.strict_owner_earnings.max(Decimal::ZERO),
+                                fmt_money_compact_opt(row.strict_owner_earnings, &rep.currency),
+                                row.strict_owner_earnings.map(|v| v.max(Decimal::ZERO)),
                                 row.ocf,
                                 EMERALD_FG,
                                 &self.fonts,
@@ -455,10 +473,14 @@ impl MungerWorkbench {
                                 "回购 / SBC",
                                 format!(
                                     "{} / {}",
-                                    fmt_money_compact(row.buybacks, &rep.currency),
-                                    fmt_money_compact(row.sbc, &rep.currency)
+                                    fmt_money_compact_opt(row.buybacks, &rep.currency),
+                                    fmt_money_compact_opt(row.sbc, &rep.currency)
                                 ),
-                                INK_SECONDARY,
+                                if row.buybacks.is_some() || row.sbc.is_some() {
+                                    INK_SECONDARY
+                                } else {
+                                    INK_MUTED
+                                },
                                 &self.fonts,
                             ))
                             .when_some(ytd_callout, |d, note| {
@@ -857,20 +879,18 @@ impl MungerWorkbench {
             .child(
                 prop_section("BASKET · 归入篮子", &self.fonts)
                     .child(
-                        div()
-                            .flex()
-                            .gap_1p5()
-                            .children([Bucket::Core, Bucket::Watch].into_iter().map(|b| {
+                        div().flex().gap_1p5().children(
+                            [Bucket::Core, Bucket::Watch].into_iter().map(|b| {
                                 self.render_prop_bucket_btn(&rep.ticker, rep.bucket, b, cx)
-                            })),
+                            }),
+                        ),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .gap_1p5()
-                            .children([Bucket::Out, Bucket::TooHard].into_iter().map(|b| {
+                        div().flex().gap_1p5().children(
+                            [Bucket::Out, Bucket::TooHard].into_iter().map(|b| {
                                 self.render_prop_bucket_btn(&rep.ticker, rep.bucket, b, cx)
-                            })),
+                            }),
+                        ),
                     ),
             )
             // 4. Circle Tag Linkage
@@ -942,7 +962,10 @@ impl MungerWorkbench {
         let (fg, bg, br) = bucket_colors(target);
         let t = ticker.to_owned();
         div()
-            .id(gpui::SharedString::from(format!("prop-bkt-{}", target.code())))
+            .id(gpui::SharedString::from(format!(
+                "prop-bkt-{}",
+                target.code()
+            )))
             .flex_1()
             .min_w_0()
             .px_2()
@@ -1082,11 +1105,7 @@ impl MungerWorkbench {
                 let row_el = if is_ttm {
                     row_el.bg(rgba(EMERALD_BG))
                 } else {
-                    row_el.bg(rgb(if i % 2 == 0 {
-                        BG_SURFACE
-                    } else {
-                        BG_ROW_ALT
-                    }))
+                    row_el.bg(rgb(if i % 2 == 0 { BG_SURFACE } else { BG_ROW_ALT }))
                 };
                 let (gm_str, _) = fmt_pct_clean(r.gross_margin_pct, false);
                 let (roic_str, _) = fmt_pct_clean(r.roic_pct, false);
@@ -1146,25 +1165,33 @@ impl MungerWorkbench {
                         &self.fonts,
                     ))
                     .child(mono_right(
-                        fmt_money_compact(r.sbc, &rep.currency),
+                        fmt_money_compact_opt(r.sbc, &rep.currency),
                         74.,
-                        INK_SECONDARY,
-                        &self.fonts,
-                    ))
-                    .child(mono_right(
-                        fmt_money_compact(r.strict_owner_earnings, &rep.currency),
-                        88.,
-                        if r.strict_owner_earnings > Decimal::ZERO {
-                            EMERALD_FG
+                        if r.sbc.is_some() {
+                            INK_SECONDARY
                         } else {
-                            CORAL_FG
+                            INK_MUTED
                         },
                         &self.fonts,
                     ))
                     .child(mono_right(
-                        fmt_money_compact(r.buybacks, &rep.currency),
+                        fmt_money_compact_opt(r.strict_owner_earnings, &rep.currency),
+                        88.,
+                        match r.strict_owner_earnings {
+                            Some(v) if v > Decimal::ZERO => EMERALD_FG,
+                            Some(_) => CORAL_FG,
+                            None => INK_MUTED,
+                        },
+                        &self.fonts,
+                    ))
+                    .child(mono_right(
+                        fmt_money_compact_opt(r.buybacks, &rep.currency),
                         80.,
-                        INK_SECONDARY,
+                        if r.buybacks.is_some() {
+                            INK_SECONDARY
+                        } else {
+                            INK_MUTED
+                        },
                         &self.fonts,
                     ))
                     .child(
@@ -1221,11 +1248,8 @@ impl MungerWorkbench {
                 let roic_str = r
                     .roic_pct
                     .map(|x| format!("{x:.2}%"))
-                    .unwrap_or_else(|| "Net Cash > Book Capital".into());
-                let mcap = v
-                    .market_cap
-                    .map(|m| fmt_money_compact(m, &rep.currency))
-                    .unwrap_or_else(|| "—".into());
+                    .unwrap_or_else(|| roic_unavailable_label(r.roic_note.as_deref()));
+                let mcap = fmt_money_compact_opt(v.market_cap, &rep.currency);
                 let yield_s = fmt_pct_clean(v.strict_fcf_yield_mcap_pct, false).0;
                 let imp_s = fmt_pct_clean(v.implied_growth_for_target_pct, true).0;
                 vec![
@@ -1235,19 +1259,19 @@ impl MungerWorkbench {
                             "Strict_OE = OCF({}) - CapEx({}) - SBC({}) = {}",
                             fmt_money_compact(r.ocf, &rep.currency),
                             fmt_money_compact(r.capex, &rep.currency),
-                            fmt_money_compact(r.sbc, &rep.currency),
-                            fmt_money_compact(r.strict_owner_earnings, &rep.currency)
+                            fmt_money_compact_opt(r.sbc, &rep.currency),
+                            fmt_money_compact_opt(r.strict_owner_earnings, &rep.currency)
                         ),
                     ),
                     (
                         "投入资本回报率",
                         format!(
                             "ROIC = NOPAT({}) / IC(Debt {} + Eq {} - Cash {} = {}) = {}",
-                            fmt_money_compact(r.nopat, &rep.currency),
-                            fmt_money_compact(r.total_debt, &rep.currency),
+                            fmt_money_compact_opt(r.nopat, &rep.currency),
+                            fmt_money_compact_opt(r.total_debt, &rep.currency),
                             fmt_money_compact(r.equity, &rep.currency),
-                            fmt_money_compact(r.cash_and_st, &rep.currency),
-                            fmt_money_compact(r.invested_capital, &rep.currency),
+                            fmt_money_compact_opt(r.cash_and_st, &rep.currency),
+                            fmt_money_compact_opt(r.invested_capital, &rep.currency),
                             roic_str
                         ),
                     ),
@@ -1264,7 +1288,7 @@ impl MungerWorkbench {
                         format!(
                             "Implied_g = Target({}%) - Strict_OE/MCap({} / {} = {yield_s}) = {imp_s}",
                             rep.assumptions.target_return_pct,
-                            fmt_money_compact(v.strict_owner_earnings, &rep.currency),
+                            fmt_money_compact_opt(v.strict_owner_earnings, &rep.currency),
                             mcap,
                         ),
                     ),
@@ -1276,14 +1300,11 @@ impl MungerWorkbench {
                     "Strict_OE = OCF({}) - CapEx({}) - SBC({}) = {}",
                     fmt_money_compact(r.ocf, &rep.currency),
                     fmt_money_compact(r.capex, &rep.currency),
-                    fmt_money_compact(r.sbc, &rep.currency),
-                    fmt_money_compact(r.strict_owner_earnings, &rep.currency)
+                    fmt_money_compact_opt(r.sbc, &rep.currency),
+                    fmt_money_compact_opt(r.strict_owner_earnings, &rep.currency)
                 ),
             )],
-            _ => vec![(
-                "STATUS",
-                "无一手结构化财务事实（绝不由 LLM 补全）。".into(),
-            )],
+            _ => vec![("STATUS", "无一手结构化财务事实（绝不由 LLM 补全）。".into())],
         };
 
         div()
@@ -1341,16 +1362,10 @@ impl MungerWorkbench {
                             .flex_col()
                             .gap_2()
                             .child(inspector_kv("SOURCE_FILE", raw_file_path, &self.fonts))
-                            .child(inspector_kv(
-                                "RAW_SHA256",
-                                sha_full.to_owned(),
-                                &self.fonts,
-                            ))
+                            .child(inspector_kv("RAW_SHA256", sha_full.to_owned(), &self.fonts))
                             .child(inspector_kv(
                                 "FILING_END",
-                                rep.latest_filing_end
-                                    .clone()
-                                    .unwrap_or_else(|| "—".into()),
+                                rep.latest_filing_end.clone().unwrap_or_else(|| "—".into()),
                                 &self.fonts,
                             ))
                             .child(inspector_kv(
@@ -1463,11 +1478,7 @@ impl MungerWorkbench {
                             .flex()
                             .px_4()
                             .py_2()
-                            .bg(rgb(if i % 2 == 0 {
-                                BG_SURFACE
-                            } else {
-                                BG_ROW_ALT
-                            }))
+                            .bg(rgb(if i % 2 == 0 { BG_SURFACE } else { BG_ROW_ALT }))
                             .border_b_1()
                             .border_color(rgb(BORDER_HAIRLINE))
                             .font_family(self.fonts.mono_term.clone())

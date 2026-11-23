@@ -18,7 +18,9 @@ pub fn compute_today_pulse(reports: &[MungerReport]) -> TodayPulse {
                     strike_tickers.push(r.ticker.clone());
                 }
                 if r.status == StrikeZoneStatus::WarningBlocked
-                    || r.warnings.iter().any(|w| w.severity == WarningSeverity::Red)
+                    || r.warnings
+                        .iter()
+                        .any(|w| w.severity == WarningSeverity::Red)
                 {
                     red_core_tickers.push(r.ticker.clone());
                 }
@@ -65,7 +67,9 @@ pub fn filter_reports_for_basket<'a>(
             StatusQuickFilter::StrikeOnly => r.status == StrikeZoneStatus::InStrikeZone,
             StatusQuickFilter::WarnedOnly => {
                 r.status == StrikeZoneStatus::WarningBlocked
-                    || r.warnings.iter().any(|w| w.severity == WarningSeverity::Red)
+                    || r.warnings
+                        .iter()
+                        .any(|w| w.severity == WarningSeverity::Red)
             }
         })
         .collect();
@@ -166,6 +170,14 @@ pub(super) fn fmt_money_compact(val: Decimal, currency: &str) -> String {
         format!("{sign}{pfx}{:.1}M", abs / million)
     } else {
         format!("{sign}{pfx}{:.0}", abs)
+    }
+}
+
+/// Formats an optional monetary amount compactly, returning `"—"` when unavailable.
+pub(super) fn fmt_money_compact_opt(val: Option<Decimal>, currency: &str) -> String {
+    match val {
+        Some(v) => fmt_money_compact(v, currency),
+        None => "—".into(),
     }
 }
 
@@ -331,4 +343,3 @@ pub(super) fn primary_row(rep: &MungerReport, prefer_ttm: bool) -> Option<&Annua
         rep.annual_rows.last()
     }
 }
-

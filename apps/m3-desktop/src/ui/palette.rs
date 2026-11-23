@@ -92,6 +92,14 @@ impl MungerWorkbench {
             dot_color: GOLD_FG,
             action: PaletteAction::SwitchView(NavView::Journal),
         });
+        items.push(PaletteItem {
+            group: "VIEW".into(),
+            title: "全市场雷达 · US Lakehouse L0".into(),
+            subtitle: "DuckDB 全美股筛选、ROIC × FCF 散点图与一键入观察池".into(),
+            shortcut: Some("⌘5"),
+            dot_color: SKY_FG,
+            action: PaletteAction::SwitchView(NavView::Universe),
+        });
         for b in Bucket::display_order() {
             let (fg, _, _) = bucket_colors(b);
             items.push(PaletteItem {
@@ -171,7 +179,10 @@ impl MungerWorkbench {
         });
         items.push(PaletteItem {
             group: "CLI".into(),
-            title: format!("复制 CLI: ./apps/m3-desktop/m3 report {}", self.selected_ticker),
+            title: format!(
+                "复制 CLI: ./apps/m3-desktop/m3 report {}",
+                self.selected_ticker
+            ),
             subtitle: "写入系统剪贴板".into(),
             shortcut: Some("c"),
             dot_color: INK_SECONDARY,
@@ -187,6 +198,14 @@ impl MungerWorkbench {
             shortcut: Some("⌘R"),
             dot_color: EMERALD_FG,
             action: PaletteAction::SyncNow,
+        });
+        items.push(PaletteItem {
+            group: "DATA".into(),
+            title: "同步全美股 L0 湖仓 (SEC Bulk + 价格分层)".into(),
+            subtitle: "下载 companyfacts.zip 并计算 5,000+ 美股质量评分与 Top 400 报价".into(),
+            shortcut: None,
+            dot_color: SKY_FG,
+            action: PaletteAction::SyncUniverseNow,
         });
         items
     }
@@ -246,11 +265,19 @@ impl MungerWorkbench {
                 self.start_sync(cx);
                 return;
             }
+            PaletteAction::SyncUniverseNow => {
+                self.switch_view(NavView::Universe);
+                self.start_universe_sync(false, cx);
+                return;
+            }
         }
         cx.notify();
     }
 
-    pub(super) fn render_command_palette(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    pub(super) fn render_command_palette(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let all_items = self.build_palette_items();
         let filtered = filter_palette_items(&all_items, &self.palette_query);
         let active_idx = self.palette_cursor.min(filtered.len().saturating_sub(1));
@@ -407,9 +434,7 @@ impl MungerWorkbench {
                                                                 self.fonts.mono_term.clone(),
                                                             )
                                                             .text_xs()
-                                                            .font_weight(
-                                                                gpui::FontWeight::SEMIBOLD,
-                                                            )
+                                                            .font_weight(gpui::FontWeight::SEMIBOLD)
                                                             .text_color(rgb(if selected {
                                                                 INK_HERO
                                                             } else {
@@ -428,9 +453,7 @@ impl MungerWorkbench {
                                                     ),
                                             ),
                                     )
-                                    .when_some(item.shortcut, |d, sc| {
-                                        d.child(kbd(sc, &self.fonts))
-                                    })
+                                    .when_some(item.shortcut, |d, sc| d.child(kbd(sc, &self.fonts)))
                             })),
                     ),
             )

@@ -2,16 +2,17 @@ mod alan_interrogator;
 mod calculator;
 mod cli;
 mod edgar;
+mod lake;
 mod market;
 mod model;
 mod store;
 mod ui;
+mod universe;
 
 use anyhow::Result;
 use gpui::{
     App, Application, Bounds, Menu, MenuItem, SharedString, TitlebarOptions,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, point, prelude::*, px,
-    size,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, point, prelude::*, px, size,
 };
 use std::{borrow::Cow, time::Duration};
 use store::WorkspacePaths;

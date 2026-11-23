@@ -55,7 +55,10 @@ impl MungerWorkbench {
             None => "暂无本地 K 线缓存".into(),
         };
 
-        let peak_high = bars.iter().map(|b| b.high).fold(Decimal::ZERO, Decimal::max);
+        let peak_high = bars
+            .iter()
+            .map(|b| b.high)
+            .fold(Decimal::ZERO, Decimal::max);
         let drawdown_pct = match (last_bar, peak_high) {
             (Some(b), pk) if pk > Decimal::ZERO => Some(((b.close - pk) / pk) * Decimal::from(100)),
             _ => None,
@@ -301,7 +304,10 @@ impl MungerWorkbench {
                                                 let body_h = (y_o - y_c).abs().max(1.2);
                                                 window.paint_quad(fill(
                                                     bounds(
-                                                        point(px(cx_p - body_w * 0.5), px(body_top)),
+                                                        point(
+                                                            px(cx_p - body_w * 0.5),
+                                                            px(body_top),
+                                                        ),
                                                         size(px(body_w), px(body_h)),
                                                     ),
                                                     rgb(col),
@@ -317,7 +323,11 @@ impl MungerWorkbench {
                                                         point(px(cx_p - body_w * 0.5), px(vy)),
                                                         size(px(body_w), px(vh)),
                                                     ),
-                                                    rgba(if is_up { EMERALD_VOL } else { CORAL_VOL }),
+                                                    rgba(if is_up {
+                                                        EMERALD_VOL
+                                                    } else {
+                                                        CORAL_VOL
+                                                    }),
                                                 ));
                                             }
 

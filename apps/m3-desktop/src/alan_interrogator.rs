@@ -190,11 +190,13 @@ impl TreeSnapshot {
         }
 
         let mut dirs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        dirs.entry(String::new()).or_default();
+        {
+            let root = dirs.entry(String::new()).or_default();
+            root.insert("computed".to_string());
+            root.insert("dossiers".to_string());
+        }
         dirs.entry("computed".to_string()).or_default();
         dirs.entry("dossiers".to_string()).or_default();
-        dirs.get_mut("").unwrap().insert("computed".to_string());
-        dirs.get_mut("").unwrap().insert("dossiers".to_string());
 
         let mut path_ids = HashMap::new();
         path_ids.insert(String::new(), 0);
@@ -516,7 +518,10 @@ impl M3ToolPolicyHook {
                     {
                         return Some("human_judgment");
                     }
-                    if matches!(lk.as_str(), "computed" | "computed_path" | "computed_report") {
+                    if matches!(
+                        lk.as_str(),
+                        "computed" | "computed_path" | "computed_report"
+                    ) {
                         return Some("computed/");
                     }
                     if matches!(lk.as_str(), "raw" | "raw_path" | "sec_raw") {
@@ -576,12 +581,7 @@ impl M3ToolPolicyHook {
 }
 
 impl ToolPolicyHook for M3ToolPolicyHook {
-    fn evaluate(
-        &self,
-        tool_name: &str,
-        args: &Value,
-        capability: ToolCapability,
-    ) -> HookDecision {
+    fn evaluate(&self, tool_name: &str, args: &Value, capability: ToolCapability) -> HookDecision {
         if let Some(target) = Self::inspect_value_for_redline(args) {
             return HookDecision::Deny(format!(
                 "红线拦截：{target} 属于不可篡改事实源或人类判断主权区，严禁 Alan 写入或覆盖。"
@@ -758,14 +758,7 @@ impl Tool for M3ReportTool {
             let report: MungerReport = if force_recompute {
                 store::recompute_ticker(&paths, &ticker)?
             } else {
-                let computed_path = paths.computed_report_path(&ticker);
-                if computed_path.exists()
-                    && let Ok(cached) = store::read_json::<MungerReport>(&computed_path)
-                {
-                    cached
-                } else {
-                    store::recompute_ticker(&paths, &ticker)?
-                }
+                store::load_or_recompute_ticker(&paths, &ticker)?
             };
 
             let ns_path = format!(
@@ -1053,7 +1046,7 @@ impl M3InterrogatorHandle {
         let fs_worker = Arc::clone(&fs);
         let events_worker = Arc::clone(&events);
 
-        std::thread::Builder::new()
+        if let Err(err) = std::thread::Builder::new()
             .name("m3-alan-interrogator".to_string())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
@@ -1233,13 +1226,16 @@ impl M3InterrogatorHandle {
                     let _ = app.shutdown().await;
                 });
             })
-            .expect("spawn m3-alan-interrogator thread");
-
-        Self {
-            fs,
-            cmd_tx,
-            events,
+        {
+            push_event(
+                &events,
+                InterrogatorEvent::Error {
+                    message: format!("无法启动 Alan 审讯线程: {err}"),
+                },
+            );
         }
+
+        Self { fs, cmd_tx, events }
     }
 
     pub fn refresh_fs(&self) {
@@ -1247,7 +1243,13 @@ impl M3InterrogatorHandle {
         let _ = self.cmd_tx.send(InterrogatorCommand::RefreshFs);
     }
 
-    pub fn submit(&self, ticker: impl Into<String>, name: impl Into<String>, bucket: Bucket, question: impl Into<String>) {
+    pub fn submit(
+        &self,
+        ticker: impl Into<String>,
+        name: impl Into<String>,
+        bucket: Bucket,
+        question: impl Into<String>,
+    ) {
         let q = question.into();
         if q.trim().is_empty() {
             return;
@@ -1380,7 +1382,12 @@ pub fn parse_acme_evidence_tokens(
             if let Some((kind, ticker)) = parse_bracket_token(inner, default_ticker) {
                 let id = format!("{}:{ticker}", kind.prefix());
                 if seen.insert(id.clone()) {
-                    tokens.push(build_evidence_token(kind.clone(), &ticker, reports, dossiers));
+                    tokens.push(build_evidence_token(
+                        kind.clone(),
+                        &ticker,
+                        reports,
+                        dossiers,
+                    ));
                 }
                 cleaned.push_str(&format!("[{}:{ticker}]", kind.prefix()));
             } else {
@@ -1418,14 +1425,25 @@ fn parse_bracket_token(inner: &str, default_ticker: &str) -> Option<(AcmeEvidenc
         return Some((AcmeEvidenceKind::Xbrl, default_ticker.to_ascii_uppercase()));
     }
     if lower == "report" && !default_ticker.trim().is_empty() {
-        return Some((AcmeEvidenceKind::Report, default_ticker.to_ascii_uppercase()));
+        return Some((
+            AcmeEvidenceKind::Report,
+            default_ticker.to_ascii_uppercase(),
+        ));
     }
     if lower == "dossier" && !default_ticker.trim().is_empty() {
-        return Some((AcmeEvidenceKind::Dossier, default_ticker.to_ascii_uppercase()));
+        return Some((
+            AcmeEvidenceKind::Dossier,
+            default_ticker.to_ascii_uppercase(),
+        ));
     }
     let (prefix, sym) = inner.split_once(':')?;
     let sym = sym.trim().to_ascii_uppercase();
-    if sym.is_empty() || sym.len() > 16 || !sym.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+    if sym.is_empty()
+        || sym.len() > 16
+        || !sym
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
         return None;
     }
     match prefix.trim().to_ascii_lowercase().as_str() {
@@ -1557,8 +1575,8 @@ fn build_evidence_token(
 mod tests {
     use super::*;
     use crate::model::{
-        AnnualFinancials, Bucket, DataSource, DecisionJournal, FieldProvenance, PriceSnapshot,
-        RawCompanyFactsSummary, ValuationAssumptions, WatchlistFile, CompanyEntry,
+        AnnualFinancials, Bucket, CompanyEntry, DataSource, DecisionJournal, FieldProvenance,
+        PriceSnapshot, RawCompanyFactsSummary, ValuationAssumptions, WatchlistFile,
     };
     use alan_llm::{GenerationResponse, MockLlmProvider, TokenUsage, ToolCall};
     use alan_os_host::embed::LlmClient;
@@ -1568,10 +1586,7 @@ mod tests {
     use std::time::Duration;
 
     fn temp_m3_workspace(label: &str) -> (PathBuf, WorkspacePaths) {
-        let dir = std::env::temp_dir().join(format!(
-            "m3-alan-test-{label}-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("m3-alan-test-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let paths = WorkspacePaths::from_root(dir.clone());
         std::fs::create_dir_all(&paths.workbench_dir).unwrap();
@@ -1618,7 +1633,8 @@ mod tests {
         store::save_journal(&paths, &journal).unwrap();
 
         let facts = RawCompanyFactsSummary {
-            schema_version: 1,
+            schema_version: crate::edgar::SEC_FACTS_SCHEMA_VERSION,
+            extractor_version: crate::edgar::SEC_EXTRACTOR_VERSION,
             ticker: "AAPL".into(),
             entity_name: "Apple Inc.".into(),
             cik: "0000320193".into(),
@@ -1638,7 +1654,7 @@ mod tests {
                 capex: Decimal::from(10_000_000_000i64),
                 sbc: Decimal::from(12_000_000_000i64),
                 buybacks: Decimal::from(90_000_000_000i64),
-                cash_and_st: Decimal::from(65_000_000_000i64),
+                cash_and_st: Some(Decimal::from(65_000_000_000i64)),
                 total_debt: Decimal::from(100_000_000_000i64),
                 equity: Decimal::from(60_000_000_000i64),
                 diluted_shares: Decimal::from(15_200_000_000i64),
@@ -1675,7 +1691,8 @@ mod tests {
             name: "Apple Inc.".into(),
             updated_at: "2026-11-18".into(),
             draft_source: "manual_seed".into(),
-            three_sentence_business: "端到端软硬件生态锁定高留存用户并用回购放大每股股东盈余。".into(),
+            three_sentence_business: "端到端软硬件生态锁定高留存用户并用回购放大每股股东盈余。"
+                .into(),
             latticework: Latticework {
                 microeconomics: "生态转换成本高".into(),
                 ecology: "端侧 AI 与服务黏性".into(),
@@ -1816,7 +1833,11 @@ mod tests {
             HookDecision::Allow
         ));
         assert!(matches!(
-            hook.evaluate("m3_report", &json!({"ticker": "AAPL"}), ToolCapability::Read),
+            hook.evaluate(
+                "m3_report",
+                &json!({"ticker": "AAPL"}),
+                ToolCapability::Read
+            ),
             HookDecision::Allow
         ));
     }
@@ -2040,8 +2061,16 @@ mod tests {
             &dossiers,
         );
         assert_eq!(cleaned, "参考 AAPL 现金流与 [xbrl:AAPL] 数据");
-        assert!(tokens.iter().any(|t| t.id == "xbrl:AAPL" && t.summary.contains("XBRL 底表")));
-        assert!(tokens.iter().any(|t| t.id == "report:AAPL" && t.summary.contains("Apple Inc.")));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| t.id == "xbrl:AAPL" && t.summary.contains("XBRL 底表"))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| t.id == "report:AAPL" && t.summary.contains("Apple Inc."))
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

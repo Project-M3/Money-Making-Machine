@@ -1,10 +1,139 @@
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+pub(crate) fn parse_raw_json_decimal_token(raw_token: &str) -> Result<Option<Decimal>, String> {
+    let trimmed = raw_token.trim();
+    if trimmed == "null" {
+        return Ok(None);
+    }
+    if trimmed.starts_with('"') {
+        let s: String =
+            serde_json::from_str(trimmed).map_err(|e| format!("invalid decimal string: {e}"))?;
+        let inner = s.trim();
+        if inner.is_empty() {
+            return Ok(None);
+        }
+        return parse_decimal_token(inner).map(Some);
+    }
+    parse_decimal_token(trimmed).map(Some)
+}
+
+pub(crate) fn parse_decimal_token(token: &str) -> Result<Decimal, String> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return Err("empty decimal value".to_owned());
+    }
+    let (negative, unsigned) = if let Some(rest) = trimmed.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = trimmed.strip_prefix('+') {
+        (false, rest)
+    } else {
+        (false, trimmed)
+    };
+    if unsigned.is_empty() {
+        return Err(format!("invalid decimal {token}: missing digits"));
+    }
+
+    let (mantissa_str, exp) = match unsigned.find(['e', 'E']) {
+        Some(idx) => {
+            let exp_part = &unsigned[idx + 1..];
+            let exp_digits = exp_part.strip_prefix(['+', '-']).unwrap_or(exp_part);
+            if exp_digits.is_empty() || !exp_digits.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(format!("invalid scientific exponent in decimal {token}"));
+            }
+            let parsed_exp = exp_part
+                .parse::<i64>()
+                .map_err(|e| format!("scientific exponent overflow in decimal {token}: {e}"))?;
+            (&unsigned[..idx], parsed_exp)
+        }
+        None => (unsigned, 0i64),
+    };
+
+    let (int_str, frac_str) = match mantissa_str.find('.') {
+        Some(dot) => (&mantissa_str[..dot], &mantissa_str[dot + 1..]),
+        None => (mantissa_str, ""),
+    };
+    if (int_str.is_empty() && frac_str.is_empty())
+        || !int_str.bytes().all(|b| b.is_ascii_digit())
+        || !frac_str.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(format!("invalid decimal {token}"));
+    }
+
+    let frac_len = i64::try_from(frac_str.len())
+        .map_err(|_| format!("fractional digits overflow in decimal {token}"))?;
+    let mut digits = String::with_capacity(int_str.len() + frac_str.len());
+    digits.push_str(int_str);
+    digits.push_str(frac_str);
+
+    let trimmed_leading = digits.trim_start_matches('0');
+    if trimmed_leading.is_empty() {
+        return Ok(Decimal::ZERO);
+    }
+    let sig_digits = trimmed_leading.trim_end_matches('0');
+    let stripped_trailing_zeros = trimmed_leading.len() - sig_digits.len();
+    let trailing_zeros_i64 = i64::try_from(stripped_trailing_zeros)
+        .map_err(|_| format!("exponent overflow in decimal {token}"))?;
+    let power10 = exp
+        .checked_sub(frac_len)
+        .and_then(|v| v.checked_add(trailing_zeros_i64))
+        .ok_or_else(|| format!("exponent overflow in decimal {token}"))?;
+
+    if power10 < -28 {
+        return Err(format!(
+            "decimal {token} exceeds maximum 28-decimal-place exact precision"
+        ));
+    }
+
+    let fixed = if power10 >= 0 {
+        let zeros =
+            usize::try_from(power10).map_err(|_| format!("decimal {token} overflows Decimal"))?;
+        if sig_digits.len().saturating_add(zeros) > 29 {
+            return Err(format!("decimal {token} overflows 96-bit Decimal"));
+        }
+        let mut s = String::with_capacity(usize::from(negative) + sig_digits.len() + zeros);
+        if negative {
+            s.push('-');
+        }
+        s.push_str(sig_digits);
+        s.extend(std::iter::repeat_n('0', zeros));
+        s
+    } else {
+        let scale = usize::try_from(-power10)
+            .map_err(|_| format!("decimal {token} exceeds scale bounds"))?;
+        if sig_digits.len() <= scale {
+            let lead_zeros = scale - sig_digits.len();
+            let mut s = String::with_capacity(usize::from(negative) + 2 + scale);
+            if negative {
+                s.push('-');
+            }
+            s.push_str("0.");
+            s.extend(std::iter::repeat_n('0', lead_zeros));
+            s.push_str(sig_digits);
+            s
+        } else {
+            let split = sig_digits.len() - scale;
+            if sig_digits.len() > 29 {
+                return Err(format!("decimal {token} overflows 96-bit Decimal"));
+            }
+            let mut s = String::with_capacity(usize::from(negative) + sig_digits.len() + 1);
+            if negative {
+                s.push('-');
+            }
+            s.push_str(&sig_digits[..split]);
+            s.push('.');
+            s.push_str(&sig_digits[split..]);
+            s
+        }
+    };
+
+    Decimal::from_str_exact(&fixed).map_err(|e| format!("invalid decimal {token}: {e}"))
+}
+
 pub mod serde_decimal {
+    use super::parse_raw_json_decimal_token;
     use rust_decimal::Decimal;
     use serde::{Deserialize, Deserializer, Serializer, de};
-    use std::str::FromStr;
 
     pub fn serialize<S>(value: &Decimal, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -17,23 +146,17 @@ pub mod serde_decimal {
     where
         D: Deserializer<'de>,
     {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::String(s) => Decimal::from_str(s.trim()).map_err(de::Error::custom),
-            serde_json::Value::Number(n) => {
-                Decimal::from_str(&n.to_string()).map_err(de::Error::custom)
-            }
-            other => Err(de::Error::custom(format!(
-                "expected decimal string or number, got {other}"
-            ))),
-        }
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        parse_raw_json_decimal_token(raw.get())
+            .map_err(de::Error::custom)?
+            .ok_or_else(|| de::Error::custom("expected decimal string or number, got null/empty"))
     }
 }
 
 pub mod serde_decimal_opt {
+    use super::parse_raw_json_decimal_token;
     use rust_decimal::Decimal;
     use serde::{Deserialize, Deserializer, Serializer, de};
-    use std::str::FromStr;
 
     pub fn serialize<S>(value: &Option<Decimal>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -49,26 +172,11 @@ pub mod serde_decimal_opt {
     where
         D: Deserializer<'de>,
     {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::Null => Ok(None),
-            serde_json::Value::String(s) => {
-                let trimmed = s.trim();
-                if trimmed.is_empty() {
-                    Ok(None)
-                } else {
-                    Decimal::from_str(trimmed)
-                        .map(Some)
-                        .map_err(de::Error::custom)
-                }
-            }
-            serde_json::Value::Number(n) => Decimal::from_str(&n.to_string())
-                .map(Some)
-                .map_err(de::Error::custom),
-            other => Err(de::Error::custom(format!(
-                "expected optional decimal string or number, got {other}"
-            ))),
-        }
+        let raw_opt = Option::<Box<serde_json::value::RawValue>>::deserialize(deserializer)?;
+        let Some(raw) = raw_opt else {
+            return Ok(None);
+        };
+        parse_raw_json_decimal_token(raw.get()).map_err(de::Error::custom)
     }
 }
 
@@ -135,7 +243,7 @@ pub enum DataSource {
     Manual,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValuationAssumptions {
     #[serde(with = "serde_decimal")]
     pub multiple_low: Decimal,
@@ -149,7 +257,7 @@ pub struct ValuationAssumptions {
     pub strike_price_override: Option<Decimal>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompanyEntry {
     pub ticker: String,
     pub name: String,
@@ -164,7 +272,7 @@ pub struct CompanyEntry {
     pub assumptions: ValuationAssumptions,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchlistFile {
     pub schema_version: u32,
     pub benchmark_symbol: String,
@@ -179,6 +287,7 @@ pub struct FieldProvenance {
     pub source_tag: String,
     #[serde(default)]
     pub filed: Option<String>,
+    #[serde(default)]
     pub period_end: String,
     #[serde(default)]
     pub note: Option<String>,
@@ -208,8 +317,8 @@ pub struct AnnualFinancials {
     pub sbc: Decimal,
     #[serde(with = "serde_decimal")]
     pub buybacks: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub cash_and_st: Decimal,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub cash_and_st: Option<Decimal>,
     #[serde(with = "serde_decimal")]
     pub total_debt: Decimal,
     #[serde(with = "serde_decimal")]
@@ -229,16 +338,16 @@ pub struct YtdPeriodFinancials {
     pub end: String,
     #[serde(default)]
     pub filed: Option<String>,
-    #[serde(with = "serde_decimal")]
-    pub revenue: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub ocf: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub capex: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub sbc: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub buybacks: Decimal,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub revenue: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub ocf: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub capex: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub sbc: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub buybacks: Option<Decimal>,
     #[serde(default)]
     pub latest_quarter_label: Option<String>,
     #[serde(default, with = "serde_decimal_opt")]
@@ -273,8 +382,8 @@ pub struct TtmFinancials {
     pub sbc: Decimal,
     #[serde(with = "serde_decimal")]
     pub buybacks: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub cash_and_st: Decimal,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub cash_and_st: Option<Decimal>,
     #[serde(with = "serde_decimal")]
     pub total_debt: Decimal,
     #[serde(with = "serde_decimal")]
@@ -291,6 +400,8 @@ pub struct TtmFinancials {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawCompanyFactsSummary {
     pub schema_version: u32,
+    #[serde(default)]
+    pub extractor_version: u32,
     pub ticker: String,
     pub entity_name: String,
     pub cik: String,
@@ -332,10 +443,10 @@ pub struct AnnualMetricRow {
     pub gross_margin_pct: Option<Decimal>,
     #[serde(with = "serde_decimal")]
     pub ebit: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub nopat: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub invested_capital: Decimal,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub nopat: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub invested_capital: Option<Decimal>,
     #[serde(default, with = "serde_decimal_opt")]
     pub roic_pct: Option<Decimal>,
     #[serde(default)]
@@ -348,20 +459,20 @@ pub struct AnnualMetricRow {
     pub capex: Decimal,
     #[serde(with = "serde_decimal")]
     pub fcf: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub sbc: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub strict_owner_earnings: Decimal,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub sbc: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub strict_owner_earnings: Option<Decimal>,
     #[serde(default, with = "serde_decimal_opt")]
     pub sbc_to_ocf_pct: Option<Decimal>,
-    #[serde(with = "serde_decimal")]
-    pub buybacks: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub cash_and_st: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub total_debt: Decimal,
-    #[serde(with = "serde_decimal")]
-    pub net_debt: Decimal,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub buybacks: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub cash_and_st: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub total_debt: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub net_debt: Option<Decimal>,
     #[serde(with = "serde_decimal")]
     pub equity: Decimal,
     #[serde(with = "serde_decimal")]
@@ -414,8 +525,8 @@ impl StrikeZoneStatus {
 pub struct ValuationSnapshot {
     pub basis_label: String,
     pub period_end: String,
-    #[serde(with = "serde_decimal")]
-    pub strict_owner_earnings: Decimal,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub strict_owner_earnings: Option<Decimal>,
     #[serde(with = "serde_decimal")]
     pub shares_basis: Decimal,
     #[serde(default, with = "serde_decimal_opt")]
@@ -651,4 +762,54 @@ pub struct PriceHistorySnapshot {
     pub fetched_at_ms: u64,
     pub source_url: String,
     pub bars: Vec<OhlcBar>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Deserialize)]
+    struct SampleDec {
+        #[serde(with = "serde_decimal")]
+        req: Decimal,
+        #[serde(default, with = "serde_decimal_opt")]
+        opt: Option<Decimal>,
+    }
+
+    #[test]
+    fn raw_value_decimal_serde_preserves_bare_json_number_precision_without_f64() {
+        let json = r#"{
+            "req": 123456789012345678901.23456789,
+            "opt": 0.1234567890123456789012345
+        }"#;
+        let parsed: SampleDec = serde_json::from_str(json).expect("parse exact JSON numbers");
+        assert_eq!(
+            parsed.req.to_string(),
+            "123456789012345678901.23456789",
+            "must preserve 29 digits beyond IEEE-754 f64 15-17 digit limit"
+        );
+        assert_eq!(
+            parsed.opt.expect("opt").to_string(),
+            "0.1234567890123456789012345"
+        );
+
+        let sci: SampleDec = serde_json::from_str(r#"{"req": 1.234567890123456789e6, "opt": ""}"#)
+            .expect("parse scientific token and empty string");
+        assert_eq!(sci.req.to_string(), "1234567.890123456789");
+        assert_eq!(sci.opt, None);
+    }
+
+    #[test]
+    fn parse_decimal_token_normalizes_scientific_exponents_and_rejects_excess_precision() {
+        assert_eq!(
+            parse_decimal_token("0.00000000000000000000000000001e1").unwrap(),
+            Decimal::new(1, 28)
+        );
+        assert_eq!(parse_decimal_token("1.25e2").unwrap(), Decimal::from(125));
+        assert_eq!(parse_decimal_token("-0.0000e-40").unwrap(), Decimal::ZERO);
+        assert!(parse_decimal_token("0.00000000000000000000000000001").is_err());
+        assert!(parse_decimal_token("1e-29").is_err());
+        assert!(parse_decimal_token("1e30").is_err());
+        assert!(parse_decimal_token("NaN").is_err());
+    }
 }

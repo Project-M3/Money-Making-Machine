@@ -225,25 +225,31 @@ pub(super) fn section_header(title: &str, subtitle: String, fonts: &FontRoles) -
         )
 }
 
-
 pub(super) fn ratio_bar(
     label: String,
     right_label: String,
-    amount: Decimal,
+    amount: Option<Decimal>,
     base: Decimal,
     color: u32,
     fonts: &FontRoles,
 ) -> gpui::Div {
-    let pct = if base > Decimal::ZERO {
-        let raw = (amount.max(Decimal::ZERO) / base) * Decimal::from(100);
-        raw.min(Decimal::from(100))
-            .to_string()
-            .parse::<f32>()
-            .unwrap_or(0.0)
+    let fill_px = amount.map(|amt| {
+        let pct = if base > Decimal::ZERO {
+            let raw = (amt.max(Decimal::ZERO) / base) * Decimal::from(100);
+            raw.min(Decimal::from(100))
+                .to_string()
+                .parse::<f32>()
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        (pct * 1.1).clamp(2.0, 110.0)
+    });
+    let value_color = if amount.is_some() {
+        INK_PRIMARY
     } else {
-        0.0
+        INK_MUTED
     };
-    let fill_px = (pct * 1.1).clamp(2.0, 110.0);
     div()
         .mt_2()
         .flex()
@@ -266,7 +272,9 @@ pub(super) fn ratio_bar(
                 .h(px(6.))
                 .rounded_full()
                 .bg(rgb(BG_WELL))
-                .child(div().w(px(fill_px)).h_full().rounded_full().bg(rgb(color))),
+                .when_some(fill_px, |d, w| {
+                    d.child(div().w(px(w)).h_full().rounded_full().bg(rgb(color)))
+                }),
         )
         .child(
             div()
@@ -275,7 +283,7 @@ pub(super) fn ratio_bar(
                 .text_right()
                 .font_family(fonts.mono_num.clone())
                 .text_xs()
-                .text_color(rgb(INK_PRIMARY))
+                .text_color(rgb(value_color))
                 .child(right_label),
         )
 }
