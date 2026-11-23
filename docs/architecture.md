@@ -32,7 +32,8 @@ Money-Making-Machine/
 │   │   ├── calculator.rs      # 确定性查理计算器与预警引擎
 │   │   ├── store.rs           # 原子持久化与全量同步协调
 │   │   ├── cli.rs             # 结构化 JSON CLI 处理
-│   │   └── ui.rs              # 4 视图暖纸桌面工作台与交互沙盒
+│   │   ├── alan_interrogator.rs # 进程内 EmbeddedAlan V2 审讯台与红线策略钩子
+│   │   └── ui/                # 模块化 GPUI 工作台视图（总览 / 公司卡片 / Alan 审讯台 / 决策账本）
 │   ├── build.sh               # 构建并打包 M3.app（不再构建 m3-paper）
 │   └── m3                     # CLI 包装脚本
 ├── workbench/                 # [Git 跟踪] 人类与 Alan 协作的长期研究资产
