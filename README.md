@@ -35,6 +35,7 @@
 - [Agent 数据与控制接口](docs/agent-interface.md)：结构化命令（`status / sync / report / dossier / add / journal`）与文件契约
 - [芒格人机审讯工作流](docs/munger-workflow.md)：能力圈过滤、跨学科格栅、事前验尸与费曼答辩协议
 - [技术架构方向](docs/architecture.md)：四层架构、`workbench/` 与 `data/munger/` 目录边界
+- [v2 演进架构与里程碑设计](docs/v2-architecture.md)：全美股 DuckDB/Parquet 湖仓、事件驱动流、隐空间综合与 Alan Deep Research 蓝图（设计阶段）
 - [AGENTS.md](AGENTS.md)：工程纪律、算术与 LLM 隔离、研究与安全边界
 - [决策地图](.scratch/quant-validation/map.md)：战略转向记录与归档研究索引
 - 历史归档（已冻结）：[SMA20 历史筛选](docs/research/sma20-history-review.md) · [资金费率测算](docs/research/funding-carry-review.md) · [首次 GUI 模拟复盘](docs/research/paper-soak-review.md)
