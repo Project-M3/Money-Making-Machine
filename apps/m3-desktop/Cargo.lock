@@ -45,7 +45,8 @@ dependencies = [
 
 [[package]]
 name = "alan-agent-engine"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-agent-protocol",
  "alan-ap",
@@ -83,7 +84,8 @@ dependencies = [
 
 [[package]]
 name = "alan-agent-protocol"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "chrono",
  "serde",
@@ -93,7 +95,8 @@ dependencies = [
 
 [[package]]
 name = "alan-agentfs"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-ap",
  "alan-knowledge",
@@ -104,7 +107,8 @@ dependencies = [
 
 [[package]]
 name = "alan-ap"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "async-trait",
  "serde",
@@ -115,11 +119,13 @@ dependencies = [
 
 [[package]]
 name = "alan-auth"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
  "chrono",
+ "dirs 7.0.0",
  "libc",
  "rand 0.10.3",
  "reqwest 0.13.5",
@@ -136,7 +142,8 @@ dependencies = [
 
 [[package]]
 name = "alan-hostfs"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-ap",
  "async-trait",
@@ -146,7 +153,8 @@ dependencies = [
 
 [[package]]
 name = "alan-kernel"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-ap",
  "async-trait",
@@ -157,7 +165,8 @@ dependencies = [
 
 [[package]]
 name = "alan-knowledge"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "hex",
  "serde",
@@ -168,7 +177,8 @@ dependencies = [
 
 [[package]]
 name = "alan-llm"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-agent-protocol",
  "alan-auth",
@@ -188,7 +198,8 @@ dependencies = [
 
 [[package]]
 name = "alan-llmfs"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-ap",
  "alan-llm",
@@ -200,7 +211,8 @@ dependencies = [
 
 [[package]]
 name = "alan-os-host"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-agent-engine",
  "alan-agent-protocol",
@@ -230,7 +242,8 @@ dependencies = [
 
 [[package]]
 name = "alan-routefs"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-ap",
  "async-trait",
@@ -241,7 +254,8 @@ dependencies = [
 
 [[package]]
 name = "alan-service-manager"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-agent-engine",
  "alan-agentfs",
@@ -270,7 +284,8 @@ dependencies = [
 
 [[package]]
 name = "alan-shell"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-ap",
  "serde_json",
@@ -279,7 +294,8 @@ dependencies = [
 
 [[package]]
 name = "alan-tools"
-version = "0.1.0"
+version = "0.1.4"
+source = "git+https://github.com/realmorrisliu/alan.git?tag=v0.1.4#91902bdb90c9a12bfecaba67eed09cdc6e37c57e"
 dependencies = [
  "alan-agent-engine",
  "alan-agent-protocol",
