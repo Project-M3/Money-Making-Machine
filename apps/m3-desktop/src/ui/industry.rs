@@ -2,7 +2,8 @@ use super::{
     AgentMessageRole, AlanReplyTarget, IndustryInputFocus, MungerWorkbench, NavView, components::*,
     theme::*,
 };
-use crate::{
+use gpui::{ClipboardItem, Context, div, prelude::*, px, rgb, rgba};
+use m3_core::{
     alan_interrogator::{compose_feynman_quiz_turn, compose_industry_tutor_turn},
     budget::ThemeCluster,
     events,
@@ -12,7 +13,6 @@ use crate::{
     lake::{LakeDb, UniverseRow},
     store::WorkspacePaths,
 };
-use gpui::{ClipboardItem, Context, div, prelude::*, px, rgb, rgba};
 use rust_decimal::Decimal;
 use std::sync::mpsc;
 

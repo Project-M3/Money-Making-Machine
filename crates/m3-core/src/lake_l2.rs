@@ -386,6 +386,45 @@ impl LakeDb {
     }
 }
 
+/// Build a zero-usage [`BudgetStatusReport`] from `workbench/budget.json` when `m3.duckdb` does
+/// not yet exist.
+pub fn fallback_budget_status_report(paths: &WorkspacePaths) -> Result<BudgetStatusReport> {
+    let config = budget::load_budget_config(paths)?;
+    let month_utc = chrono::Utc::now().format("%Y-%m").to_string();
+    let remaining_monthly_usd = config.monthly_budget_usd.max(Decimal::ZERO).normalize();
+    let remaining_monthly_tokens = config.monthly_token_limit;
+    let auto_trigger_remaining_weekly = if config.auto_trigger_enabled {
+        config.weekly_auto_quota
+    } else {
+        0
+    };
+    Ok(BudgetStatusReport {
+        config,
+        usage: MonthlyBudgetUsage {
+            month_utc,
+            total_runs: 0,
+            completed_runs: 0,
+            blocked_runs: 0,
+            failed_runs: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cost_usd: Decimal::ZERO,
+            weekly_auto_runs: 0,
+        },
+        remaining_monthly_usd,
+        remaining_monthly_tokens,
+        auto_trigger_remaining_weekly,
+    })
+}
+
+/// Load [`BudgetStatusReport`] from `m3.duckdb` if present, falling back to config-only defaults.
+pub fn load_budget_status_report(paths: &WorkspacePaths) -> Result<BudgetStatusReport> {
+    match LakeDb::open_read_only_if_exists(paths)? {
+        Some(db) => db.budget_status_report(paths),
+        None => fallback_budget_status_report(paths),
+    }
+}
+
 fn read_research_run_row(row: &duckdb::Row<'_>) -> duckdb::Result<ResearchRunRow> {
     let run_id: String = row.get(0)?;
     let ticker: String = row.get(1)?;

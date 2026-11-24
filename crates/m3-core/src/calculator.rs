@@ -765,7 +765,7 @@ pub(crate) fn unresolved_share_basis_warning(ticker: &str) -> WarningFlag {
     }
 }
 
-pub(crate) fn derive_strike_status(
+pub fn derive_strike_status(
     bucket: Bucket,
     has_annuals: bool,
     has_valid_price: bool,

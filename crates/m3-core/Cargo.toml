@@ -1,0 +1,33 @@
+[package]
+name = "m3-core"
+version = "0.3.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Core financial arithmetic, SEC EDGAR/DuckDB lakehouse, EmbeddedAlan, and storage abstractions for Project M3"
+homepage = "https://m3.thinksmart.systems"
+repository = "https://github.com/Project-M3/Money-Making-Machine"
+publish = false
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+duckdb = { version = "1", features = ["bundled", "parquet", "json", "rust_decimal"] }
+flate2 = "1"
+log = "0.4"
+rayon = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "gzip", "json", "rustls-tls"] }
+rust_decimal = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+tar = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+zip = { version = "9.5", default-features = false, features = ["deflate"] }
+alan-os-host = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4", default-features = false, features = ["provider-openrouter", "provider-openai", "provider-magpie", "provider-vertex"] }
+alan-agent-engine = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4", default-features = false }
+alan-ap = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4" }
+alan-shell = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4" }
+
+[dev-dependencies]
+alan-llm = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4", default-features = false, features = ["mock"] }

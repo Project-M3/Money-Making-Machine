@@ -1,6 +1,7 @@
 //! Compile-time Chinese/English UI localization (`UiLang`).
 
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 
 /// Supported desktop UI languages.
@@ -46,6 +47,7 @@ impl UiLang {
                 return lang;
             }
         }
+        #[cfg(target_os = "macos")]
         if let Ok(out) = Command::new("/usr/bin/defaults")
             .args(["read", "-g", "AppleLanguages"])
             .stdin(Stdio::null())

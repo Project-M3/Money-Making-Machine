@@ -1,6 +1,6 @@
 use super::{FontRoles, theme::*};
-use crate::model::{AnnualMetricRow, WarningFlag, WarningSeverity};
 use gpui::{MouseButton, SharedString, Window, div, prelude::*, px, rgb, rgba};
+use m3_core::model::{AnnualMetricRow, WarningFlag, WarningSeverity};
 use rust_decimal::Decimal;
 
 pub(super) fn pixel_m3_mark(cell_px: f32) -> gpui::Div {
@@ -290,7 +290,7 @@ pub(super) fn ratio_bar(
 
 pub(super) fn roic_sparkline_for(
     rows: &[AnnualMetricRow],
-    lang: crate::i18n::UiLang,
+    lang: m3_core::i18n::UiLang,
     fonts: &FontRoles,
 ) -> gpui::Div {
     let slice: Vec<&AnnualMetricRow> = rows
@@ -622,12 +622,12 @@ pub(super) fn prose_block(title: &str, body: &str, fonts: &FontRoles) -> gpui::D
 
 #[allow(dead_code)]
 pub(super) fn render_warning_panel(warnings: &[WarningFlag], fonts: &FontRoles) -> gpui::Div {
-    render_warning_panel_for(warnings, crate::i18n::UiLang::Zh, fonts)
+    render_warning_panel_for(warnings, m3_core::i18n::UiLang::Zh, fonts)
 }
 
 pub(super) fn render_warning_panel_for(
     warnings: &[WarningFlag],
-    lang: crate::i18n::UiLang,
+    lang: m3_core::i18n::UiLang,
     fonts: &FontRoles,
 ) -> gpui::Div {
     div()

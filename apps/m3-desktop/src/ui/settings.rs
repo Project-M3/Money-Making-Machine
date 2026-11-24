@@ -1,11 +1,11 @@
 use super::{MungerWorkbench, components::*, format::*, theme::*};
-use crate::{
+use gpui::{Context, div, prelude::*, px, rgb, rgba};
+use m3_core::{
     app_config,
     budget::BudgetConfig,
     i18n::UiLang,
     update::{self, ReleaseChannel},
 };
-use gpui::{Context, div, prelude::*, px, rgb, rgba};
 use rust_decimal::Decimal;
 
 const ALAN_SETUP_CMD: &str = "alan connection add openrouter --profile main && alan connection set-secret main && alan connection default set main";

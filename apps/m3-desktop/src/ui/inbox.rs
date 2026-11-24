@@ -6,7 +6,8 @@ use super::{
     theme::*,
     universe::{UniverseSearchMode, format_sic_line},
 };
-use crate::{
+use gpui::{Context, div, prelude::*, px, rgb, rgba};
+use m3_core::{
     events::{EventCatchupOptions, catchup_events_with_progress, fetch_company_10k_profile},
     i18n::UiLang,
     industry::{self, IndustryStatus},
@@ -16,7 +17,6 @@ use crate::{
     model::{Bucket, WarningSeverity},
     store::{self, WorkspacePaths},
 };
-use gpui::{Context, div, prelude::*, px, rgb, rgba};
 use rust_decimal::Decimal;
 use std::{
     sync::mpsc,
@@ -38,7 +38,7 @@ pub enum InboxFilter {
 }
 
 impl InboxFilter {
-    pub fn label_for(self, lang: crate::i18n::UiLang) -> &'static str {
+    pub fn label_for(self, lang: m3_core::i18n::UiLang) -> &'static str {
         match self {
             Self::Unread => lang.t("未读", "Unread"),
             Self::All => lang.t("全部", "All"),
@@ -50,7 +50,7 @@ impl InboxFilter {
     }
 
     pub fn label(self) -> &'static str {
-        self.label_for(crate::i18n::UiLang::Zh)
+        self.label_for(m3_core::i18n::UiLang::Zh)
     }
 
     pub fn all() -> [Self; 6] {
@@ -142,7 +142,7 @@ pub fn step_inbox_selection(
 /// Returns `(label, fg, bg, border)` styling for a signal kind in the given language.
 pub fn signal_kind_badge_for(
     kind: SignalKind,
-    lang: crate::i18n::UiLang,
+    lang: m3_core::i18n::UiLang,
 ) -> (&'static str, u32, u32, u32) {
     match kind {
         SignalKind::Discovery => (
@@ -175,13 +175,13 @@ pub fn signal_kind_badge_for(
 /// Returns `(label, fg, bg, border)` styling for a signal kind.
 #[allow(dead_code)]
 pub fn signal_kind_badge(kind: SignalKind) -> (&'static str, u32, u32, u32) {
-    signal_kind_badge_for(kind, crate::i18n::UiLang::Zh)
+    signal_kind_badge_for(kind, m3_core::i18n::UiLang::Zh)
 }
 
 /// Returns `(label, fg, bg, border)` styling for a signal triage status in the given language.
 pub fn signal_status_badge_for(
     status: SignalStatus,
-    lang: crate::i18n::UiLang,
+    lang: m3_core::i18n::UiLang,
 ) -> (&'static str, u32, u32, u32) {
     match status {
         SignalStatus::Unread => (lang.t("未读", "Unread"), SKY_FG, SKY_BG, SKY_BORDER),
@@ -210,13 +210,13 @@ pub fn signal_status_badge_for(
 /// Returns `(label, fg, bg, border)` styling for a signal triage status.
 #[allow(dead_code)]
 pub fn signal_status_badge(status: SignalStatus) -> (&'static str, u32, u32, u32) {
-    signal_status_badge_for(status, crate::i18n::UiLang::Zh)
+    signal_status_badge_for(status, m3_core::i18n::UiLang::Zh)
 }
 
 /// Formats the monthly AI budget watermark for the Inbox KPI ribbon & sidebar dock.
 pub fn budget_watermark_summary_for(
     report: Option<&BudgetStatusReport>,
-    lang: crate::i18n::UiLang,
+    lang: m3_core::i18n::UiLang,
 ) -> (String, u32) {
     let prefix = lang.t("本月 AI 预算", "AI Budget");
     let Some(r) = report else {
@@ -240,7 +240,7 @@ pub fn budget_watermark_summary_for(
 /// Formats the monthly AI budget watermark for the Inbox KPI ribbon (`本月 AI 预算 $X.XX / $10.00`).
 #[allow(dead_code)]
 pub fn budget_watermark_summary(report: Option<&BudgetStatusReport>) -> (String, u32) {
-    budget_watermark_summary_for(report, crate::i18n::UiLang::Zh)
+    budget_watermark_summary_for(report, m3_core::i18n::UiLang::Zh)
 }
 
 /// Evaluates whether startup/background auto-catchup should be skipped.
@@ -366,7 +366,7 @@ impl MungerWorkbench {
                     self.reload_inbox_from_lake();
                     self.banner = Some((
                         match self.lang {
-                            crate::i18n::UiLang::Zh => format!(
+                            m3_core::i18n::UiLang::Zh => format!(
                                 "L1 事件流追平完成 · 新增公告 {} / 新闻 {} / 索引 {} 片段 / 信号 {}（未读 {} · {} Flagship Token）",
                                 report.sec_filings_ingested,
                                 report.news_events_ingested,
@@ -375,7 +375,7 @@ impl MungerWorkbench {
                                 report.summary.unread_signals,
                                 report.flagship_tokens_used,
                             ),
-                            crate::i18n::UiLang::En => format!(
+                            m3_core::i18n::UiLang::En => format!(
                                 "L1 catch-up complete · +{} filings / +{} news / {} chunks / {} signals ({} unread · {} Flagship Tokens)",
                                 report.sec_filings_ingested,
                                 report.news_events_ingested,
@@ -727,8 +727,8 @@ impl MungerWorkbench {
             Ok(false) => {
                 self.banner = Some((
                     match self.lang {
-                        crate::i18n::UiLang::Zh => format!("信号 {signal_id} 不存在或未变更"),
-                        crate::i18n::UiLang::En => {
+                        m3_core::i18n::UiLang::Zh => format!("信号 {signal_id} 不存在或未变更"),
+                        m3_core::i18n::UiLang::En => {
                             format!("Signal {signal_id} missing or unchanged")
                         }
                     },
@@ -792,10 +792,10 @@ impl MungerWorkbench {
                 self.reload_inbox_from_lake();
                 self.banner = Some((
                     match self.lang {
-                        crate::i18n::UiLang::Zh => {
+                        m3_core::i18n::UiLang::Zh => {
                             format!("已更新信号状态，但加入观察池 ({ticker}) 失败：{err:#}")
                         }
-                        crate::i18n::UiLang::En => {
+                        m3_core::i18n::UiLang::En => {
                             format!("Updated signal, but failed to add {ticker} to Watch: {err:#}")
                         }
                     },
@@ -818,19 +818,21 @@ impl MungerWorkbench {
         self.banner = Some((
             if promote_watch {
                 match self.lang {
-                    crate::i18n::UiLang::Zh => {
+                    m3_core::i18n::UiLang::Zh => {
                         format!("已将 {ticker} 加入观察池 [WATCH] 并标记信号为「{status_label}」")
                     }
-                    crate::i18n::UiLang::En => {
+                    m3_core::i18n::UiLang::En => {
                         format!("Added {ticker} to [WATCH] and marked signal as {status_label}")
                     }
                 }
             } else {
                 match self.lang {
-                    crate::i18n::UiLang::Zh => {
+                    m3_core::i18n::UiLang::Zh => {
                         format!("已将 {ticker} 信号标记为「{status_label}」")
                     }
-                    crate::i18n::UiLang::En => format!("Marked {ticker} signal as {status_label}"),
+                    m3_core::i18n::UiLang::En => {
+                        format!("Marked {ticker} signal as {status_label}")
+                    }
                 }
             },
             false,
@@ -1003,8 +1005,8 @@ impl MungerWorkbench {
                     .child(journal_stat(
                         self.lang.t("全美股池", "US Universe"),
                         match self.lang {
-                            crate::i18n::UiLang::Zh => format!("{} 家", u_sum.total_companies),
-                            crate::i18n::UiLang::En => format!("{}", u_sum.total_companies),
+                            m3_core::i18n::UiLang::Zh => format!("{} 家", u_sum.total_companies),
+                            m3_core::i18n::UiLang::En => format!("{}", u_sum.total_companies),
                         },
                         INK_HERO,
                         &self.fonts,
@@ -1020,11 +1022,11 @@ impl MungerWorkbench {
                     .child(journal_stat(
                         self.lang.t("语义索引", "Semantic Index"),
                         match self.lang {
-                            crate::i18n::UiLang::Zh => format!(
+                            m3_core::i18n::UiLang::Zh => format!(
                                 "{} 片段 / {} 公司",
                                 l1_sum.doc_chunks_count, l1_sum.indexed_companies_count
                             ),
-                            crate::i18n::UiLang::En => format!(
+                            m3_core::i18n::UiLang::En => format!(
                                 "{} chunks / {} cos",
                                 l1_sum.doc_chunks_count, l1_sum.indexed_companies_count
                             ),
@@ -2445,10 +2447,10 @@ impl MungerWorkbench {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(INK_HERO))
                     .child(match l {
-                        crate::i18n::UiLang::Zh => {
+                        m3_core::i18n::UiLang::Zh => {
                             format!("「{}」下暂无信号", self.inbox_state.filter.label_for(l))
                         }
-                        crate::i18n::UiLang::En => {
+                        m3_core::i18n::UiLang::En => {
                             format!("No signals under \"{}\"", self.inbox_state.filter.label_for(l))
                         }
                     }),

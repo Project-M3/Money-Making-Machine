@@ -53,6 +53,11 @@ pub fn civil_today_iso() -> String {
 }
 
 pub fn resolve_repo_root() -> Result<PathBuf> {
+    let m3_paths = crate::app_config::M3Paths::resolve()?;
+    resolve_repo_root_with_paths(&m3_paths)
+}
+
+pub fn resolve_repo_root_with_paths(m3_paths: &crate::app_config::M3Paths) -> Result<PathBuf> {
     if let Ok(explicit) = std::env::var("M3_REPO_ROOT") {
         let trimmed = explicit.trim();
         if !trimmed.is_empty() {
@@ -74,10 +79,10 @@ pub fn resolve_repo_root() -> Result<PathBuf> {
             }
         }
     }
-    if let Some(configured) = crate::app_config::read_workspace_root() {
+    if let Some(configured) = crate::app_config::read_workspace_root_with_paths(m3_paths) {
         return Ok(configured);
     }
-    let default_ws = crate::app_config::default_workspace_dir()?;
+    let default_ws = m3_paths.default_workspace_dir();
     crate::app_config::ensure_initialized_workspace(&default_ws)
 }
 

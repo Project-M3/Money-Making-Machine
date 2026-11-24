@@ -296,7 +296,7 @@ pub(crate) struct PrevSecLakeSnapshot {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LakeCompanyRow {
+pub struct LakeCompanyRow {
     pub cik: String,
     pub ticker: String,
     pub name: String,
@@ -308,7 +308,7 @@ pub(crate) struct LakeCompanyRow {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LakeTtmRow {
+pub struct LakeTtmRow {
     pub cik: String,
     pub ticker: String,
     pub label: String,
@@ -350,7 +350,7 @@ pub(crate) struct LakeTtmRow {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LakePriceDailyRow {
+pub struct LakePriceDailyRow {
     pub symbol: String,
     pub trade_date: String,
     pub price: Decimal,
@@ -363,7 +363,7 @@ pub(crate) struct LakePriceDailyRow {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct QuoteSnapshotUpdate {
+pub struct QuoteSnapshotUpdate {
     pub cik: String,
     pub expected_ticker: String,
     pub expected_raw_sha256: Option<String>,
@@ -2409,8 +2409,7 @@ impl LakeDb {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn replace_sec_lake_data(
+    pub fn replace_sec_lake_data(
         &mut self,
         companies: &[LakeCompanyRow],
         annuals: &[LakeAnnualRow],
@@ -3812,8 +3811,7 @@ impl LakeDb {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn upsert_prices_and_update_snapshot(
+    pub fn upsert_prices_and_update_snapshot(
         &mut self,
         prices: &[LakePriceDailyRow],
         updated_rows: &[QuoteSnapshotUpdate],
@@ -3828,8 +3826,7 @@ impl LakeDb {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn upsert_prices_and_update_snapshot_with_assumptions(
+    pub fn upsert_prices_and_update_snapshot_with_assumptions(
         &mut self,
         prices: &[LakePriceDailyRow],
         updated_rows: &[QuoteSnapshotUpdate],

@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "crates/m3-core",
+    "crates/m3-cli",
+    "apps/m3-desktop",
+]
+resolver = "3"
+
+[profile.dev]
+debug = 0

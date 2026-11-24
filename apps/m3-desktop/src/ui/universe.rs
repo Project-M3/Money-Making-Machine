@@ -1,5 +1,6 @@
 use super::{FontRoles, MungerWorkbench, NavView, components::*, format::*, theme::*};
-use crate::{
+use gpui::{Context, bounds, canvas, div, fill, point, prelude::*, px, rgb, rgba, size};
+use m3_core::{
     i18n::UiLang,
     lake::{
         LakeAnnualRow, LakeDb, UniverseDrawerDetails, UniverseFilter, UniverseRow, UniverseSortBy,
@@ -10,7 +11,6 @@ use crate::{
     store::{self, WorkspacePaths},
     universe::{self, UniverseSyncOptions, UniverseSyncReport},
 };
-use gpui::{Context, bounds, canvas, div, fill, point, prelude::*, px, rgb, rgba, size};
 use rust_decimal::Decimal;
 use std::collections::HashSet;
 use std::sync::mpsc;

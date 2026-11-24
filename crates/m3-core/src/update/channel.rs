@@ -89,14 +89,21 @@ pub struct ChannelStatusReport {
     pub switch_pending: bool,
 }
 
-/// Resolve `.../M3/updater/channel.json`.
-pub fn configured_channel_path() -> Result<PathBuf> {
-    Ok(app_config::updater_dir()?.join(CHANNEL_FILE_NAME))
+/// Resolve `<updater_dir>/channel.json` under explicit `paths`.
+pub fn configured_channel_path_in(paths: &app_config::M3Paths) -> PathBuf {
+    paths.updater_dir().join(CHANNEL_FILE_NAME)
 }
 
-/// Read the persisted release channel selection, ignoring missing or invalid files cleanly.
-pub fn read_configured_channel() -> Option<ReleaseChannel> {
-    let path = configured_channel_path().ok()?;
+/// Resolve `.../M3/updater/channel.json`.
+pub fn configured_channel_path() -> Result<PathBuf> {
+    Ok(app_config::M3Paths::resolve()?
+        .updater_dir()
+        .join(CHANNEL_FILE_NAME))
+}
+
+/// Read the persisted release channel selection under explicit `paths`.
+pub fn read_configured_channel_in(paths: &app_config::M3Paths) -> Option<ReleaseChannel> {
+    let path = configured_channel_path_in(paths);
     let meta = std::fs::symlink_metadata(&path).ok()?;
     if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_CHANNEL_BYTES {
         return None;
@@ -106,10 +113,19 @@ pub fn read_configured_channel() -> Option<ReleaseChannel> {
     ReleaseChannel::parse(&parsed.channel).ok()
 }
 
-/// Atomically persist the selected release channel to `updater/channel.json` and invalidate any
+/// Read the persisted release channel selection, ignoring missing or invalid files cleanly.
+pub fn read_configured_channel() -> Option<ReleaseChannel> {
+    let paths = app_config::M3Paths::resolve().ok()?;
+    read_configured_channel_in(&paths)
+}
+
+/// Atomically persist the selected release channel under explicit `paths` and invalidate any
 /// cached `updater/last-check.json` passive update notice.
-pub fn write_configured_channel(channel: ReleaseChannel) -> Result<()> {
-    let channel_path = configured_channel_path()?;
+pub fn write_configured_channel_in(
+    paths: &app_config::M3Paths,
+    channel: ReleaseChannel,
+) -> Result<()> {
+    let channel_path = configured_channel_path_in(paths);
     let parent = channel_path
         .parent()
         .context("configured channel path has no parent directory")?;
@@ -142,11 +158,40 @@ pub fn write_configured_channel(channel: ReleaseChannel) -> Result<()> {
     Ok(())
 }
 
+/// Atomically persist the selected release channel to `updater/channel.json` and invalidate any
+/// cached `updater/last-check.json` passive update notice.
+pub fn write_configured_channel(channel: ReleaseChannel) -> Result<()> {
+    let paths = app_config::M3Paths::resolve()?;
+    write_configured_channel_in(&paths, channel)
+}
+
+/// Return the effective channel under explicit `paths`.
+pub fn effective_channel_in(paths: &app_config::M3Paths) -> (ReleaseChannel, ChannelSource) {
+    match read_configured_channel_in(paths) {
+        Some(ch) => (ch, ChannelSource::Configured),
+        None => (current_binary_channel(), ChannelSource::BinaryDefault),
+    }
+}
+
 /// Return the effective channel (`configured` if set, otherwise running binary channel).
 pub fn effective_channel() -> (ReleaseChannel, ChannelSource) {
     match read_configured_channel() {
         Some(ch) => (ch, ChannelSource::Configured),
         None => (current_binary_channel(), ChannelSource::BinaryDefault),
+    }
+}
+
+/// Build the structured status report under explicit `paths`.
+pub fn channel_status_report_in(paths: &app_config::M3Paths) -> ChannelStatusReport {
+    let binary_channel = current_binary_channel();
+    let binary_version = current_binary_version().to_string();
+    let (channel, source) = effective_channel_in(paths);
+    ChannelStatusReport {
+        channel: channel.as_str().to_string(),
+        source: source.as_str().to_string(),
+        binary_channel: binary_channel.as_str().to_string(),
+        binary_version,
+        switch_pending: channel != binary_channel,
     }
 }
 

@@ -2,10 +2,10 @@ use super::{
     BasketsViewMode, DossierTab, MungerWorkbench, NavView, PaletteAction, PaletteItem,
     components::*, format::*, theme::*, universe::UniverseSearchMode,
 };
-use crate::i18n::UiLang;
-use crate::model::{Bucket, primary_circle_tag};
-use crate::update::{self, ReleaseChannel};
 use gpui::{Context, MouseButton, Window, div, prelude::*, px, rgb, rgba};
+use m3_core::i18n::UiLang;
+use m3_core::model::{Bucket, primary_circle_tag};
+use m3_core::update::{self, ReleaseChannel};
 
 impl MungerWorkbench {
     pub fn toggle_palette(&mut self, window: &mut Window) {

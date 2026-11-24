@@ -1,24 +1,4 @@
-mod alan_interrogator;
-mod app_config;
-mod budget;
-mod calculator;
-mod cli;
-mod edgar;
-mod events;
-mod i18n;
-mod industry;
-mod industry_research;
-mod lake;
-mod lake_l1;
-mod lake_l2;
-mod latent;
-mod market;
-mod model;
-mod research;
-mod store;
 mod ui;
-mod universe;
-mod update;
 
 use anyhow::Result;
 use gpui::{
@@ -26,12 +6,13 @@ use gpui::{
     TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, point,
     prelude::*, px, size,
 };
-use i18n::UiLang;
-use model::Bucket;
+use m3_core::app_config;
+use m3_core::i18n::UiLang;
+use m3_core::model::Bucket;
+use m3_core::store::{self, WorkspacePaths};
+use m3_core::update::{self, ReleaseChannel};
 use std::{borrow::Cow, time::Duration};
-use store::WorkspacePaths;
 use ui::{FontRoles, MungerWorkbench, NavView};
-use update::ReleaseChannel;
 
 const M3_WEBSITE_URL: &str = "https://m3.thinksmart.systems";
 const M3_GITHUB_URL: &str = "https://github.com/Project-M3/Money-Making-Machine";
@@ -492,56 +473,13 @@ fn main() -> Result<()> {
     log::set_max_level(log::LevelFilter::Warn);
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.as_slice() == ["-V"] {
-        println!("m3 {}", update::current_binary_version());
-        return Ok(());
-    }
-    if args.as_slice() == ["--version"] {
-        println!("m3 {}", update::current_long_version());
-        return Ok(());
-    }
-    if !args.is_empty()
-        && let Some(standalone) = cli::run_standalone(&args)
-    {
-        let (value, code) = match standalone {
-            Ok(val) => {
-                let code = if val["ok"] == false { 1 } else { 0 };
-                (val, code)
-            }
-            Err(err) => (
-                serde_json::json!({
-                    "schema_version": 1,
-                    "ok": false,
-                    "error": format!("{err:#}")
-                }),
-                1,
-            ),
-        };
-        println!("{value}");
+    if !args.is_empty() {
+        let code = m3_cli::run_cli_args(&args)?;
         std::process::exit(code);
     }
 
     let repo_root = store::resolve_repo_root()?;
     let paths = WorkspacePaths::from_root(repo_root);
-
-    if !args.is_empty() {
-        let (value, code) = match cli::run(&paths, &args) {
-            Ok(val) => {
-                let code = if val["ok"] == false { 1 } else { 0 };
-                (val, code)
-            }
-            Err(err) => (
-                serde_json::json!({
-                    "schema_version": 1,
-                    "ok": false,
-                    "error": format!("{err:#}")
-                }),
-                1,
-            ),
-        };
-        println!("{value}");
-        std::process::exit(code);
-    }
 
     Application::new().run(move |cx: &mut App| {
         let fonts = resolve_font_roles(cx);
@@ -617,7 +555,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod menu_tests {
     use super::build_app_menus;
-    use crate::i18n::UiLang;
+    use m3_core::i18n::UiLang;
 
     #[test]
     fn builds_full_pro_macos_menu_bar() {

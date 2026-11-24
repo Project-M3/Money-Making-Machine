@@ -2,8 +2,8 @@ use super::{
     BasketsViewMode, MungerWorkbench, NavView, SortCol, StatusQuickFilter, components::*,
     format::*, theme::*,
 };
-use crate::model::{Bucket, primary_circle_tag, secondary_circle_detail};
 use gpui::{Context, div, prelude::*, px, rgb, rgba};
+use m3_core::model::{Bucket, primary_circle_tag, secondary_circle_detail};
 use rust_decimal::Decimal;
 
 impl MungerWorkbench {
@@ -184,8 +184,8 @@ impl MungerWorkbench {
                             cx.notify();
                         }))
                         .child(match l {
-                            crate::i18n::UiLang::Zh => format!("○ 待分拣 {watch_cnt} 家"),
-                            crate::i18n::UiLang::En => format!("○ {watch_cnt} to triage"),
+                            m3_core::i18n::UiLang::Zh => format!("○ 待分拣 {watch_cnt} 家"),
+                            m3_core::i18n::UiLang::En => format!("○ {watch_cnt} to triage"),
                         }),
                 );
             } else {
@@ -704,12 +704,12 @@ impl MungerWorkbench {
                 if rows.is_empty() {
                     let empty_msg = if has_any_filter {
                         match l {
-                            crate::i18n::UiLang::Zh => format!(
+                            m3_core::i18n::UiLang::Zh => format!(
                                 "当前筛选下 [{} · {}] 暂无匹配标的。",
                                 bucket.code(),
                                 bucket.short_label_for(l)
                             ),
-                            crate::i18n::UiLang::En => format!(
+                            m3_core::i18n::UiLang::En => format!(
                                 "No matching holdings in [{} · {}] for active filters.",
                                 bucket.code(),
                                 bucket.short_label_for(l)
@@ -717,12 +717,12 @@ impl MungerWorkbench {
                         }
                     } else {
                         match l {
-                            crate::i18n::UiLang::Zh => format!(
+                            m3_core::i18n::UiLang::Zh => format!(
                                 "当前 [{} · {}] 暂无标的。",
                                 bucket.code(),
                                 bucket.short_label_for(l)
                             ),
-                            crate::i18n::UiLang::En => format!(
+                            m3_core::i18n::UiLang::En => format!(
                                 "No holdings in [{} · {}] yet.",
                                 bucket.code(),
                                 bucket.short_label_for(l)

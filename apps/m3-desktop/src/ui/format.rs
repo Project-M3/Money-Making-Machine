@@ -1,6 +1,6 @@
 use super::{PaletteItem, SortCol, StatusQuickFilter, TodayPulse};
-use crate::i18n::UiLang;
-use crate::model::{
+use m3_core::i18n::UiLang;
+use m3_core::model::{
     AnnualMetricRow, Bucket, MungerReport, OhlcBar, StrikeZoneStatus, ValuationSnapshot,
     WarningSeverity, primary_circle_tag,
 };
@@ -82,17 +82,17 @@ pub fn build_alan_interrogation_prompt_for(
     ticker: &str,
     name: &str,
     bucket: Bucket,
-    lang: crate::i18n::UiLang,
+    lang: m3_core::i18n::UiLang,
 ) -> String {
     match lang {
-        crate::i18n::UiLang::Zh => format!(
+        m3_core::i18n::UiLang::Zh => format!(
             "请作为我的芒格跨学科研究幕僚 Alan，执行 [{ticker} · {name}]（当前分桶: {}）的审讯工作流：\n\
             1) 先运行 `./apps/m3-desktop/m3 report {ticker}` 与 `./apps/m3-desktop/m3 dossier {ticker}` 获取确定性财务与现有草稿（严禁口算或改动数字）。\n\
             2) 基于 10-K/电话会更新三句话业务过滤、跨学科思维格栅与 5 年逆向事前验尸。\n\
             3) 针对我提出的质疑进行一轮费曼答辩追问；保留 workbench/dossiers/{ticker}.json 中的 human_judgment 待我本人拍板，严禁输出买卖指令。",
             bucket.code()
         ),
-        crate::i18n::UiLang::En => format!(
+        m3_core::i18n::UiLang::En => format!(
             "Act as Alan, my interdisciplinary research chief of staff, and run the interrogation workflow for [{ticker} · {name}] (tier: {}):\n\
             1) Run `./apps/m3-desktop/m3 report {ticker}` and `./apps/m3-desktop/m3 dossier {ticker}` first for deterministic financials and existing notes (never alter or fabricate numbers).\n\
             2) Update the 3-sentence business filter, multidisciplinary latticework, and 5-year pre-mortem from primary filings.\n\

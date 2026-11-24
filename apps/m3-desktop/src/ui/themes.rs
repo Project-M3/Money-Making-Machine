@@ -1,12 +1,12 @@
 use super::{
     MungerWorkbench, NavView, components::*, format::*, theme::*, universe::UniverseSearchMode,
 };
-use crate::{
+use gpui::{Context, div, prelude::*, px, rgb, rgba};
+use m3_core::{
     budget::{self, ThemeCluster, ThemeClusterMember},
     lake::LakeDb,
     store::WorkspacePaths,
 };
-use gpui::{Context, div, prelude::*, px, rgb, rgba};
 use std::sync::mpsc;
 
 /// Formats a `ThemeClusterMember` ROIC percentage cleanly for pill display.
@@ -107,12 +107,12 @@ impl MungerWorkbench {
                 self.themes_error = None;
                 self.banner = Some((
                     match self.lang {
-                        crate::i18n::UiLang::Zh => format!(
+                        m3_core::i18n::UiLang::Zh => format!(
                             "主题图谱已同步 · {} 个商业原型簇 / 覆盖 {} 家公司（保留人类批注）",
                             self.themes_file.clusters.len(),
                             self.themes_file.total_indexed_companies
                         ),
-                        crate::i18n::UiLang::En => format!(
+                        m3_core::i18n::UiLang::En => format!(
                             "Themes synced · {} archetype clusters across {} companies (human notes preserved)",
                             self.themes_file.clusters.len(),
                             self.themes_file.total_indexed_companies

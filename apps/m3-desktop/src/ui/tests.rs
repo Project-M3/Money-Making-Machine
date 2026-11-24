@@ -18,15 +18,15 @@ use super::universe::{
     is_lake_empty, resolve_active_universe_row,
 };
 use super::*;
-use crate::alan_interrogator::{InterrogatorEvent, TuringTapeKind};
-use crate::budget::{BudgetConfig, ThemeClusterMember};
-use crate::lake::{UniverseRow, UniverseSortBy, UniverseSummary};
-use crate::lake_l1::{SignalEvidence, SignalInboxRow, SignalKind, SignalStatus};
-use crate::lake_l2::{BudgetStatusReport, MonthlyBudgetUsage};
-use crate::model::{
+use m3_core::alan_interrogator::{InterrogatorEvent, TuringTapeKind};
+use m3_core::budget::{BudgetConfig, ThemeClusterMember};
+use m3_core::lake::{UniverseRow, UniverseSortBy, UniverseSummary};
+use m3_core::lake_l1::{SignalEvidence, SignalInboxRow, SignalKind, SignalStatus};
+use m3_core::lake_l2::{BudgetStatusReport, MonthlyBudgetUsage};
+use m3_core::model::{
     DataSource, OhlcBar, StrikeZoneStatus, ValuationAssumptions, ValuationSnapshot,
 };
-use crate::research::{DeepResearchEvent, DeepResearchResult, PerspectiveOutcome};
+use m3_core::research::{DeepResearchEvent, DeepResearchResult, PerspectiveOutcome};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 
@@ -1230,7 +1230,7 @@ fn compact_sidebar_version_label_shortens_rolling_beta_without_truncating_stable
 #[test]
 fn bilingual_ui_helpers_render_english_copy() {
     use super::shell::resolve_sidebar_dock_notice_for;
-    use crate::i18n::UiLang;
+    use m3_core::i18n::UiLang;
 
     let en = UiLang::En;
     let notice = resolve_sidebar_dock_notice_for(

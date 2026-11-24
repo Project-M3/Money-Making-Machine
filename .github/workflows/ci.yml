@@ -36,25 +36,27 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
-          workspaces: apps/m3-desktop
+          workspaces: "."
 
       - name: Check formatting and Clippy
-        working-directory: apps/m3-desktop
         run: |
-          rustfmt --edition 2024 --check build.rs src/*.rs src/ui/*.rs src/update/*.rs
-          cargo clippy --locked --all-targets -- -D warnings
+          cargo fmt --all -- --check
+          cargo clippy --workspace --locked --all-targets -- -D warnings
 
       - name: Enforce zero production unwrap/expect
-        working-directory: apps/m3-desktop
         run: |
           python3 - <<'PY'
           import pathlib, re, sys
 
           prod_files = []
-          for p in sorted(pathlib.Path("src").rglob("*.rs")):
-              if p.name == "tests.rs":
-                  continue
-              prod_files.append(p)
+          for root in [
+              *sorted(pathlib.Path("crates").glob("*/src")),
+              *sorted(pathlib.Path("apps").glob("*/src")),
+          ]:
+              for p in sorted(root.rglob("*.rs")):
+                  if p.name == "tests.rs":
+                      continue
+                  prod_files.append(p)
 
           hits = []
           for p in prod_files:
@@ -73,8 +75,7 @@ jobs:
           PY
 
       - name: Run unit tests
-        working-directory: apps/m3-desktop
-        run: cargo test --locked -j 4
+        run: cargo test --workspace --locked -j 4
 
       - name: Check release scripts and Python manifest generator
         run: |

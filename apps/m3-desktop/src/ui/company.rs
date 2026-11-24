@@ -1,12 +1,12 @@
 use super::{DossierTab, MungerWorkbench, NavView, components::*, format::*, theme::*};
-use crate::{
+use gpui::{Context, div, prelude::*, px, rgb, rgba};
+use m3_core::{
     calculator,
     model::{
         AnnualMetricRow, Bucket, MungerReport, SandboxResult, StrikeZoneStatus, ValuationSnapshot,
         WarningSeverity, primary_circle_tag, secondary_circle_detail,
     },
 };
-use gpui::{Context, div, prelude::*, px, rgb, rgba};
 use rust_decimal::Decimal;
 
 pub(super) fn roic_unavailable_label(roic_note: Option<&str>) -> String {
@@ -409,8 +409,8 @@ impl MungerWorkbench {
                 _ => row
                     .roic_total_capital_pct
                     .map(|v| match l {
-                        crate::i18n::UiLang::Zh => format!("总资本 {v:.1}% (净现金 > 账面)"),
-                        crate::i18n::UiLang::En => {
+                        m3_core::i18n::UiLang::Zh => format!("总资本 {v:.1}% (净现金 > 账面)"),
+                        m3_core::i18n::UiLang::En => {
                             format!("Total Cap {v:.1}% (Net Cash > Equity)")
                         }
                     })
@@ -621,11 +621,11 @@ impl MungerWorkbench {
                     .line_height(px(21.))
                     .text_color(rgb(GOLD_FG))
                     .child(match l {
-                        crate::i18n::UiLang::Zh => format!(
+                        m3_core::i18n::UiLang::Zh => format!(
                             "{} 暂无结构化财报数据；如需接入计算器，可录入 workbench/manual_financials/{}.json。",
                             rep.ticker, rep.ticker
                         ),
-                        crate::i18n::UiLang::En => format!(
+                        m3_core::i18n::UiLang::En => format!(
                             "No structured SEC financials for {} yet; add workbench/manual_financials/{}.json if manual entry is needed.",
                             rep.ticker, rep.ticker
                         ),

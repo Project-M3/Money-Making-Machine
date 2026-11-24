@@ -2,12 +2,12 @@ use super::{
     MungerWorkbench, NavView, components::*, format::*, inbox::budget_watermark_summary_for,
     theme::*,
 };
-use crate::i18n::UiLang;
-use crate::model::{Bucket, MungerReport};
-use crate::update;
 use gpui::{
     Context, MouseButton, MouseDownEvent, WindowControlArea, div, prelude::*, px, rgb, rgba,
 };
+use m3_core::i18n::UiLang;
+use m3_core::model::{Bucket, MungerReport};
+use m3_core::update;
 
 /// Compresses rolling beta tags like `0.3.1-beta.20261124.6` into `v0.3.1-beta.6`
 /// so version badges never clip inside the 224px sidebar dock.

@@ -1,3 +1,4 @@
+#[cfg(target_os = "macos")]
 use super::install::{
     ArchiveManifest, SameFsStagingDir, atomic_swap_app_bundle_with_receipt_dir, encode_lower_hex,
     extract_and_verify_bundle, preflight_install_targets, resolve_target_app_bundle,
@@ -9,12 +10,18 @@ use super::passive_check::{
 use super::semver::{is_newer_version, parse_semver, target_triple_for};
 use super::{ReleaseChannel, ReleaseManifest, TargetArtifact, validate_manifest_metadata};
 use chrono::{Duration, Utc};
+#[cfg(target_os = "macos")]
 use flate2::Compression;
+#[cfg(target_os = "macos")]
 use flate2::write::GzEncoder;
+#[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
 use tar::{Builder, Header};
 
 fn make_temp_dir(name: &str) -> PathBuf {
@@ -151,6 +158,7 @@ fn passive_check_cache_handles_fresh_stale_and_channel_switch() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn resolve_target_app_ignores_repo_artifacts_build_dir() {
     let dev_exe =
@@ -165,6 +173,7 @@ fn resolve_target_app_ignores_repo_artifacts_build_dir() {
     let _ = fs::remove_dir_all(&custom_dir);
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn extract_rejects_path_traversal_and_symlinks() {
     let dir = make_temp_dir("unsafe-tar");
@@ -221,6 +230,7 @@ fn extract_rejects_path_traversal_and_symlinks() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn end_to_end_extract_smoke_test_and_atomic_swap_with_cli_symlink() {
     let dir = make_temp_dir("swap");
@@ -314,6 +324,38 @@ fn end_to_end_extract_smoke_test_and_atomic_swap_with_cli_symlink() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "m3 9.9.9");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn channel_selection_roundtrips_with_explicit_m3_paths() {
+    let dir = make_temp_dir("channel-m3paths");
+    let m3_paths = crate::app_config::M3Paths::from_root(&dir);
+
+    assert_eq!(
+        super::channel::effective_channel_in(&m3_paths),
+        (
+            super::current_binary_channel(),
+            super::channel::ChannelSource::BinaryDefault
+        )
+    );
+    super::channel::write_configured_channel_in(&m3_paths, ReleaseChannel::Beta).unwrap();
+    assert_eq!(
+        super::channel::read_configured_channel_in(&m3_paths),
+        Some(ReleaseChannel::Beta)
+    );
+    assert_eq!(
+        super::channel::effective_channel_in(&m3_paths),
+        (
+            ReleaseChannel::Beta,
+            super::channel::ChannelSource::Configured
+        )
+    );
+
+    let report = super::channel::channel_status_report_in(&m3_paths);
+    assert_eq!(report.channel, "beta");
+    assert_eq!(report.source, "configured");
 
     let _ = fs::remove_dir_all(&dir);
 }

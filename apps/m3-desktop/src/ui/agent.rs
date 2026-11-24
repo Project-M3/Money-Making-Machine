@@ -2,23 +2,22 @@ use super::{
     AgentMessageRole, AgentUiMessage, DossierTab, MungerWorkbench, NavView, components::*,
     format::*, theme::*,
 };
-use crate::{
+use gpui::{Context, div, prelude::*, px, rgb, rgba};
+use m3_core::{
     alan_interrogator::{
         AcmeEvidenceKind, InterrogatorEvent, M3InterrogatorHandle, TuringTapeEntry, TuringTapeKind,
         parse_acme_evidence_tokens,
     },
-    cli,
     i18n::UiLang,
     lake::LakeDb,
     lake_l1::SimilarSearchFilter,
-    lake_l2::ResearchRunStatus,
+    lake_l2::{self, ResearchRunStatus},
     model::{Bucket, Dossier, MungerReport},
     research::{
         self, DeepResearchEvent, DeepResearchPerspective, DeepResearchRequest, DeepResearchResult,
     },
     store::{self, WorkspacePaths},
 };
-use gpui::{Context, div, prelude::*, px, rgb, rgba};
 use rust_decimal::Decimal;
 use std::{collections::HashMap, sync::mpsc};
 
@@ -542,11 +541,11 @@ impl MungerWorkbench {
     }
 
     pub(super) fn reload_budget_from_lake(&mut self) {
-        self.budget_config = crate::budget::load_budget_config(&self.paths).unwrap_or_default();
+        self.budget_config = m3_core::budget::load_budget_config(&self.paths).unwrap_or_default();
         if self.universe_syncing {
             return;
         }
-        if let Ok(report) = cli::load_budget_status_report(&self.paths) {
+        if let Ok(report) = lake_l2::load_budget_status_report(&self.paths) {
             self.budget_report = Some(report);
         }
     }

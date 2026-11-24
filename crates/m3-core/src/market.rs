@@ -58,7 +58,7 @@ pub fn trade_date_from_snapshot(snap: &PriceSnapshot) -> Option<String> {
     trade_date_from_symbol_and_market_time(&snap.symbol, snap.market_time_ms)
 }
 
-pub(crate) fn civil_iso_from_unix_secs(unix_secs: i64) -> String {
+pub fn civil_iso_from_unix_secs(unix_secs: i64) -> String {
     let days = unix_secs.div_euclid(86_400);
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -82,7 +82,7 @@ fn parse_raw_decimal(raw: &RawValue) -> Option<Decimal> {
 pub(crate) const MAX_QUOTE_SESSION_AGE_MS: u64 = 10 * 86_400_000;
 const MAX_QUOTE_FUTURE_SKEW_MS: u64 = 36 * 3_600_000;
 
-pub(crate) fn validate_quote_session(snap: &PriceSnapshot, as_of_ms: u64) -> Result<()> {
+pub fn validate_quote_session(snap: &PriceSnapshot, as_of_ms: u64) -> Result<()> {
     ensure!(
         snap.price > Decimal::ZERO,
         "non-positive price for {}",

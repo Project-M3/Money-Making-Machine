@@ -22,7 +22,11 @@ use format::{
 };
 use inbox::{InboxFilter, InboxViewState};
 
-use crate::{
+use gpui::{
+    ClipboardItem, Context, FocusHandle, KeyDownEvent, SharedString, Window, div, prelude::*, px,
+    rgb,
+};
+use m3_core::{
     alan_interrogator::{AcmeEvidenceToken, M3InterrogatorHandle, TuringTapeEntry},
     app_config,
     budget::{self, BudgetConfig, ThemesFile},
@@ -41,10 +45,6 @@ use crate::{
     store::{self, WorkspacePaths},
     universe::UniverseSyncReport,
     update::{self, PassiveUpdateNotice, ReleaseChannel, UpdateOptions, UpdateReport},
-};
-use gpui::{
-    ClipboardItem, Context, FocusHandle, KeyDownEvent, SharedString, Window, div, prelude::*, px,
-    rgb,
 };
 use rust_decimal::Decimal;
 use std::{

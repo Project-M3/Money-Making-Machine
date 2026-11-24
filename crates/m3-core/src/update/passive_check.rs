@@ -37,9 +37,16 @@ pub struct PassiveUpdateNotice {
     pub release_url: Option<String>,
 }
 
+/// Resolve `<updater_dir>/last-check.json` under explicit `paths`.
+pub fn passive_check_cache_path_in(paths: &app_config::M3Paths) -> PathBuf {
+    paths.updater_dir().join("last-check.json")
+}
+
 /// Resolve `.../M3/updater/last-check.json`.
 pub fn passive_check_cache_path() -> Result<PathBuf> {
-    Ok(app_config::updater_dir()?.join("last-check.json"))
+    Ok(app_config::M3Paths::resolve()?
+        .updater_dir()
+        .join("last-check.json"))
 }
 
 /// Return `true` when background startup update checks should be skipped.
@@ -134,13 +141,13 @@ pub fn evaluate_cache_for_notice_with_target(
     (notice, needs_refresh)
 }
 
-/// Evaluate the configured passive cache path for the currently running binary.
-pub fn evaluate_local_passive_notice() -> (Option<PassiveUpdateNotice>, bool) {
-    let Ok(cache_path) = passive_check_cache_path() else {
-        return (None, false);
-    };
+/// Evaluate the passive cache path under explicit `paths` for the currently running binary.
+pub fn evaluate_local_passive_notice_in(
+    paths: &app_config::M3Paths,
+) -> (Option<PassiveUpdateNotice>, bool) {
+    let cache_path = passive_check_cache_path_in(paths);
     let binary_channel = current_binary_channel();
-    let (target_channel, _) = super::channel::effective_channel();
+    let (target_channel, _) = super::channel::effective_channel_in(paths);
     evaluate_cache_for_notice_with_target(
         &cache_path,
         super::current_binary_version(),
@@ -148,6 +155,14 @@ pub fn evaluate_local_passive_notice() -> (Option<PassiveUpdateNotice>, bool) {
         target_channel,
         Utc::now(),
     )
+}
+
+/// Evaluate the configured passive cache path for the currently running binary.
+pub fn evaluate_local_passive_notice() -> (Option<PassiveUpdateNotice>, bool) {
+    let Ok(paths) = app_config::M3Paths::resolve() else {
+        return (None, false);
+    };
+    evaluate_local_passive_notice_in(&paths)
 }
 
 /// Atomically persist `last-check.json`, refusing non-regular files or symlinks.

@@ -3686,7 +3686,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "m3-desktop"
+name = "m3-cli"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "m3-core",
+ "rust_decimal",
+ "serde_json",
+]
+
+[[package]]
+name = "m3-core"
 version = "0.3.0"
 dependencies = [
  "alan-agent-engine",
@@ -3699,7 +3710,6 @@ dependencies = [
  "chrono",
  "duckdb",
  "flate2",
- "gpui",
  "log",
  "rayon",
  "reqwest 0.12.28",
@@ -3710,6 +3720,19 @@ dependencies = [
  "tar",
  "tokio",
  "zip",
+]
+
+[[package]]
+name = "m3-desktop"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "log",
+ "m3-cli",
+ "m3-core",
+ "rust_decimal",
+ "serde_json",
 ]
 
 [[package]]

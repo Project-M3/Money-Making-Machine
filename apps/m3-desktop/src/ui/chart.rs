@@ -1,6 +1,6 @@
 use super::{ChartTimeframe, MungerWorkbench, components::*, format::*, theme::*};
-use crate::model::{AnnualMetricRow, MungerReport, OhlcBar, SandboxResult};
 use gpui::{Context, bounds, canvas, div, fill, point, prelude::*, px, rgb, rgba, size};
+use m3_core::model::{AnnualMetricRow, MungerReport, OhlcBar, SandboxResult};
 use rust_decimal::Decimal;
 
 impl MungerWorkbench {
@@ -430,10 +430,10 @@ impl MungerWorkbench {
                             .text_xs()
                             .text_color(rgb(INK_MUTED))
                             .child(match l {
-                                crate::i18n::UiLang::Zh => {
+                                m3_core::i18n::UiLang::Zh => {
                                     format!("尚未同步 {} 的历史 K 线缓存", rep.ticker)
                                 }
-                                crate::i18n::UiLang::En => {
+                                m3_core::i18n::UiLang::En => {
                                     format!("No historical K-line cache synced for {}", rep.ticker)
                                 }
                             }),

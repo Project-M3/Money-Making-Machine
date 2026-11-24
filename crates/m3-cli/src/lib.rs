@@ -1,20 +1,61 @@
-use crate::{
+use anyhow::{Context, Result, ensure};
+use m3_core::{
     app_config,
     budget::{self, ThemesFile},
     events::{self, EventCatchupOptions},
     lake::{LakeDb, UniverseFilter, UniverseSortBy, UniverseSummary},
     lake_l1::{L1Summary, SignalKind, SignalStatus, SimilarSearchFilter},
-    lake_l2::{BudgetStatusReport, MonthlyBudgetUsage},
+    lake_l2,
     model::{Bucket, JournalAction, SyncStatusFile, parse_decimal_token},
     research::{self, DeepResearchRequest},
     store::{self, WorkspacePaths},
     universe::{self, UniverseSyncOptions},
     update::{self, ReleaseChannel, UpdateOptions},
 };
-use anyhow::{Context, Result, ensure};
 use rust_decimal::Decimal;
 use serde_json::json;
 use std::{path::PathBuf, str::FromStr, time::Instant};
+
+/// Dispatch CLI arguments (including `-V`, `--version`, standalone, and workspace commands),
+/// print the output to stdout, and return the process exit code (`0` or `1`).
+pub fn run_cli_args(args: &[String]) -> Result<i32> {
+    if args == ["-V"] {
+        println!("m3 {}", update::current_binary_version());
+        return Ok(0);
+    }
+    if args == ["--version"] {
+        println!("m3 {}", update::current_long_version());
+        return Ok(0);
+    }
+    if !args.is_empty()
+        && let Some(standalone) = run_standalone(args)
+    {
+        return Ok(print_cli_result(standalone));
+    }
+
+    let repo_root = store::resolve_repo_root()?;
+    let paths = WorkspacePaths::from_root(repo_root);
+    Ok(print_cli_result(run(&paths, args)))
+}
+
+fn print_cli_result(result: Result<serde_json::Value>) -> i32 {
+    let (value, code) = match result {
+        Ok(val) => {
+            let code = if val["ok"] == false { 1 } else { 0 };
+            (val, code)
+        }
+        Err(err) => (
+            json!({
+                "schema_version": 1,
+                "ok": false,
+                "error": format!("{err:#}")
+            }),
+            1,
+        ),
+    };
+    println!("{value}");
+    code
+}
 
 /// Execute workspace-independent CLI subcommands (`version`, `workspace`, `update`).
 /// Returns `None` if the subcommand requires an initialized M3 workspace.
@@ -56,20 +97,20 @@ pub fn run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
 }
 
 fn valid_report_price(
-    report: &crate::model::MungerReport,
+    report: &m3_core::model::MungerReport,
     now_ms: u64,
-) -> Option<&crate::model::PriceSnapshot> {
+) -> Option<&m3_core::model::PriceSnapshot> {
     report.price.as_ref().filter(|p| {
         p.symbol.eq_ignore_ascii_case(&report.ticker)
-            && crate::market::validate_quote_session(p, now_ms).is_ok()
+            && m3_core::market::validate_quote_session(p, now_ms).is_ok()
     })
 }
 
 fn derive_report_status(
-    report: &crate::model::MungerReport,
+    report: &m3_core::model::MungerReport,
     has_valid_price: bool,
-) -> crate::model::StrikeZoneStatus {
-    crate::calculator::derive_strike_status(
+) -> m3_core::model::StrikeZoneStatus {
+    m3_core::calculator::derive_strike_status(
         report.bucket,
         !report.annual_rows.is_empty(),
         has_valid_price,
@@ -86,7 +127,7 @@ fn cmd_status(paths: &WorkspacePaths) -> Result<serde_json::Value> {
     let sync_status: Option<SyncStatusFile> = store::read_json(&paths.sync_status_path()).ok();
     let now = store::now_ms();
     let benchmark = store::load_cached_price(paths, &wl.benchmark_symbol)
-        .filter(|p| crate::market::validate_quote_session(p, now).is_ok());
+        .filter(|p| m3_core::market::validate_quote_session(p, now).is_ok());
 
     let summary: Vec<serde_json::Value> = reports
         .iter()
@@ -865,42 +906,6 @@ fn cmd_inbox_triage(paths: &WorkspacePaths, args: &[String]) -> Result<serde_jso
 
 const MAX_RESEARCH_STATUS_LIMIT: usize = 500;
 
-fn fallback_budget_status_report(paths: &WorkspacePaths) -> Result<BudgetStatusReport> {
-    let config = budget::load_budget_config(paths)?;
-    let month_utc = chrono::Utc::now().format("%Y-%m").to_string();
-    let remaining_monthly_usd = config.monthly_budget_usd.max(Decimal::ZERO).normalize();
-    let remaining_monthly_tokens = config.monthly_token_limit;
-    let auto_trigger_remaining_weekly = if config.auto_trigger_enabled {
-        config.weekly_auto_quota
-    } else {
-        0
-    };
-    Ok(BudgetStatusReport {
-        config,
-        usage: MonthlyBudgetUsage {
-            month_utc,
-            total_runs: 0,
-            completed_runs: 0,
-            blocked_runs: 0,
-            failed_runs: 0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            total_cost_usd: Decimal::ZERO,
-            weekly_auto_runs: 0,
-        },
-        remaining_monthly_usd,
-        remaining_monthly_tokens,
-        auto_trigger_remaining_weekly,
-    })
-}
-
-pub(crate) fn load_budget_status_report(paths: &WorkspacePaths) -> Result<BudgetStatusReport> {
-    match LakeDb::open_read_only_if_exists(paths)? {
-        Some(db) => db.budget_status_report(paths),
-        None => fallback_budget_status_report(paths),
-    }
-}
-
 fn cmd_research(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
     let sub = args.first().map(String::as_str).unwrap_or("status");
     let rest = args.get(1..).unwrap_or(&[]);
@@ -1009,7 +1014,7 @@ fn cmd_research_status(paths: &WorkspacePaths, args: &[String]) -> Result<serde_
             db.list_research_runs(ticker.as_deref(), limit)?,
             db.budget_status_report(paths)?,
         ),
-        None => (Vec::new(), fallback_budget_status_report(paths)?),
+        None => (Vec::new(), lake_l2::fallback_budget_status_report(paths)?),
     };
     let memo_path = ticker.as_deref().and_then(|sym| {
         let p = research::memo_path_for(paths, sym);
@@ -1042,7 +1047,7 @@ fn cmd_budget_status(paths: &WorkspacePaths, args: &[String]) -> Result<serde_js
     if let Some(unexpected) = args.first() {
         anyhow::bail!("unknown budget status argument: {unexpected}");
     }
-    let report = load_budget_status_report(paths)?;
+    let report = lake_l2::load_budget_status_report(paths)?;
     Ok(json!({
         "schema_version": 1,
         "ok": true,
@@ -1087,31 +1092,47 @@ fn cmd_themes_sync(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json
 }
 
 fn cmd_start(paths: &WorkspacePaths) -> Result<serde_json::Value> {
-    let exe = std::env::current_exe()?;
-    let app = exe
-        .parent()
-        .and_then(std::path::Path::parent)
-        .and_then(std::path::Path::parent)
-        .context("CLI must run from M3.app bundle or open M3.app directly")?;
-    ensure!(
-        app.extension().is_some_and(|s| s == "app"),
-        "start expects M3.app bundle"
-    );
-    ensure!(
-        std::process::Command::new("/usr/bin/open")
-            .arg(app)
-            .status()?
-            .success(),
-        "failed to launch M3.app"
-    );
-    Ok(json!({
-        "schema_version": 1,
-        "ok": true,
-        "data": {
-            "launched": app.display().to_string(),
-            "workbench_root": paths.repo_root.display().to_string()
-        }
-    }))
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = paths;
+        anyhow::bail!("start is only supported on macOS");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe()?;
+        let bundled_app = exe
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+            .filter(|p| p.extension().is_some_and(|s| s == "app"))
+            .map(PathBuf::from);
+        let app = match bundled_app {
+            Some(p) => p,
+            None => {
+                let installed = PathBuf::from("/Applications/M3.app");
+                ensure!(
+                    installed.exists(),
+                    "start expects M3.app bundle or /Applications/M3.app"
+                );
+                installed
+            }
+        };
+        ensure!(
+            std::process::Command::new("/usr/bin/open")
+                .arg(&app)
+                .status()?
+                .success(),
+            "failed to launch M3.app"
+        );
+        Ok(json!({
+            "schema_version": 1,
+            "ok": true,
+            "data": {
+                "launched": app.display().to_string(),
+                "workbench_root": paths.repo_root.display().to_string()
+            }
+        }))
+    }
 }
 
 fn cmd_version(args: &[String]) -> Result<serde_json::Value> {
@@ -1267,7 +1288,7 @@ fn cmd_update_channel(args: &[String]) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
+    use m3_core::{
         lake::{LakePriceDailyRow, QuoteSnapshotUpdate, SyncWatermark, UniverseRow},
         model::{
             CompanyEntry, DataSource, DecisionJournal, ValuationAssumptions, WarningFlag,
@@ -1747,7 +1768,7 @@ mod tests {
 
         {
             let now_ms = store::now_ms();
-            let trade_date = crate::market::civil_iso_from_unix_secs((now_ms / 1000) as i64);
+            let trade_date = m3_core::market::civil_iso_from_unix_secs((now_ms / 1000) as i64);
             let mut db = LakeDb::open(&paths).unwrap();
             db.replace_sec_lake_data(&[], &[], &[], &snapshot).unwrap();
             let prices: Vec<LakePriceDailyRow> = snapshot
@@ -2039,7 +2060,7 @@ mod tests {
         )
         .unwrap();
 
-        let acme_facts = crate::edgar::parse_companyfacts_bytes(
+        let acme_facts = m3_core::edgar::parse_companyfacts_bytes(
             acme_raw,
             "ACME",
             "0000000100",
@@ -2047,7 +2068,7 @@ mod tests {
             now_ms,
         )
         .unwrap();
-        let sbcww_facts = crate::edgar::parse_companyfacts_bytes(
+        let sbcww_facts = m3_core::edgar::parse_companyfacts_bytes(
             acme_raw,
             "SBCWW",
             "0001930313",
@@ -2058,7 +2079,7 @@ mod tests {
         store::write_json_atomic(&paths.sec_facts_summary_path("ACME"), &acme_facts).unwrap();
         store::write_json_atomic(&paths.sec_facts_summary_path("SBCWW"), &sbcww_facts).unwrap();
 
-        let stale_price = crate::model::PriceSnapshot {
+        let stale_price = m3_core::model::PriceSnapshot {
             schema_version: 1,
             symbol: "ACME".into(),
             price: Decimal::from(10),
@@ -2069,7 +2090,7 @@ mod tests {
             fetched_at_ms: stale_ms,
             source_url: "https://example.test/acme".into(),
         };
-        let fresh_warrant_price = crate::model::PriceSnapshot {
+        let fresh_warrant_price = m3_core::model::PriceSnapshot {
             schema_version: 1,
             symbol: "SBCWW".into(),
             price: Decimal::from(5),
@@ -2080,7 +2101,7 @@ mod tests {
             fetched_at_ms: now_ms,
             source_url: "https://example.test/sbcww".into(),
         };
-        let expired_benchmark = crate::model::PriceSnapshot {
+        let expired_benchmark = m3_core::model::PriceSnapshot {
             schema_version: 1,
             symbol: "^GSPC".into(),
             price: Decimal::from(5000),
@@ -2096,13 +2117,13 @@ mod tests {
         store::write_json_atomic(&paths.price_path("^GSPC"), &expired_benchmark).unwrap();
 
         // Seed a stale cached report claiming InStrikeZone from an old quote.
-        let mut stale_cached_report = crate::calculator::build_report(
+        let mut stale_cached_report = m3_core::calculator::build_report(
             &acme_entry,
             Some(&acme_facts),
             Some(&stale_price),
             stale_ms,
         );
-        stale_cached_report.status = crate::model::StrikeZoneStatus::InStrikeZone;
+        stale_cached_report.status = m3_core::model::StrikeZoneStatus::InStrikeZone;
         store::write_json_atomic(&paths.computed_report_path("ACME"), &stale_cached_report)
             .unwrap();
 
@@ -2138,7 +2159,7 @@ mod tests {
 
     #[test]
     fn cli_l1_events_inbox_and_universe_similar_validation_and_queries() {
-        use crate::{
+        use m3_core::{
             lake_l1::{DocChunkRow, LakeEventRow, SignalEvidence, SignalInboxRow},
             latent::{
                 LOCAL_EMBEDDING_DIM, LOCAL_EMBEDDING_MODEL, encode_embedding_json, local_embed,
@@ -2586,7 +2607,7 @@ mod tests {
 
     #[test]
     fn cli_l2_budget_themes_research_status_and_budget_blocked_run() {
-        use crate::{
+        use m3_core::{
             budget::BudgetConfig,
             lake_l1::DocChunkRow,
             lake_l2::{ResearchRunRow, ResearchRunStatus},

@@ -18,7 +18,7 @@ pub(crate) fn parse_raw_json_decimal_token(raw_token: &str) -> Result<Option<Dec
     parse_decimal_token(trimmed).map(Some)
 }
 
-pub(crate) fn parse_decimal_token(token: &str) -> Result<Decimal, String> {
+pub fn parse_decimal_token(token: &str) -> Result<Decimal, String> {
     let trimmed = token.trim();
     if trimmed.is_empty() {
         return Err("empty decimal value".to_owned());

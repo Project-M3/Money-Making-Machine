@@ -1,6 +1,7 @@
 //! Self-update engine, release channel resolution, and private GitHub Release downloads.
 
 pub mod channel;
+#[cfg(target_os = "macos")]
 pub mod install;
 pub mod passive_check;
 pub mod semver;
@@ -10,38 +11,57 @@ mod tests;
 pub use channel::{ReleaseChannel, effective_channel};
 pub use passive_check::PassiveUpdateNotice;
 
-use anyhow::{Context, Result, bail, ensure};
+#[cfg(target_os = "macos")]
+use anyhow::Context as _;
+use anyhow::{Result, bail, ensure};
+#[cfg(target_os = "macos")]
 use install::{
     InstallLock, SameFsStagingDir, atomic_swap_app_bundle, encode_lower_hex,
     extract_and_verify_bundle, is_valid_sha256_hex, preflight_install_targets,
     resolve_cli_link_path, resolve_target_app_bundle,
 };
+#[cfg(target_os = "macos")]
 use passive_check::{LastCheckCache, passive_check_cache_path, write_cache_atomic};
+#[cfg(target_os = "macos")]
 use reqwest::blocking::Client;
+#[cfg(target_os = "macos")]
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+#[cfg(target_os = "macos")]
 use std::fs::File;
+#[cfg(target_os = "macos")]
 use std::io::{BufWriter, Read as _, Write as _};
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
+#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
-use semver::{
-    current_target_triple, display_tag, is_newer_version, normalize_version_str, parse_semver,
-};
+#[cfg(target_os = "macos")]
+use semver::{current_target_triple, display_tag, is_newer_version};
+use semver::{normalize_version_str, parse_semver};
 
 /// Default GitHub owner/repo hosting M3 releases (private repository supported via `gh` token).
 pub const DEFAULT_GITHUB_REPO: &str = "Project-M3/Money-Making-Machine";
 /// Default GitHub REST API base URL.
 pub const GITHUB_API_BASE: &str = "https://api.github.com";
 
+#[cfg(target_os = "macos")]
 const MANIFEST_TIMEOUT_SECS: u64 = 15;
+#[cfg(target_os = "macos")]
 const ARCHIVE_CONNECT_TIMEOUT_SECS: u64 = 30;
+#[cfg(target_os = "macos")]
 const ARCHIVE_READ_TIMEOUT_SECS: u64 = 60;
+#[cfg(target_os = "macos")]
 const ARCHIVE_MAX_TOTAL_TIMEOUT_SECS: u64 = 600;
+#[cfg(target_os = "macos")]
 const MAX_GITHUB_JSON_BYTES: usize = 2 * 1024 * 1024;
+#[cfg(target_os = "macos")]
 const GH_CANDIDATES: [&str; 3] = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
 
 /// Return the semantic version compiled into this binary.
@@ -107,6 +127,7 @@ pub struct TargetArtifact {
     pub notarized: bool,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
@@ -116,6 +137,7 @@ struct GitHubRelease {
     assets: Vec<GitHubReleaseAsset>,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Deserialize)]
 struct GitHubReleaseAsset {
     name: String,
@@ -165,12 +187,14 @@ pub struct UpdateReport {
     pub notarized: bool,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone)]
 enum DownloadSource {
     GitHubApiAsset { api_asset_url: String },
     DirectUrl { url: String },
 }
 
+#[cfg(target_os = "macos")]
 struct ResolvedRelease {
     manifest: ReleaseManifest,
     artifact: TargetArtifact,
@@ -179,6 +203,7 @@ struct ResolvedRelease {
 }
 
 /// Resolve a GitHub bearer token from env vars or `gh auth token` (Finder-safe absolute paths).
+#[cfg(target_os = "macos")]
 pub fn resolve_github_token() -> Option<String> {
     for var in ["M3_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
         if let Ok(val) = std::env::var(var) {
@@ -207,6 +232,7 @@ pub fn resolve_github_token() -> Option<String> {
     None
 }
 
+#[cfg(target_os = "macos")]
 fn github_repo() -> String {
     std::env::var("M3_GITHUB_REPO")
         .ok()
@@ -215,6 +241,7 @@ fn github_repo() -> String {
         .unwrap_or_else(|| DEFAULT_GITHUB_REPO.to_string())
 }
 
+#[cfg(target_os = "macos")]
 fn github_api_base() -> String {
     std::env::var("M3_GITHUB_API_URL")
         .ok()
@@ -223,6 +250,7 @@ fn github_api_base() -> String {
         .unwrap_or_else(|| GITHUB_API_BASE.to_string())
 }
 
+#[cfg(target_os = "macos")]
 fn build_clients() -> Result<(Client, Client)> {
     let ua = format!("m3/{}", current_binary_version());
     let standard = Client::builder()
@@ -241,6 +269,7 @@ fn build_clients() -> Result<(Client, Client)> {
     Ok((standard, no_redirect))
 }
 
+#[cfg(target_os = "macos")]
 fn validate_http_url(label: &str, url: &str) -> Result<()> {
     ensure!(
         url.starts_with("https://") || url.starts_with("http://"),
@@ -292,10 +321,12 @@ pub fn validate_manifest_metadata(
     Ok((normalized, manifest_channel))
 }
 
+#[cfg(target_os = "macos")]
 fn is_github_api_url(url: &str, api_base: &str) -> bool {
     url.starts_with(api_base) || url.starts_with(GITHUB_API_BASE)
 }
 
+#[cfg(target_os = "macos")]
 fn fetch_json_bytes_with_github_redirect(
     standard: &Client,
     no_redirect: &Client,
@@ -346,6 +377,7 @@ fn fetch_json_bytes_with_github_redirect(
     Ok(bytes.to_vec())
 }
 
+#[cfg(target_os = "macos")]
 fn resolve_release(
     standard: &Client,
     no_redirect: &Client,
@@ -558,6 +590,7 @@ fn resolve_release(
     })
 }
 
+#[cfg(target_os = "macos")]
 fn open_archive_stream(
     standard: &Client,
     no_redirect: &Client,
@@ -605,6 +638,7 @@ fn open_archive_stream(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn download_and_verify_archive(
     standard: &Client,
     no_redirect: &Client,
@@ -669,6 +703,7 @@ fn download_and_verify_archive(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn determine_effective_target_channel(opts: &UpdateOptions) -> ReleaseChannel {
     if let Some(ch) = opts.channel {
         return ch;
@@ -681,6 +716,7 @@ fn determine_effective_target_channel(opts: &UpdateOptions) -> ReleaseChannel {
     channel::effective_channel().0
 }
 
+#[cfg(target_os = "macos")]
 fn write_last_check_cache_best_effort(manifest: &ReleaseManifest, channel: ReleaseChannel) {
     if let Ok(path) = passive_check_cache_path() {
         let cache = LastCheckCache {
@@ -695,6 +731,7 @@ fn write_last_check_cache_best_effort(manifest: &ReleaseManifest, channel: Relea
 }
 
 /// Execute `m3 update` check or apply against GitHub Releases (or explicit manifest URL).
+#[cfg(target_os = "macos")]
 pub fn run_update(opts: &UpdateOptions) -> Result<UpdateReport> {
     let target_triple = current_target_triple()?;
     let current_version = current_binary_version();
@@ -848,7 +885,14 @@ pub fn run_update(opts: &UpdateOptions) -> Result<UpdateReport> {
     })
 }
 
-/// Passive background refresh entry point called on GPUI launch when `last-check.json` is stale.
+/// Execute `m3 update` check or apply (non-macOS platforms are unsupported).
+#[cfg(not(target_os = "macos"))]
+pub fn run_update(_opts: &UpdateOptions) -> Result<UpdateReport> {
+    bail!("self-update is only supported on macOS")
+}
+
+/// Passive background refresh entry point called on desktop launch when `last-check.json` is stale.
+#[cfg(target_os = "macos")]
 pub fn refresh_passive_cache_once(
     target_channel: ReleaseChannel,
 ) -> Result<Option<PassiveUpdateNotice>> {
@@ -884,4 +928,12 @@ pub fn refresh_passive_cache_once(
     } else {
         Ok(None)
     }
+}
+
+/// Passive background refresh stub for non-macOS platforms.
+#[cfg(not(target_os = "macos"))]
+pub fn refresh_passive_cache_once(
+    _target_channel: ReleaseChannel,
+) -> Result<Option<PassiveUpdateNotice>> {
+    Ok(None)
 }

@@ -1,4 +1,4 @@
-use crate::model::{Bucket, JournalAction, StrikeZoneStatus};
+use m3_core::model::{Bucket, JournalAction, StrikeZoneStatus};
 use rust_decimal::Decimal;
 
 // M3 Obsidian Precision Instrument Theme (unified with #0B0B0E / #FFFFFF pixel-art AppIcon)
