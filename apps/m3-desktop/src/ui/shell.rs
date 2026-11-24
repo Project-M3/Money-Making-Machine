@@ -1,9 +1,113 @@
-use super::{MungerWorkbench, NavView, components::*, format::*, theme::*};
+use super::{
+    MungerWorkbench, NavView, components::*, format::*, inbox::budget_watermark_summary, theme::*,
+};
 use crate::model::{Bucket, MungerReport};
 use crate::update;
 use gpui::{
     Context, MouseButton, MouseDownEvent, WindowControlArea, div, prelude::*, px, rgb, rgba,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SidebarDockNotice {
+    pub tag: &'static str,
+    pub message: String,
+    pub dot_color: u32,
+    pub border_color: u32,
+    pub dismissible: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn resolve_sidebar_dock_notice_from(
+    banner: Option<&(String, bool)>,
+    universe_syncing: bool,
+    universe_progress: Option<&str>,
+    inbox_catching_up: bool,
+    inbox_progress: Option<&str>,
+    deep_research_running: bool,
+    syncing: bool,
+    themes_syncing: bool,
+    update_applying: bool,
+) -> Option<SidebarDockNotice> {
+    if let Some((msg, true)) = banner {
+        return Some(SidebarDockNotice {
+            tag: "ERROR",
+            message: msg.clone(),
+            dot_color: CORAL_FG,
+            border_color: CORAL_BORDER,
+            dismissible: true,
+        });
+    }
+    if universe_syncing {
+        return Some(SidebarDockNotice {
+            tag: "LAKE SYNC",
+            message: universe_progress
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("正在后台同步全美股 L0 确定性湖仓…")
+                .to_owned(),
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            dismissible: false,
+        });
+    }
+    if inbox_catching_up {
+        return Some(SidebarDockNotice {
+            tag: "CATCH-UP",
+            message: inbox_progress
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("正在追平 SEC 事件流…")
+                .to_owned(),
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            dismissible: false,
+        });
+    }
+    if deep_research_running {
+        return Some(SidebarDockNotice {
+            tag: "ALAN L2",
+            message: "4 视角并行深研运行中…".to_owned(),
+            dot_color: VIOLET_FG,
+            border_color: VIOLET_BORDER,
+            dismissible: false,
+        });
+    }
+    if syncing {
+        return Some(SidebarDockNotice {
+            tag: "SYNCING",
+            message: "正在同步核心池行情与财务档案…".to_owned(),
+            dot_color: EMERALD_FG,
+            border_color: EMERALD_BORDER,
+            dismissible: false,
+        });
+    }
+    if themes_syncing {
+        return Some(SidebarDockNotice {
+            tag: "THEMES",
+            message: "正在同步商业原型主题图谱…".to_owned(),
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            dismissible: false,
+        });
+    }
+    if update_applying {
+        return Some(SidebarDockNotice {
+            tag: "UPDATING",
+            message: "正在下载并校验新版 M3.app…".to_owned(),
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            dismissible: false,
+        });
+    }
+    if let Some((msg, false)) = banner {
+        return Some(SidebarDockNotice {
+            tag: "NOTICE",
+            message: msg.clone(),
+            dot_color: EMERALD_FG,
+            border_color: EMERALD_BORDER,
+            dismissible: true,
+        });
+    }
+    None
+}
 
 impl MungerWorkbench {
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -146,13 +250,9 @@ impl MungerWorkbench {
                                         .flex()
                                         .items_center()
                                         .gap_2()
-                                        .child(
-                                            div()
-                                                .w(px(2.))
-                                                .h(px(13.))
-                                                .rounded_full()
-                                                .when(selected, |d| d.bg(rgb(rail_col))),
-                                        )
+                                        .child(div().w(px(5.)).h(px(5.)).rounded_full().bg(rgb(
+                                            if selected { rail_col } else { BORDER_STRONG },
+                                        )))
                                         .child(
                                             div()
                                                 .font_family(self.fonts.ui.clone())
@@ -363,6 +463,233 @@ impl MungerWorkbench {
                             }))
                     })),
             )
+            .child(self.render_sidebar_status_dock(cx))
+    }
+
+    fn resolve_sidebar_dock_notice(&self) -> Option<SidebarDockNotice> {
+        resolve_sidebar_dock_notice_from(
+            self.banner.as_ref(),
+            self.universe_syncing,
+            self.universe_sync_progress.as_deref(),
+            self.inbox_catching_up,
+            self.inbox_catchup_progress.as_deref(),
+            self.deep_research_running,
+            self.syncing,
+            self.themes_syncing,
+            self.update_applying,
+        )
+    }
+
+    fn render_sidebar_status_dock(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let notice = self.resolve_sidebar_dock_notice();
+        let total_companies = self
+            .universe_summary
+            .as_ref()
+            .map(|s| s.total_companies)
+            .unwrap_or(0);
+        let lake_label = if total_companies > 0 {
+            format!("L0 {total_companies} 家")
+        } else {
+            "L0 未同步".to_owned()
+        };
+        let (budget_text, budget_col) = budget_watermark_summary(self.budget_report.as_ref());
+        let budget_compact = budget_text
+            .strip_prefix("本月 AI 预算 ")
+            .unwrap_or(&budget_text)
+            .to_owned();
+
+        let mut dock = div()
+            .flex_shrink_0()
+            .px_2p5()
+            .pt_2()
+            .pb_2p5()
+            .border_t_1()
+            .border_color(rgb(BORDER_HAIRLINE))
+            .bg(rgb(BG_SHELL))
+            .flex()
+            .flex_col()
+            .gap_2();
+
+        if let Some(n) = notice {
+            dock = dock.child(
+                div()
+                    .rounded_md()
+                    .bg(rgb(BG_SURFACE))
+                    .border_1()
+                    .border_color(rgba(n.border_color))
+                    .p_2p5()
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .child(
+                                        div()
+                                            .w(px(6.))
+                                            .h(px(6.))
+                                            .rounded_full()
+                                            .bg(rgb(n.dot_color)),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(self.fonts.mono_term.clone())
+                                            .text_size(px(10.))
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .text_color(rgb(n.dot_color))
+                                            .child(n.tag),
+                                    ),
+                            )
+                            .when(n.dismissible, |d| {
+                                d.child(
+                                    div()
+                                        .id("sidebar-dock-dismiss")
+                                        .px_1()
+                                        .rounded_xs()
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                                        .font_family(self.fonts.mono_term.clone())
+                                        .text_xs()
+                                        .text_color(rgb(INK_MUTED))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.banner = None;
+                                            cx.notify();
+                                        }))
+                                        .child("×"),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_size(px(11.))
+                            .line_height(px(16.))
+                            .text_color(rgb(INK_PRIMARY))
+                            .child(n.message),
+                    ),
+            );
+        }
+
+        let version_badge = if let Some(ver) = &self.update_applied_version {
+            div()
+                .id("sidebar-update-restart")
+                .px_1p5()
+                .py_0p5()
+                .rounded_xs()
+                .cursor_pointer()
+                .bg(rgba(EMERALD_BG))
+                .border_1()
+                .border_color(rgba(EMERALD_BORDER))
+                .font_family(self.fonts.mono_num.clone())
+                .text_size(px(10.))
+                .text_color(rgb(EMERALD_FG))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.restart_after_update(cx);
+                }))
+                .child(format!("重启 v{ver}"))
+        } else if let Some(notice) = &self.update_notice {
+            let latest = notice.latest_version.clone();
+            div()
+                .id("sidebar-update-apply")
+                .px_1p5()
+                .py_0p5()
+                .rounded_xs()
+                .cursor_pointer()
+                .bg(rgba(SKY_BG))
+                .border_1()
+                .border_color(rgba(SKY_BORDER))
+                .font_family(self.fonts.mono_num.clone())
+                .text_size(px(10.))
+                .text_color(rgb(SKY_FG))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.start_update_apply(cx);
+                }))
+                .child(format!("↑ v{latest}"))
+        } else {
+            div()
+                .id("sidebar-update-check")
+                .px_1()
+                .py_0p5()
+                .rounded_xs()
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                .font_family(self.fonts.mono_num.clone())
+                .text_size(px(10.))
+                .text_color(rgb(INK_MUTED))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.start_update_check(true, cx);
+                }))
+                .child(format!(
+                    "v{} · {}",
+                    update::current_binary_version(),
+                    self.update_channel.as_str()
+                ))
+        };
+
+        dock.child(
+            div()
+                .px_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(div().w(px(5.)).h(px(5.)).rounded_full().bg(rgb(
+                                    if total_companies > 0 {
+                                        EMERALD_FG
+                                    } else {
+                                        INK_MUTED
+                                    },
+                                )))
+                                .child(
+                                    div()
+                                        .font_family(self.fonts.mono_num.clone())
+                                        .text_size(px(10.))
+                                        .text_color(rgb(INK_SECONDARY))
+                                        .child(lake_label),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .font_family(self.fonts.mono_num.clone())
+                                .text_size(px(10.))
+                                .text_color(rgb(budget_col))
+                                .child(budget_compact),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(version_badge)
+                        .child(
+                            div()
+                                .font_family(self.fonts.mono_term.clone())
+                                .text_size(px(10.))
+                                .text_color(rgb(INK_MUTED))
+                                .child("PAPER ONLY"),
+                        ),
+                ),
+        )
     }
 
     pub(super) fn render_toolbar(&self, cx: &mut Context<Self>) -> gpui::Div {

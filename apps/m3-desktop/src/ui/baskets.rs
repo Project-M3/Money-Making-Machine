@@ -693,17 +693,6 @@ impl MungerWorkbench {
                                     this.select_company(&ticker, Some(NavView::Dossier));
                                     cx.notify();
                                 }))
-                                .when(is_cursor, |d| {
-                                    d.child(
-                                        div()
-                                            .absolute()
-                                            .left_0()
-                                            .top_0()
-                                            .bottom_0()
-                                            .w(px(2.))
-                                            .bg(rgb(INK_HERO)),
-                                    )
-                                })
                                 .child(
                                     div()
                                         .flex_1()
@@ -854,17 +843,6 @@ impl MungerWorkbench {
                                     this.select_company(&ticker, Some(NavView::Dossier));
                                     cx.notify();
                                 }))
-                                .when(is_cursor, |d| {
-                                    d.child(
-                                        div()
-                                            .absolute()
-                                            .left_0()
-                                            .top_0()
-                                            .bottom_0()
-                                            .w(px(2.))
-                                            .bg(rgb(INK_HERO)),
-                                    )
-                                })
                                 .child(
                                     div()
                                         .flex()

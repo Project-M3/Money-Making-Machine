@@ -13,7 +13,7 @@ secrets/
 keys/
 
 # Market Data & Local Databases
-data/
+/data/
 *.parquet
 *.duckdb
 *.duckdb.wal
@@ -24,6 +24,11 @@ data/
 # Logs & Runtime Artifacts
 logs/
 *.log
+
+# Website build artifacts
+website/node_modules/
+website/dist/
+website/.cloudflare/
 
 # OS & Editor
 .DS_Store

@@ -1,0 +1,90 @@
+/* ==========================================================================
+   Project M3 — Obsidian Precision Instrument Design Tokens
+   Synchronized 1:1 with apps/m3-desktop/src/ui/theme.rs
+   ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* Core Surfaces (apps/m3-desktop/src/ui/theme.rs) */
+  --bg-shell: #0b0b0e;
+  --bg-viewport: #101015;
+  --bg-toolbar: #121218;
+  --bg-surface: #14141c;
+  --bg-well: #181822;
+  --bg-row-alt: #121219;
+  --bg-hover: #1d1d28;
+  --bg-selected: #1b1b27;
+  --bg-active: #252534;
+  --bg-statusline: #0d0d13;
+
+  /* Architectural Hairlines & Borders */
+  --border-viewport: #1d1d26;
+  --border-hairline: #1c1c26;
+  --border-subtle: #242432;
+  --border-strong: #323244;
+  --border-pill: #2d2d3d;
+
+  /* Ink Scale */
+  --ink-hero: #ffffff;
+  --ink-primary: #eceef2;
+  --ink-secondary: #a0a6b4;
+  --ink-muted: #6b7282;
+
+  /* Monochrome CTA */
+  --cta-bg: #f4f4f6;
+  --cta-bg-hover: #ffffff;
+  --cta-bg-active: #d8d8df;
+  --cta-ink: #09090c;
+
+  /* Semantic Telemetry Accents */
+  --emerald: #34d399;
+  --emerald-bg: rgba(16, 185, 129, 0.12);
+  --emerald-border: rgba(52, 211, 153, 0.28);
+
+  --gold: #fbbf24;
+  --gold-bg: rgba(245, 158, 11, 0.12);
+  --gold-border: rgba(251, 191, 36, 0.28);
+
+  --coral: #f87171;
+  --coral-bg: rgba(239, 68, 68, 0.12);
+  --coral-border: rgba(248, 113, 113, 0.28);
+
+  --orange: #fb923c;
+  --orange-bg: rgba(249, 115, 22, 0.12);
+  --orange-border: rgba(251, 146, 60, 0.28);
+
+  --sky: #60a5fa;
+  --sky-bg: rgba(59, 130, 246, 0.12);
+  --sky-border: rgba(96, 165, 250, 0.28);
+
+  --violet: #a78bfa;
+  --violet-bg: rgba(139, 92, 246, 0.12);
+  --violet-border: rgba(167, 139, 250, 0.28);
+
+  --slate: #94a3b8;
+  --slate-bg: rgba(148, 163, 184, 0.1);
+  --slate-border: rgba(148, 163, 184, 0.22);
+
+  /* Typography */
+  --font-display: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Fluid Scale */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: clamp(1.0625rem, 1rem + 0.35vw, 1.25rem);
+  --text-xl: clamp(1.375rem, 1.15rem + 0.9vw, 1.75rem);
+  --text-2xl: clamp(2rem, 1.45rem + 2.2vw, 3.125rem);
+  --text-hero: clamp(2.85rem, 1.8rem + 4.4vw, 5.15rem);
+
+  /* Layout */
+  --max-w: 1220px;
+  --gutter: clamp(1.125rem, 3vw, 2.5rem);
+  --radius-xs: 3px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}

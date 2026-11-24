@@ -1,8 +1,10 @@
 # Money-Making-Machine（Project M3）
 
+> 官网：<https://m3.thinksmart.systems> · 开源协议：[Apache-2.0](LICENSE) · 最新稳定版：`v0.3.0`
+
 一个面向个人长期价值投资的**人机混动芒格研究与决策工作台**（Munger Focus Value Research & Decision Workbench）。
 
-核心目标：依托自有长期资金、个人真实能力圈（如工业软件、CAD/PLM、开发者生态与消费基础设施）和“坐在屁股上等待”的低焦虑节奏，借助 **确定性 Rust 财务计算引擎 + 旗舰 LLM 跨学科审讯（Alan）+ GPUI 原生工作台**，寻找“以公道价格买入伟大企业”的投资机会，用可核验的一手财报证据和事前证伪条件做决策。
+核心目标：依托自有长期资金、个人真实能力圈与“坐在屁股上等待”的低焦虑节奏，以全美股 DuckDB/Parquet 确定性湖仓扩大观察边界，以事件流与隐空间相似发现替代无效盯盘，以可核验的一手财报算术和 `EmbeddedAlan` 跨学科逆向审讯辅助思考——并把全部决定权严格保留在人类手中。
 
 ---
 
@@ -32,10 +34,14 @@
 ## 快速安装与双通道自动更新（macOS）
 
 ```sh
-# 1. 安装（默认写入 /Applications/M3.app，建立 ~/.local/bin/m3 软链并绑定当前仓库为默认工作区）
-#    需先登录 gh auth login（私有仓库下载自动复用 gh token）或设置 M3_GITHUB_TOKEN
-./scripts/install.sh --channel beta    # 跟随 main 每次合并自动发布的 rolling beta
-./scripts/install.sh --channel stable  # 或选择带 tag (vX.Y.Z) 的稳定版
+# 1. 一键安装最新公开正式版（写入 /Applications/M3.app，建立 ~/.local/bin/m3 软链）
+curl -fsSL https://m3.thinksmart.systems/install.sh | bash
+
+# 或安装跟随 main 合并自动构建的 rolling beta（支持传入 --channel beta）
+curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta
+
+# 若在本地仓库内执行，也可直接运行脚本自动绑定当前工作区：
+./scripts/install.sh --channel stable
 
 # 2. 日常切换通道与自更新（命令行 & GPUI 桌面端均支持）
 m3 update channel beta     # 切到 beta（或 stable）

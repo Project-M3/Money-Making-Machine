@@ -2152,17 +2152,6 @@ impl MungerWorkbench {
                 this.select_universe_row(&row_for_click);
                 cx.notify();
             }))
-            .when(is_selected, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(2.))
-                        .bg(rgb(SKY_FG)),
-                )
-            })
             .child(
                 div()
                     .flex_1()

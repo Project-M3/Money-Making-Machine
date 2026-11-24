@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en" data-theme="obsidian">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Project M3 — Scale like a machine. Decide like Munger.</title>
+    <meta
+      name="description"
+      content="Project M3 is an open-source, local-first value investing instrument designed around Charlie Munger's mental models: read the whole market calmly, verify every number directly from primary filings, invert every thesis, and keep judgment strictly human."
+    />
+    <meta name="author" content="Morris Liu" />
+    <link rel="canonical" href="https://m3.thinksmart.systems/" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./m3-icon.png" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Project M3" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:url" content="https://m3.thinksmart.systems/" />
+    <meta property="og:title" content="Project M3 — Scale like a machine. Decide like Munger." />
+    <meta
+      property="og:description"
+      content="One investor can follow ten companies. A machine can watch five thousand calmly—surfacing what crosses your circle of competence while keeping every judgment human."
+    />
+    <meta property="og:image" content="https://m3.thinksmart.systems/m3-icon.png" />
+    <meta property="og:image:width" content="1024" />
+    <meta property="og:image:height" content="1024" />
+    <meta property="og:image:alt" content="Project M3 Obsidian pixel-art monogram mark" />
+
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Project M3 — Scale like a machine. Decide like Munger." />
+    <meta
+      name="twitter:description"
+      content="Open-source value research workbench built for patience, primary-source arithmetic, and adversarial inversion."
+    />
+    <meta name="twitter:image" content="https://m3.thinksmart.systems/m3-icon.png" />
+    <meta name="twitter:creator" content="@realmorrisliu" />
+
+    <meta name="theme-color" content="#0B0B0E" />
+    <meta name="color-scheme" content="dark" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "@id": "https://m3.thinksmart.systems/#software",
+        "name": "Project M3",
+        "alternateName": "Money-Making-Machine",
+        "softwareVersion": "0.3.0",
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "macOS",
+        "description": "An open-source, local-first value investing instrument built around patience, primary-filing arithmetic, structural analogy, and adversarial inversion.",
+        "url": "https://m3.thinksmart.systems/",
+        "codeRepository": "https://github.com/Project-M3/Money-Making-Machine",
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "image": "https://m3.thinksmart.systems/m3-icon.png",
+        "author": {
+          "@type": "Person",
+          "@id": "https://realmorrisliu.com/#person",
+          "name": "Morris Liu",
+          "url": "https://realmorrisliu.com"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <a class="brand" href="#top" aria-label="Project M3 home">
+          <img class="brand-mark" src="./favicon.svg" alt="" width="28" height="28" />
+          <span class="brand-wordmark">
+            <span class="brand-name">PROJECT M3</span>
+            <span class="badge-preview">Open Source · v0.3.0</span>
+          </span>
+        </a>
+
+        <nav class="topnav" aria-label="Primary">
+          <a href="#workbench">Workbench</a>
+          <a href="#philosophy">Philosophy</a>
+          <a href="#method">Method</a>
+          <a href="#principles">Principles</a>
+          <a href="#install">Install</a>
+          <a href="https://github.com/Project-M3/Money-Making-Machine" target="_blank" rel="noopener">GitHub ↗</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="container">
+          <div class="hero-header">
+            <div>
+              <div class="kicker">
+                <span>VALUE RESEARCH INSTRUMENT</span>
+                <span class="kicker-dot" aria-hidden="true">/</span>
+                <span>PATIENCE OVER NOISE</span>
+                <span class="kicker-dot" aria-hidden="true">/</span>
+                <span>HUMAN SOVEREIGNTY</span>
+              </div>
+              <h1 class="hero-title">
+                Scale like a machine.<br />
+                Decide like <em>Munger.</em>
+              </h1>
+            </div>
+
+            <div class="hero-aside">
+              <p class="hero-lead">
+                One human investor can truly understand ten businesses. A quiet desktop instrument
+                can read five thousand filings on your desk—filtering out storytellers, inverting
+                every thesis from four angles, and keeping every judgment strictly yours.
+              </p>
+              <div class="hero-actions">
+                <a class="btn btn-primary" href="#install">Install on macOS</a>
+                <a
+                  class="btn btn-secondary"
+                  href="https://github.com/Project-M3/Money-Making-Machine"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  View Source on GitHub ↗
+                </a>
+              </div>
+            </div>
+          </div>
+
+          <div id="workbench" class="workbench-caption-row">
+            <span class="caption-pill">
+              <strong>M3.app · Native Desktop Replica</strong> — click sidebar baskets, press <kbd>1</kbd>–<kbd>4</kbd>, <kbd>⌘K</kbd>, or test <strong>Sync</strong>
+            </span>
+            <span class="fixture-tag">Interactive Paper-Research Fixture</span>
+          </div>
+
+          <div id="workbench-root" class="app-frame" aria-label="Interactive M3.app Workbench Simulator"></div>
+        </div>
+      </section>
+
+      <section id="philosophy" class="section" data-reveal>
+        <div class="container">
+          <div class="section-header">
+            <div>
+              <span class="section-index">01 / Asymmetric Patience</span>
+              <h2 class="section-title">Why breadth serves patience</h2>
+            </div>
+            <p class="section-sub">
+              Waiting on your hands is easy when you see the whole field and know nothing worthy is
+              cheap. Scarcity of ideas—not scarcity of market noise—causes bad decisions.
+            </p>
+          </div>
+
+          <div class="contrast-grid">
+            <article class="contrast-col">
+              <p class="contrast-kicker">Habitual Manual Workflow</p>
+              <h3 class="contrast-heading">Narrow focus, noisy urgency</h3>
+              <ul class="spec-rows">
+                <li>
+                  <span>Attention</span>
+                  <span>Trapped in 5–10 familiar tickers; forced to swing at mediocre pitches.</span>
+                </li>
+                <li>
+                  <span>Numbers</span>
+                  <span>Hand-copied spreadsheets and management-adjusted EPS that hide true dilution.</span>
+                </li>
+                <li>
+                  <span>Cadence</span>
+                  <span>Continuous ticker checking that turns long-term compounding into anxiety.</span>
+                </li>
+                <li>
+                  <span>Argument</span>
+                  <span>Echo-chamber AI summaries that flatter your existing conviction instead of testing it.</span>
+                </li>
+              </ul>
+            </article>
+
+            <article class="contrast-col contrast-col--m3">
+              <p class="contrast-kicker">The M3 Posture</p>
+              <h3 class="contrast-heading">Quiet breadth, surgical conviction</h3>
+              <ul class="spec-rows">
+                <li>
+                  <span>Attention</span>
+                  <span>Indexes every US issuer calmly on your own machine—widening luck to strike-zone rarity.</span>
+                </li>
+                <li>
+                  <span>Numbers</span>
+                  <span>Audited, deterministic cash-return accounting directly from primary official filings.</span>
+                </li>
+                <li>
+                  <span>Cadence</span>
+                  <span>No tickers scrolling all day. Catch up on factual changes only when you sit down to think.</span>
+                </li>
+                <li>
+                  <span>Argument</span>
+                  <span>Four independent adversarial lenses—Moat, Accounting, Peers, Pre-Mortem—before you write a single judgment.</span>
+                </li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="method" class="section" data-reveal>
+        <div class="container">
+          <div class="section-header">
+            <div>
+              <span class="section-index">02 / From Noise to Conviction</span>
+              <h2 class="section-title">Four mental models in one calm loop</h2>
+            </div>
+            <p class="section-sub">
+              Most tools jump straight from a headline to a narrative. M3 insists on earning
+              attention in stages—narrowing thousands of companies down to the rare moments worth
+              your afternoon.
+            </p>
+          </div>
+
+          <div id="pipeline-root" class="pipeline-shell"></div>
+        </div>
+      </section>
+
+      <section id="principles" class="section" data-reveal>
+        <div class="container">
+          <div class="section-header">
+            <div>
+              <span class="section-index">03 / First Principles</span>
+              <h2 class="section-title">Four rules that never bend</h2>
+            </div>
+            <p class="section-sub">
+              Before committing to Munger value research, M3 ran and audited short-horizon trend
+              and carry strategies against out-of-sample data—and archived both in the open after
+              negative real-world results. Discipline starts by respecting reality.
+            </p>
+          </div>
+
+          <div class="invariants-ledger">
+            <article class="invariant-row">
+              <div class="inv-num">RULE 01</div>
+              <h3 class="inv-title">Arithmetic Is Sacred</h3>
+              <div>
+                <p class="inv-copy">
+                  Never ask a language model to do accounting. Returns on invested capital,
+                  strict Owner Earnings (deducting real capex and stock-based compensation in full),
+                  share dilution, and reverse-implied growth are solved deterministically from
+                  official primary filings—with hash provenance down to the filing fact.
+                </p>
+                <span class="inv-proof">Zero-LLM financial math · Primary filing traceability</span>
+              </div>
+            </article>
+
+            <article class="invariant-row">
+              <div class="inv-num">RULE 02</div>
+              <h3 class="inv-title">Invert, Always Invert</h3>
+              <div>
+                <p class="inv-copy">
+                  Munger's favorite trick is asking where a thesis dies before calculating what it
+                  might pay. Every deep-research run tests competitive moat, accounting reality,
+                  structural lookalikes, and a dedicated Pre-Mortem—surfacing falsification criteria
+                  instead of sales pitches.
+                </p>
+                <span class="inv-proof">Four adversarial lenses · Hard Too Hard veto gate</span>
+              </div>
+            </article>
+
+            <article class="invariant-row">
+              <div class="inv-num">RULE 03</div>
+              <h3 class="inv-title">Sovereignty Belongs to the Owner</h3>
+              <div>
+                <p class="inv-copy">
+                  Software can widen your peripheral vision and challenge your blind spots, but it
+                  cannot carry your conviction through a 40% drawdown. M3 structurally blocks itself
+                  from outputting buy or sell advice; strike prices and thesis weights remain strictly
+                  human-authored.
+                </p>
+                <span class="inv-proof">Policy-enforced boundary · Append-only Decision Journal</span>
+              </div>
+            </article>
+
+            <article class="invariant-row">
+              <div class="inv-num">RULE 04</div>
+              <h3 class="inv-title">Sit Calmly, Spend Almost Nothing</h3>
+              <div>
+                <p class="inv-copy">
+                  Great compounding hates frantic overhead. M3 runs locally on your Mac with zero
+                  standing cloud infrastructure, zero broker keys, and hard-capped research spend.
+                  Routine screening costs nothing; deep interrogation only runs when facts earn it.
+                </p>
+                <span class="inv-proof">Local-first · Hard budget gate · Paper research discipline</span>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="install" class="section" data-reveal>
+        <div class="container">
+          <div class="section-header">
+            <div>
+              <span class="section-index">04 / Own Your Instrument</span>
+              <h2 class="section-title">Open source on your desk</h2>
+            </div>
+            <p class="section-sub">
+              Licensed under Apache-2.0. Install the native macOS desktop workbench and scriptable
+              <code>m3</code> command in one line—with signed <code>stable</code> and
+              <code>beta</code> updates delivered straight from GitHub Releases.
+            </p>
+          </div>
+
+          <div class="access-grid">
+            <aside class="preview-card">
+              <div class="preview-card-top">
+                <span class="badge-preview">Apache-2.0 · v0.3.0</span>
+                <span class="mono" style="font-size: 0.72rem; color: var(--ink-muted);">macOS Apple Silicon &amp; Intel</span>
+              </div>
+              <h3>Install M3.app + CLI</h3>
+              <p>
+                Installs <code>/Applications/M3.app</code>, symlinks <code>m3</code> to
+                <code>~/.local/bin/m3</code>, verifies SHA-256 checksums, and sets up auto-updates.
+              </p>
+
+              <div class="install-snippet-row">
+                <pre class="install-box"><code id="install-stable-cmd">curl -fsSL https://m3.thinksmart.systems/install.sh | bash</code></pre>
+                <button
+                  type="button"
+                  class="copy-btn"
+                  data-copy-text="curl -fsSL https://m3.thinksmart.systems/install.sh | bash"
+                >
+                  Copy
+                </button>
+              </div>
+
+              <div class="install-snippet-row">
+                <pre class="install-box"><code>curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta</code></pre>
+                <button
+                  type="button"
+                  class="copy-btn"
+                  data-copy-text="curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta"
+                >
+                  Copy
+                </button>
+              </div>
+
+              <div class="hero-actions" style="margin-top: 0.25rem;">
+                <a
+                  class="btn btn-secondary"
+                  href="https://github.com/Project-M3/Money-Making-Machine"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  GitHub Repository ↗
+                </a>
+                <a
+                  class="btn btn-secondary"
+                  href="https://github.com/Project-M3/Money-Making-Machine/releases"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  All Releases ↗
+                </a>
+              </div>
+            </aside>
+
+            <div class="cli-deck">
+              <div class="cli-deck-head">
+                <span>Daily Rhythm in the Terminal</span>
+                <span>m3 --json</span>
+              </div>
+              <div id="cli-list" class="cli-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="container footer-inner">
+        <div class="footer-left">
+          <img src="./favicon.svg" alt="" width="20" height="20" style="border-radius: 4px" />
+          <span>Project M3 · m3.thinksmart.systems</span>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/Project-M3/Money-Making-Machine" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/Project-M3/Money-Making-Machine/blob/main/LICENSE" target="_blank" rel="noopener">Apache-2.0</a>
+          <a href="https://realmorrisliu.com" target="_blank" rel="noopener">Morris Liu</a>
+          <a href="https://alanworks.app" target="_blank" rel="noopener">Built with Alan</a>
+          <span>Research instrument — not investment advice</span>
+        </div>
+      </div>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

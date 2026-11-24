@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# M3 macOS installer (supports private GitHub Releases via gh/token and local builds).
+# M3 macOS installer (supports public GitHub Releases by default; optional gh/token for rate limits, plus --local builds).
 # Installs M3.app to /Applications/M3.app (by default) and symlinks ~/.local/bin/m3,
 # verifies SHA-256 checksums before swapping, and persists workspace + release channel.
 
@@ -34,7 +34,7 @@ Options:
   -h, --help                Show this help message
 
 Environment:
-  M3_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN   Token for private GitHub Releases (falls back to `gh auth token`)
+  M3_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN   Optional token for GitHub API rate limits or private forks (falls back to `gh auth token`)
   M3_GITHUB_REPO                              GitHub owner/repo (default: Project-M3/Money-Making-Machine)
 EOF
 }
@@ -113,12 +113,16 @@ case "$CHANNEL" in
     ;;
 esac
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT_GUESS="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR=""
+REPO_ROOT_GUESS=""
+if [ -f "$0" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  REPO_ROOT_GUESS="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
 if [ -z "$WORKSPACE_DIR" ]; then
   if [ -f "$PWD/workbench/watchlist.json" ]; then
     WORKSPACE_DIR="$PWD"
-  elif [ -f "$REPO_ROOT_GUESS/workbench/watchlist.json" ]; then
+  elif [ -n "$REPO_ROOT_GUESS" ] && [ -f "$REPO_ROOT_GUESS/workbench/watchlist.json" ]; then
     WORKSPACE_DIR="$REPO_ROOT_GUESS"
   fi
 fi
@@ -181,6 +185,10 @@ STAGED_APP=""
 INSTALLED_VERSION=""
 
 if [ "$USE_LOCAL" -eq 1 ]; then
+  if [ -z "$REPO_ROOT_GUESS" ]; then
+    echo "error: --local requires running install.sh directly from the repository checkout" >&2
+    exit 1
+  fi
   LOCAL_APP="$REPO_ROOT_GUESS/apps/m3-desktop/artifacts/M3.app"
   if [ ! -x "$LOCAL_APP/Contents/MacOS/m3-desktop" ]; then
     echo "error: local bundle not found at '$LOCAL_APP'; run ./apps/m3-desktop/build.sh first" >&2
@@ -195,10 +203,6 @@ if [ "$USE_LOCAL" -eq 1 ]; then
   STAGED_APP="$STAGE_ROOT/M3.app"
 else
   TOKEN="$(resolve_token)"
-  if [ -z "$TOKEN" ]; then
-    echo "error: no GitHub token found for private repo $REPO; run 'gh auth login' or set M3_GITHUB_TOKEN" >&2
-    exit 1
-  fi
 
   META_JSON="$STAGE_ROOT/resolved.json"
   M3_INSTALL_TOKEN="$TOKEN" python3 - "$REPO" "$CHANNEL" "$REQUESTED_VERSION" "$TARGET" "$META_JSON" <<'PY'
@@ -209,36 +213,30 @@ import urllib.error
 import urllib.request
 
 repo, channel, req_ver, target, out_meta = sys.argv[1:]
-token = os.environ["M3_INSTALL_TOKEN"]
+token = os.environ.get("M3_INSTALL_TOKEN", "").strip()
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
+def github_headers(accept: str, with_auth: bool = True) -> dict[str, str]:
+    headers = {
+        "Accept": accept,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "m3-installer",
+    }
+    if with_auth and token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
 def api_get_json(url: str) -> dict:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": "m3-installer",
-        },
-    )
+    req = urllib.request.Request(url, headers=github_headers("application/vnd.github+json"))
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
-def download_github_asset(asset_url: str) -> bytes:
+def download_bytes(url: str, accept: str = "application/octet-stream", send_auth: bool = True) -> bytes:
     opener = urllib.request.build_opener(NoRedirect())
-    req = urllib.request.Request(
-        asset_url,
-        headers={
-            "Accept": "application/octet-stream",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": "m3-installer",
-        },
-    )
+    req = urllib.request.Request(url, headers=github_headers(accept, with_auth=send_auth))
     try:
         with opener.open(req, timeout=30) as resp:
             return resp.read()
@@ -252,41 +250,67 @@ def download_github_asset(asset_url: str) -> bytes:
                 return resp2.read()
         raise
 
-if req_ver:
-    tag = req_ver if req_ver.startswith("v") else f"v{req_ver}"
-    rel_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
-elif channel == "beta":
-    rel_url = f"https://api.github.com/repos/{repo}/releases/tags/beta"
+if not token and not req_ver:
+    if channel == "beta":
+        manifest_url = f"https://github.com/{repo}/releases/download/beta/latest.json"
+    else:
+        manifest_url = f"https://github.com/{repo}/releases/latest/download/latest.json"
+    try:
+        manifest = json.loads(download_bytes(manifest_url, accept="application/json", send_auth=False).decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        raise SystemExit(f"error: public release manifest fetch {manifest_url} failed with HTTP {err.code}")
+    t_info = manifest.get("targets", {}).get(target)
+    if not t_info:
+        raise SystemExit(f"error: release manifest missing target {target}")
+    asset_name = t_info.get("asset") or f"m3-{manifest['version']}-{target}.tar.gz"
+    asset_url = t_info.get("url") or f"https://github.com/{repo}/releases/download/{manifest['tag']}/{asset_name}"
+    out = {
+        "version": manifest["version"],
+        "tag": manifest["tag"],
+        "channel": manifest.get("channel", channel),
+        "asset": asset_name,
+        "asset_download_url": asset_url,
+        "use_token": False,
+        "sha256": t_info["sha256"].lower(),
+        "size": int(t_info.get("size") or 0),
+    }
 else:
-    rel_url = f"https://api.github.com/repos/{repo}/releases/latest"
+    if req_ver:
+        tag = req_ver if req_ver.startswith("v") else f"v{req_ver}"
+        rel_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+    elif channel == "beta":
+        rel_url = f"https://api.github.com/repos/{repo}/releases/tags/beta"
+    else:
+        rel_url = f"https://api.github.com/repos/{repo}/releases/latest"
 
-try:
-    release = api_get_json(rel_url)
-except urllib.error.HTTPError as err:
-    raise SystemExit(f"error: GitHub Release API {rel_url} failed with HTTP {err.code}")
+    try:
+        release = api_get_json(rel_url)
+    except urllib.error.HTTPError as err:
+        raise SystemExit(f"error: GitHub Release API {rel_url} failed with HTTP {err.code}")
 
-assets = {a["name"]: a for a in release.get("assets", [])}
-if "latest.json" not in assets:
-    raise SystemExit(f"error: release {release.get('tag_name')} missing latest.json")
+    assets = {a["name"]: a for a in release.get("assets", [])}
+    if "latest.json" not in assets:
+        raise SystemExit(f"error: release {release.get('tag_name')} missing latest.json")
 
-manifest = json.loads(download_github_asset(assets["latest.json"]["url"]).decode("utf-8"))
-t_info = manifest.get("targets", {}).get(target)
-if not t_info:
-    raise SystemExit(f"error: release manifest missing target {target}")
+    manifest = json.loads(download_bytes(assets["latest.json"]["url"]).decode("utf-8"))
+    t_info = manifest.get("targets", {}).get(target)
+    if not t_info:
+        raise SystemExit(f"error: release manifest missing target {target}")
 
-asset_name = t_info.get("asset") or f"m3-{manifest['version']}-{target}.tar.gz"
-if asset_name not in assets:
-    raise SystemExit(f"error: release missing asset {asset_name}")
+    asset_name = t_info.get("asset") or f"m3-{manifest['version']}-{target}.tar.gz"
+    if asset_name not in assets:
+        raise SystemExit(f"error: release missing asset {asset_name}")
 
-out = {
-    "version": manifest["version"],
-    "tag": manifest["tag"],
-    "channel": manifest.get("channel", channel),
-    "asset": asset_name,
-    "asset_api_url": assets[asset_name]["url"],
-    "sha256": t_info["sha256"].lower(),
-    "size": int(t_info.get("size") or assets[asset_name].get("size") or 0),
-}
+    out = {
+        "version": manifest["version"],
+        "tag": manifest["tag"],
+        "channel": manifest.get("channel", channel),
+        "asset": asset_name,
+        "asset_download_url": assets[asset_name]["url"],
+        "use_token": bool(token),
+        "sha256": t_info["sha256"].lower(),
+        "size": int(t_info.get("size") or assets[asset_name].get("size") or 0),
+    }
 with open(out_meta, "w", encoding="utf-8") as fh:
     json.dump(out, fh)
 PY
@@ -312,22 +336,22 @@ import urllib.request
 
 meta_path, dest_path = sys.argv[1:]
 meta = json.load(open(meta_path))
-token = os.environ["M3_INSTALL_TOKEN"]
+token = os.environ.get("M3_INSTALL_TOKEN", "").strip()
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 opener = urllib.request.build_opener(NoRedirect())
-req = urllib.request.Request(
-    meta["asset_api_url"],
-    headers={
-        "Accept": "application/octet-stream",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "m3-installer",
-    },
-)
+headers = {
+    "Accept": "application/octet-stream",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "m3-installer",
+}
+if meta.get("use_token") and token:
+    headers["Authorization"] = f"Bearer {token}"
+
+req = urllib.request.Request(meta["asset_download_url"], headers=headers)
 
 def stream_to_file(resp):
     h = hashlib.sha256()

@@ -1126,3 +1126,68 @@ Keep watching SBC ratio before adding size.
         PaletteAction::SyncThemes
     );
 }
+
+#[test]
+fn sidebar_dock_notice_prioritizes_errors_then_active_tasks_then_info() {
+    use super::shell::resolve_sidebar_dock_notice_from;
+
+    // 1. Idle returns None.
+    assert!(
+        resolve_sidebar_dock_notice_from(
+            None, false, None, false, None, false, false, false, false
+        )
+        .is_none()
+    );
+
+    // 2. Active info banner shows dismissible notice.
+    let info = ("同步完成".to_owned(), false);
+    let info_notice = resolve_sidebar_dock_notice_from(
+        Some(&info),
+        false,
+        None,
+        false,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    assert_eq!(info_notice.tag, "NOTICE");
+    assert!(info_notice.dismissible);
+
+    // 3. Background sync outranks an older info banner and is not dismissible.
+    let sync_notice = resolve_sidebar_dock_notice_from(
+        Some(&info),
+        true,
+        Some("Downloading companyfacts.zip (42%)"),
+        false,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    assert_eq!(sync_notice.tag, "LAKE SYNC");
+    assert!(!sync_notice.dismissible);
+    assert!(sync_notice.message.contains("42%"));
+
+    // 4. Error banner takes top precedence over background state.
+    let err = ("预算门控拦截".to_owned(), true);
+    let err_notice = resolve_sidebar_dock_notice_from(
+        Some(&err),
+        true,
+        Some("progress"),
+        true,
+        Some("catchup"),
+        true,
+        true,
+        true,
+        true,
+    )
+    .unwrap();
+    assert_eq!(err_notice.tag, "ERROR");
+    assert_eq!(err_notice.dot_color, CORAL_FG);
+    assert!(err_notice.dismissible);
+}

@@ -36,7 +36,7 @@ use crate::{
 };
 use gpui::{
     ClipboardItem, Context, FocusHandle, KeyDownEvent, SharedString, Window, div, prelude::*, px,
-    rgb, rgba,
+    rgb,
 };
 use rust_decimal::Decimal;
 use std::{collections::HashSet, sync::mpsc, time::Instant};
@@ -1509,51 +1509,6 @@ impl Render for MungerWorkbench {
                             .flex()
                             .flex_col()
                             .child(self.render_toolbar(cx))
-                            .when_some(self.banner.clone(), |d, (msg, is_err)| {
-                                d.child(
-                                    div()
-                                        .px_4()
-                                        .py_1p5()
-                                        .bg(rgba(if is_err { CORAL_BG } else { EMERALD_BG }))
-                                        .border_b_1()
-                                        .border_color(rgba(if is_err {
-                                            CORAL_BORDER
-                                        } else {
-                                            EMERALD_BORDER
-                                        }))
-                                        .flex()
-                                        .items_center()
-                                        .justify_between()
-                                        .child(
-                                            div()
-                                                .font_family(self.fonts.ui.clone())
-                                                .text_xs()
-                                                .text_color(rgb(if is_err {
-                                                    CORAL_FG
-                                                } else {
-                                                    EMERALD_FG
-                                                }))
-                                                .child(msg),
-                                        )
-                                        .child(
-                                            div()
-                                                .id("dismiss-banner")
-                                                .px_2()
-                                                .py_0p5()
-                                                .rounded_xs()
-                                                .cursor_pointer()
-                                                .hover(|s| s.bg(rgba(RAIL_HOVER)))
-                                                .font_family(self.fonts.mono_term.clone())
-                                                .text_xs()
-                                                .text_color(rgb(INK_SECONDARY))
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.banner = None;
-                                                    cx.notify();
-                                                }))
-                                                .child("×"),
-                                        ),
-                                )
-                            })
                             .when(in_company, |d| d.child(self.render_company_shell(cx)))
                             .when(self.active_view == NavView::Inbox, |d| {
                                 d.child(self.render_inbox_view(cx))

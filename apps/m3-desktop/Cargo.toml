@@ -1,7 +1,11 @@
 [package]
 name = "m3-desktop"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "Local-first, event-driven Munger value investing workbench built with Rust, GPUI, DuckDB, and EmbeddedAlan"
+homepage = "https://m3.thinksmart.systems"
+repository = "https://github.com/Project-M3/Money-Making-Machine"
 publish = false
 
 [dependencies]

@@ -1,0 +1,1268 @@
+import {
+  COMPANIES,
+  INBOX_EVENTS,
+  JOURNAL_ENTRIES,
+  THEMES,
+  type CompanyRecord,
+  type CompanySubTab,
+  type InboxEvent,
+  type InboxFilter,
+  type PerspectiveKey,
+  type UniverseFilter,
+  type UniverseSearchMode,
+  type WorkbenchTab,
+} from '../data/fixture';
+
+interface DockNotice {
+  tag: string;
+  message: string;
+  tone: 'emerald' | 'sky' | 'gold' | 'coral';
+  dismissible: boolean;
+}
+
+interface WorkbenchState {
+  tab: WorkbenchTab;
+  companySubTab: CompanySubTab;
+  basketFilter: CompanyRecord['bucket'] | 'All';
+  inboxFilter: InboxFilter;
+  selectedEventId: string;
+  eventStatuses: Record<string, InboxEvent['status']>;
+  universeFilter: UniverseFilter;
+  universeSearchMode: UniverseSearchMode;
+  selectedTicker: string;
+  perspective: PerspectiveKey;
+  openProvenanceId: string | null;
+  paletteOpen: boolean;
+  paletteQuery: string;
+  dockNotice: DockNotice | null;
+}
+
+const PERSPECTIVE_LABELS: Array<{ key: PerspectiveKey; label: string }> = [
+  { key: 'moat', label: 'Moat' },
+  { key: 'accounting', label: 'Accounting' },
+  { key: 'latent_peers', label: 'Latent Peers' },
+  { key: 'premortem', label: 'Pre-Mortem' },
+];
+
+const NAV_ITEMS: Array<{
+  tab: WorkbenchTab;
+  label: string;
+  shortcut: string;
+  dotColor: string;
+}> = [
+  { tab: 'inbox', label: 'Briefing Inbox', shortcut: '⌘1', dotColor: 'var(--emerald)' },
+  { tab: 'universe', label: 'Universe Radar', shortcut: '⌘2', dotColor: 'var(--sky)' },
+  { tab: 'baskets', label: 'Munger Baskets', shortcut: '⌘3', dotColor: 'var(--ink-hero)' },
+  { tab: 'themes', label: 'Themes & Journal', shortcut: '⌘4', dotColor: 'var(--gold)' },
+];
+
+function escapeHtml(raw: string): string {
+  return raw
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+function toneClass(tone: CompanyRecord['statusTone'] | InboxEvent['severity']): string {
+  switch (tone) {
+    case 'emerald':
+      return 'pill-emerald';
+    case 'gold':
+      return 'pill-gold';
+    case 'sky':
+      return 'pill-sky';
+    case 'coral':
+      return 'pill-coral';
+    case 'violet':
+      return 'pill-violet';
+    default:
+      return 'pill-slate';
+  }
+}
+
+export function mountWorkbench(container: HTMLElement): void {
+  const state: WorkbenchState = {
+    tab: 'inbox',
+    companySubTab: 'alan',
+    basketFilter: 'All',
+    inboxFilter: 'unread',
+    selectedEventId: INBOX_EVENTS[0].id,
+    eventStatuses: Object.fromEntries(INBOX_EVENTS.map((e) => [e.id, e.status])),
+    universeFilter: 'all',
+    universeSearchMode: 'keyword',
+    selectedTicker: 'SNPS',
+    perspective: 'premortem',
+    openProvenanceId: 'snps-oe',
+    paletteOpen: false,
+    paletteQuery: '',
+    dockNotice: {
+      tag: 'CATCH-UP',
+      message: 'SEC 10-K & Tier-1 quotes synced. 3 unread briefings await triage.',
+      tone: 'emerald',
+      dismissible: true,
+    },
+  };
+
+  function getBreadcrumb(): string {
+    const company = COMPANIES.find((c) => c.ticker === state.selectedTicker) || COMPANIES[0];
+    switch (state.tab) {
+      case 'inbox':
+        return 'Briefing Inbox · Event-Driven L1';
+      case 'universe':
+        return 'Universe Radar · Full-US Ledger (5,142)';
+      case 'baskets':
+        return state.basketFilter === 'All'
+          ? 'Munger Baskets · Overview'
+          : `Munger Baskets / ${state.basketFilter}`;
+      case 'research':
+        return `${company.ticker} · ${company.name} · Research Desk`;
+      case 'themes':
+        return 'Themes & Journal · Cross-Company Archetypes';
+    }
+  }
+
+  function getStatusLegend(): { dot: string; legend: string; mode: string } {
+    if (state.paletteOpen) {
+      return {
+        dot: 'var(--sky)',
+        legend: 'click or type to filter · ↵ jump · esc close palette',
+        mode: 'COMMAND PALETTE',
+      };
+    }
+    switch (state.tab) {
+      case 'inbox':
+        return {
+          dot: 'var(--emerald)',
+          legend: 'w watch · x too hard · e archive · r catch-up · ⌘K commands',
+          mode: 'L0/L1 · 0 FLAGSHIP TOKEN',
+        };
+      case 'universe':
+        return {
+          dot: 'var(--sky)',
+          legend: 'presets · lookalike toggle · ↵ inspect dossier · ⌘K commands',
+          mode: 'DUCKDB L0/L1 · ZERO-LLM',
+        };
+      case 'baskets':
+        return {
+          dot: 'var(--emerald)',
+          legend: 'filter bucket · click company to inspect Research Desk · ⌘K commands',
+          mode: 'ZERO-LLM · PAPER ONLY',
+        };
+      case 'research':
+        return {
+          dot: state.companySubTab === 'alan' ? 'var(--violet)' : 'var(--emerald)',
+          legend: '1 Memo · 2 Deep Research & Alan · 3 XBRL · esc back to Baskets',
+          mode: state.companySubTab === 'alan' ? 'EMBEDDED ALAN · PAPER ONLY' : 'ZERO-LLM ARITHMETIC',
+        };
+      case 'themes':
+        return {
+          dot: 'var(--gold)',
+          legend: 'cluster archetypes · append-only decision journal · ⌘K commands',
+          mode: 'ZERO-LLM · PAPER ONLY',
+        };
+    }
+  }
+
+  function render(): void {
+    const unreadCount = Object.values(state.eventStatuses).filter((s) => s === 'unread').length;
+    const status = getStatusLegend();
+
+    container.innerHTML = `
+      <div class="m3-window">
+        ${renderSidebar(unreadCount)}
+
+        <div class="m3-viewport-gutter">
+          <div class="m3-viewport">
+            <div class="m3-toolbar">
+              <div class="m3-toolbar-left">
+                ${
+                  state.tab === 'research'
+                    ? `<button type="button" class="tb-back-btn" data-back-baskets>←</button>`
+                    : ''
+                }
+                <span class="m3-breadcrumb">${escapeHtml(getBreadcrumb())}</span>
+              </div>
+
+              <div class="m3-toolbar-right">
+                <div class="bench-pill">
+                  <span style="color: var(--ink-muted)">S&amp;P 500</span>
+                  <strong class="mono tabular" style="color: var(--ink-primary)">5,942.10</strong>
+                </div>
+                <span class="sync-indicator">
+                  <span class="mini-dot" style="background: var(--emerald)"></span>
+                  <span>14m ago</span>
+                </span>
+                <button type="button" class="tb-sync-btn" data-trigger-sync>
+                  <span>Sync</span>
+                  <span class="m3-kbd">⌘R</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="m3-main-body">
+              ${
+                state.tab === 'inbox'
+                  ? renderInboxView()
+                  : state.tab === 'universe'
+                    ? renderUniverseView()
+                    : state.tab === 'baskets'
+                      ? renderBasketsView()
+                      : state.tab === 'research'
+                        ? renderResearchView()
+                        : renderThemesView()
+              }
+            </div>
+
+            <div class="m3-statusline">
+              <div class="statusline-group">
+                <span class="mini-dot" style="background: ${status.dot}"></span>
+                <span class="statusline-legend">${escapeHtml(status.legend)}</span>
+              </div>
+              <div class="statusline-group">
+                <span style="color: var(--ink-secondary)">v0.3.0 · stable</span>
+                <span>${escapeHtml(status.mode)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        ${state.paletteOpen ? renderPaletteOverlay() : ''}
+      </div>
+    `;
+
+    bindEvents();
+  }
+
+  function renderSidebar(unreadCount: number): string {
+    const buckets: Array<{ key: CompanyRecord['bucket']; code: string; dot: string }> = [
+      { key: 'Core', code: 'CORE', dot: 'var(--emerald)' },
+      { key: 'Watch', code: 'WATCH', dot: 'var(--sky)' },
+      { key: 'Too Hard', code: 'TOO HARD', dot: 'var(--slate)' },
+    ];
+
+    return `
+      <aside class="m3-sidebar" aria-label="M3 Sidebar Navigation">
+        <div class="m3-sidebar-header">
+          <div class="traffic-lights" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <img src="./favicon.svg" alt="" width="20" height="20" style="border-radius: 4px" />
+          <span class="mono" style="font-size: 0.72rem; color: var(--ink-secondary); letter-spacing: 0.06em">M3</span>
+        </div>
+
+        <div class="m3-sidebar-palette-wrap">
+          <button type="button" class="m3-cmd-trigger" data-open-palette>
+            <span>&gt; Jump / Command…</span>
+            <span class="m3-kbd">⌘K</span>
+          </button>
+        </div>
+
+        <div class="m3-sidebar-nav" role="tablist" aria-label="Workspace Sections">
+          <div class="m3-rail-heading">WORKBENCH</div>
+          ${NAV_ITEMS.map((item) => {
+            const active =
+              state.tab === item.tab && (item.tab !== 'baskets' || state.basketFilter === 'All');
+            return `
+              <button
+                type="button"
+                role="tab"
+                aria-selected="${active ? 'true' : 'false'}"
+                class="m3-nav-item ${active ? 'is-selected' : ''}"
+                data-nav-tab="${item.tab}"
+              >
+                <span class="m3-nav-left">
+                  <span class="mini-dot" style="background: ${active ? item.dotColor : 'var(--border-strong)'}"></span>
+                  <span>${escapeHtml(item.label)}</span>
+                </span>
+                <span class="m3-nav-right">
+                  ${
+                    item.tab === 'inbox' && unreadCount > 0
+                      ? `<span class="m3-unread-pill tabular">${unreadCount}</span>`
+                      : ''
+                  }
+                  <span class="m3-kbd">${item.shortcut}</span>
+                </span>
+              </button>
+            `;
+          }).join('')}
+        </div>
+
+        <div class="m3-sidebar-baskets">
+          <div class="m3-rail-heading">MUNGER BASKETS</div>
+          ${buckets
+            .map((b) => {
+              const members = COMPANIES.filter((c) => c.bucket === b.key);
+              const bActive = state.tab === 'baskets' && state.basketFilter === b.key;
+              return `
+                <div class="m3-bucket-group">
+                  <button
+                    type="button"
+                    class="m3-bucket-header ${bActive ? 'is-selected' : ''}"
+                    data-focus-bucket="${b.key}"
+                  >
+                    <span class="m3-nav-left">
+                      <span class="mini-dot" style="background: ${b.dot}"></span>
+                      <span class="mono" style="font-size: 0.67rem; font-weight: 600">${b.code}</span>
+                    </span>
+                    <span class="mono tabular" style="font-size: 0.67rem; color: var(--ink-muted)">${members.length}</span>
+                  </button>
+                  ${members
+                    .map((c) => {
+                      const isSel = state.tab === 'research' && state.selectedTicker === c.ticker;
+                      const dotColor =
+                        c.statusTone === 'emerald'
+                          ? 'var(--emerald)'
+                          : c.statusTone === 'gold'
+                            ? 'var(--gold)'
+                            : c.statusTone === 'sky'
+                              ? 'var(--sky)'
+                              : c.statusTone === 'coral'
+                                ? 'var(--coral)'
+                                : 'var(--slate)';
+                      return `
+                        <button
+                          type="button"
+                          class="m3-ticker-item ${isSel ? 'is-selected' : ''}"
+                          data-open-desk="${c.ticker}"
+                        >
+                          <span class="m3-nav-left">
+                            <span class="mini-dot" style="background: ${dotColor}"></span>
+                            <span class="mono" style="font-weight: 600">${escapeHtml(c.ticker)}</span>
+                          </span>
+                          <span class="mono tabular m3-ticker-price">${escapeHtml(c.spot)}</span>
+                        </button>
+                      `;
+                    })
+                    .join('')}
+                </div>
+              `;
+            })
+            .join('')}
+        </div>
+
+        ${renderSidebarDock()}
+      </aside>
+    `;
+  }
+
+  function renderSidebarDock(): string {
+    const n = state.dockNotice;
+    const dotCol =
+      n?.tone === 'coral'
+        ? 'var(--coral)'
+        : n?.tone === 'gold'
+          ? 'var(--gold)'
+          : n?.tone === 'sky'
+            ? 'var(--sky)'
+            : 'var(--emerald)';
+    const borderCol =
+      n?.tone === 'coral'
+        ? 'var(--coral-border)'
+        : n?.tone === 'gold'
+          ? 'var(--gold-border)'
+          : n?.tone === 'sky'
+            ? 'var(--sky-border)'
+            : 'var(--emerald-border)';
+
+    return `
+      <div class="m3-sidebar-dock" aria-label="System Status & Notifications Dock">
+        ${
+          n
+            ? `
+          <div class="m3-dock-card" style="border-color: ${borderCol}">
+            <div class="m3-dock-head">
+              <span class="m3-nav-left">
+                <span class="mini-dot" style="background: ${dotCol}"></span>
+                <span class="mono" style="font-size: 0.65rem; font-weight: 700; color: ${dotCol}">${escapeHtml(n.tag)}</span>
+              </span>
+              ${
+                n.dismissible
+                  ? `<button type="button" class="m3-dock-close" data-dismiss-dock aria-label="Dismiss notice">×</button>`
+                  : ''
+              }
+            </div>
+            <div class="m3-dock-msg">${escapeHtml(n.message)}</div>
+          </div>
+        `
+            : ''
+        }
+
+        <div class="m3-dock-tray">
+          <div class="m3-dock-tray-row">
+            <span class="m3-nav-left">
+              <span class="mini-dot" style="background: var(--emerald)"></span>
+              <span class="mono">L0 5,142 Co</span>
+            </span>
+            <span class="mono" style="color: var(--emerald)">\$0.42 / \$10.00</span>
+          </div>
+          <div class="m3-dock-tray-row" style="color: var(--ink-muted)">
+            <span class="mono">v0.3.0 · stable</span>
+            <span class="mono">PAPER ONLY</span>
+          </div>
+        </div>
+      </div>
+    `.replaceAll('\\$', '$');
+  }
+
+  function renderInboxView(): string {
+    const unreadCount = Object.values(state.eventStatuses).filter((s) => s === 'unread').length;
+    const filtered = INBOX_EVENTS.filter((ev) => {
+      const st = state.eventStatuses[ev.id];
+      switch (state.inboxFilter) {
+        case 'unread':
+          return st === 'unread';
+        case 'all':
+          return true;
+        case 'discovery':
+          return ev.category === 'discovery' && st !== 'archived';
+        case 'ripple':
+          return ev.category === 'ripple' && st !== 'archived';
+        case 'strike':
+          return (ev.category === 'strike' || ev.category === 'red_flag') && st !== 'archived';
+        case 'archived':
+          return st === 'archived';
+      }
+    });
+
+    const selected = filtered.find((e) => e.id === state.selectedEventId) || filtered[0] || INBOX_EVENTS[0];
+    const selectedSt = state.eventStatuses[selected.id];
+
+    const filters: Array<{ key: InboxFilter; label: string }> = [
+      { key: 'unread', label: 'Unread' },
+      { key: 'all', label: 'All' },
+      { key: 'discovery', label: 'Discovery' },
+      { key: 'ripple', label: 'Latent Ripple' },
+      { key: 'strike', label: 'Strike & Red Flag' },
+      { key: 'archived', label: 'Archived' },
+    ];
+
+    return `
+      <div class="m3-kpi-ribbon">
+        <div class="m3-kpi-items">
+          <div class="m3-kpi"><span>US Universe</span><strong class="tabular">5,142</strong></div>
+          <span class="v-div"></span>
+          <div class="m3-kpi"><span>Last Catch-up</span><strong>14m ago</strong></div>
+          <span class="v-div"></span>
+          <div class="m3-kpi"><span>Filing Chunks</span><strong style="color: var(--sky)" class="tabular">18,420</strong></div>
+          <span class="v-div"></span>
+          <div class="m3-kpi"><span>Unread</span><strong style="color: var(--emerald)" class="tabular">${unreadCount}</strong></div>
+        </div>
+        <div class="m3-kpi-badges">
+          <span class="status-pill pill-emerald">AI Budget \$0.42 / \$10.00</span>
+          <span class="status-pill pill-emerald">L0/L1 · 0 Flagship Token</span>
+        </div>
+      </div>
+
+      <div class="view-toolbar">
+        <div class="chip-group" role="group" aria-label="Inbox Filter">
+          ${filters
+            .map(
+              (f) => `
+            <button
+              type="button"
+              class="filter-chip ${state.inboxFilter === f.key ? 'is-active' : ''}"
+              data-inbox-filter="${f.key}"
+            >
+              ${escapeHtml(f.label)}
+            </button>
+          `,
+            )
+            .join('')}
+        </div>
+        <div class="view-summary tabular">${filtered.length} briefings in queue</div>
+      </div>
+
+      <div class="split-pane">
+        <div class="pane-left" role="listbox" aria-label="Briefing Queue">
+          ${
+            filtered.length === 0
+              ? `<div style="padding: 2rem 1.25rem; color: var(--ink-muted); font-size: 0.85rem;">Queue clean. Switch to "All" or reset filters to inspect previous briefings.</div>`
+              : filtered
+                  .map((ev) => {
+                    const isSel = ev.id === selected.id;
+                    const st = state.eventStatuses[ev.id];
+                    return `
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected="${isSel ? 'true' : 'false'}"
+                    class="event-row ${isSel ? 'is-selected' : ''} ${st !== 'unread' ? 'is-muted' : ''}"
+                    data-select-event="${ev.id}"
+                  >
+                    <span class="severity-dot dot-${ev.severity}" aria-hidden="true"></span>
+                    <div>
+                      <div class="event-title-line">
+                        <span class="ticker-code">${escapeHtml(ev.ticker)}</span>
+                        <span class="status-pill ${toneClass(ev.severity)}">${escapeHtml(ev.kindLabel)}</span>
+                        ${st !== 'unread' ? `<span class="event-kind">${escapeHtml(st)}</span>` : ''}
+                      </div>
+                      <p class="event-headline">${escapeHtml(ev.headline)}</p>
+                      <p class="event-sub">${escapeHtml(ev.subline)}</p>
+                    </div>
+                    <span class="event-time">${escapeHtml(ev.timestamp)}</span>
+                  </button>
+                `;
+                  })
+                  .join('')
+          }
+        </div>
+
+        <div class="pane-right">
+          <div class="inspector-head">
+            <div>
+              <div class="event-title-line">
+                <span class="ticker-code">${escapeHtml(selected.ticker)}</span>
+                <span style="color: var(--ink-secondary); font-size: 0.84rem;">${escapeHtml(selected.company)}</span>
+                <span class="status-pill ${toneClass(selected.severity)}">${escapeHtml(selected.kindLabel)}</span>
+              </div>
+              <h3 class="inspector-title">${escapeHtml(selected.headline)}</h3>
+            </div>
+            <span class="event-time">${escapeHtml(selected.timestamp)}</span>
+          </div>
+
+          <div class="kv-grid">
+            ${selected.metrics
+              .map(
+                (m) => `
+              <div class="kv-card">
+                <span class="kv-label">${escapeHtml(m.label)}</span>
+                <span class="kv-value tabular">${escapeHtml(m.value)}</span>
+                <span class="kv-sub">${escapeHtml(m.note)}</span>
+              </div>
+            `,
+              )
+              .join('')}
+          </div>
+
+          <!-- Uniform 1px hairline evidence excerpt well (zero thick colored left bar) -->
+          <div class="evidence-box">
+            <div class="evidence-top">
+              <span class="event-kind">${escapeHtml(selected.evidenceTitle)}</span>
+              <span class="mono" style="font-size: 0.7rem; color: var(--emerald);">Match ${escapeHtml(selected.similarityPct)}</span>
+            </div>
+            <div class="evidence-quote">${escapeHtml(selected.evidenceQuote)}</div>
+            <div class="evidence-url">${escapeHtml(selected.sourceUrl)}</div>
+          </div>
+
+          <div class="inspector-actions">
+            <button type="button" class="action-btn action-btn--primary" data-open-desk="${selected.ticker}">
+              Inspect ${escapeHtml(selected.ticker)} in Research Desk →
+            </button>
+            <button type="button" class="action-btn" data-triage-event="${selected.id}" data-triage-action="watch">
+              ${selectedSt === 'watch' ? '✓ In Watch' : 'w Watch'}
+            </button>
+            <button type="button" class="action-btn" data-triage-event="${selected.id}" data-triage-action="too_hard">
+              ${selectedSt === 'too_hard' ? '✓ Too Hard' : 'x Too Hard'}
+            </button>
+            <button type="button" class="action-btn" data-triage-event="${selected.id}" data-triage-action="archived">
+              ${selectedSt === 'archived' ? '✓ Archived' : 'e Archive'}
+            </button>
+          </div>
+        </div>
+      </div>
+    `.replaceAll('\\$', '$');
+  }
+
+  function renderUniverseView(): string {
+    const presets: Array<{ key: UniverseFilter; label: string }> = [
+      { key: 'all', label: 'All Quality' },
+      { key: 'high_roic', label: 'High ROIC (>=20%)' },
+      { key: 'low_sbc', label: 'Low SBC Cash Cows' },
+      { key: 'strike', label: 'Strike Zone' },
+    ];
+
+    const filtered = COMPANIES.filter((c) => {
+      if (state.universeFilter === 'all') return true;
+      if (state.universeFilter === 'high_roic') return Number.parseFloat(c.roic) >= 20;
+      if (state.universeFilter === 'low_sbc') return Number.parseFloat(c.sbcToOcf) <= 15;
+      return c.statusLabel === 'Near Strike';
+    });
+    const selected = filtered.find((c) => c.ticker === state.selectedTicker) || filtered[0] || COMPANIES[0];
+
+    return `
+      <div class="view-toolbar">
+        <div class="chip-group" role="group" aria-label="Universe Munger Presets">
+          ${presets
+            .map(
+              (p) => `
+            <button
+              type="button"
+              class="filter-chip ${state.universeFilter === p.key ? 'is-active' : ''}"
+              data-universe-preset="${p.key}"
+            >
+              ${escapeHtml(p.label)}
+            </button>
+          `,
+            )
+            .join('')}
+        </div>
+        <div class="chip-group">
+          <button
+            type="button"
+            class="filter-chip ${state.universeSearchMode === 'keyword' ? 'is-active' : ''}"
+            data-search-mode="keyword"
+          >
+            Keyword
+          </button>
+          <button
+            type="button"
+            class="filter-chip ${state.universeSearchMode === 'similar' ? 'is-active' : ''}"
+            data-search-mode="similar"
+          >
+            Lookalike Search
+          </button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="m3-table">
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Company</th>
+              <th>Bucket</th>
+              <th>Spot / Strike</th>
+              <th>5Y ROIC</th>
+              <th>Strict OE</th>
+              <th>SBC / OCF</th>
+              <th>Share Δ</th>
+              <th>Cosine</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filtered
+              .map(
+                (c) => `
+              <tr data-select-company="${c.ticker}" class="${c.ticker === selected.ticker ? 'is-selected' : ''}">
+                <td><span class="ticker-code">${escapeHtml(c.ticker)}</span></td>
+                <td>${escapeHtml(c.name)}</td>
+                <td class="mono" style="font-size: 0.74rem; color: var(--ink-secondary);">${escapeHtml(c.bucket)}</td>
+                <td class="mono tabular">${escapeHtml(c.spot)} <span style="color: var(--ink-muted)">/ ${escapeHtml(c.strike)}</span></td>
+                <td class="mono tabular" style="color: var(--emerald);">${escapeHtml(c.roic)}</td>
+                <td class="mono tabular">${escapeHtml(c.ownerEarnings)}</td>
+                <td class="mono tabular">${escapeHtml(c.sbcToOcf)}</td>
+                <td class="mono tabular">${escapeHtml(c.shareDelta)}</td>
+                <td class="mono tabular" style="color: var(--violet);">${escapeHtml(c.similarityScore)}</td>
+                <td><span class="status-pill ${toneClass(c.statusTone)}">${escapeHtml(c.statusLabel)}</span></td>
+              </tr>
+            `,
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="universe-drawer">
+        <div>
+          <span class="ticker-code">${escapeHtml(selected.ticker)}</span>
+          <span style="margin-left: 0.55rem; font-size: 0.83rem; color: var(--ink-secondary);">
+            ${escapeHtml(selected.lookalikeNote)} · ${escapeHtml(selected.lastFiling)}
+          </span>
+        </div>
+        <button type="button" class="action-btn action-btn--primary" data-open-desk="${selected.ticker}">
+          Open Research Desk →
+        </button>
+      </div>
+    `;
+  }
+
+  function renderBasketsView(): string {
+    const visibleBuckets: Array<CompanyRecord['bucket']> =
+      state.basketFilter === 'All' ? ['Core', 'Watch', 'Too Hard'] : [state.basketFilter];
+    const tabs: Array<CompanyRecord['bucket'] | 'All'> = ['All', 'Core', 'Watch', 'Too Hard'];
+
+    return `
+      <div class="view-toolbar">
+        <div class="chip-group" role="group" aria-label="Filter Munger Baskets">
+          ${tabs
+            .map(
+              (b) => `
+            <button
+              type="button"
+              class="filter-chip ${state.basketFilter === b ? 'is-active' : ''}"
+              data-focus-bucket="${b}"
+            >
+              ${escapeHtml(b)}
+            </button>
+          `,
+            )
+            .join('')}
+        </div>
+        <div class="view-summary">Core / Watch / Too Hard · Click any company to open Research Desk</div>
+      </div>
+
+      <div class="baskets-scroll">
+        ${visibleBuckets
+          .map((bucket) => {
+            const list = COMPANIES.filter((c) => c.bucket === bucket);
+            return `
+              <div class="basket-block">
+                <div class="basket-block-head">
+                  <span class="mono" style="font-size: 0.75rem; font-weight: 700; color: var(--ink-hero);">${bucket.toUpperCase()}</span>
+                  <span class="mono" style="font-size: 0.72rem; color: var(--ink-muted);">${list.length} holdings</span>
+                </div>
+                ${list
+                  .map(
+                    (c) => `
+                  <button
+                    type="button"
+                    class="basket-row ${state.selectedTicker === c.ticker ? 'is-selected' : ''}"
+                    data-open-desk="${c.ticker}"
+                  >
+                    <div>
+                      <span class="ticker-code">${escapeHtml(c.ticker)}</span>
+                      <span style="margin-left: 0.55rem; color: var(--ink-primary); font-size: 0.85rem;">${escapeHtml(c.name)}</span>
+                      <span style="margin-left: 0.55rem; font-size: 0.75rem; color: var(--ink-muted);">${escapeHtml(c.sector)}</span>
+                    </div>
+                    <div class="basket-row-metrics">
+                      <span class="mono tabular" style="color: var(--ink-secondary);">ROIC ${escapeHtml(c.roic)}</span>
+                      <span class="mono tabular">${escapeHtml(c.spot)} / ${escapeHtml(c.strike)}</span>
+                      <span class="status-pill ${toneClass(c.statusTone)}">${escapeHtml(c.statusLabel)}</span>
+                    </div>
+                  </button>
+                `,
+                  )
+                  .join('')}
+              </div>
+            `;
+          })
+          .join('')}
+      </div>
+    `;
+  }
+
+  function renderResearchView(): string {
+    const company = COMPANIES.find((c) => c.ticker === state.selectedTicker) || COMPANIES[0];
+    const activePerspective = company.perspectives[state.perspective];
+
+    return `
+      <div class="company-subheader">
+        <div class="company-sub-left">
+          <span class="ticker-code" style="font-size: 1rem;">${escapeHtml(company.ticker)}</span>
+          <span style="font-size: 0.88rem; color: var(--ink-secondary);">${escapeHtml(company.name)}</span>
+          <span class="status-pill ${toneClass(company.statusTone)}">${escapeHtml(company.statusLabel)}</span>
+          <span class="v-div"></span>
+          <div class="seg-group" role="tablist" aria-label="Research Sub-Views">
+            <button
+              type="button"
+              role="tab"
+              aria-selected="${state.companySubTab === 'memo' ? 'true' : 'false'}"
+              class="seg-tab ${state.companySubTab === 'memo' ? 'is-active' : ''}"
+              data-subtab="memo"
+            >
+              1 Financials &amp; Living Memo
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected="${state.companySubTab === 'alan' ? 'true' : 'false'}"
+              class="seg-tab seg-tab--alan ${state.companySubTab === 'alan' ? 'is-active' : ''}"
+              data-subtab="alan"
+            >
+              2 Deep Research &amp; Alan
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected="${state.companySubTab === 'xbrl' ? 'true' : 'false'}"
+              class="seg-tab ${state.companySubTab === 'xbrl' ? 'is-active' : ''}"
+              data-subtab="xbrl"
+            >
+              3 XBRL Inspector
+            </button>
+          </div>
+        </div>
+
+        <div class="view-summary mono">${escapeHtml(company.lastFiling)}</div>
+      </div>
+
+      ${
+        state.companySubTab === 'xbrl'
+          ? `
+        <div style="padding: 1rem 1.25rem; display: flex; flex-direction: column; gap: 0.65rem; flex: 1;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span class="kv-label">Primary SEC EDGAR XBRL Fact Audit Trail</span>
+            <span class="status-pill pill-emerald">Zero-LLM Deterministic Decimal</span>
+          </div>
+          ${company.metrics
+            .map(
+              (m) => `
+            <div class="evidence-box">
+              <div class="evidence-top">
+                <strong style="color: var(--ink-hero); font-size: 0.84rem;">${escapeHtml(m.label)}</strong>
+                <span class="mono tabular" style="color: var(--emerald); font-weight: 600;">${escapeHtml(m.value)}</span>
+              </div>
+              <div style="font-size: 0.82rem; color: var(--ink-secondary);">${escapeHtml(m.formula)}</div>
+              <div class="evidence-url">${escapeHtml(m.source)} · ${escapeHtml(m.sha256)}</div>
+            </div>
+          `,
+            )
+            .join('')}
+        </div>
+      `
+          : `
+        <div class="split-pane">
+          <div class="pane-left" style="padding: 1rem; display: flex; flex-direction: column; gap: 0.65rem;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span class="kv-label">Deterministic Arithmetic</span>
+              <span class="status-pill pill-emerald">Click row for SHA-256</span>
+            </div>
+
+            ${company.metrics
+              .map((m) => {
+                const isOpen = state.openProvenanceId === m.id;
+                return `
+                  <button
+                    type="button"
+                    class="provenance-card ${isOpen ? 'is-open' : ''}"
+                    data-toggle-provenance="${m.id}"
+                  >
+                    <div class="provenance-row">
+                      <span class="kv-label">${escapeHtml(m.label)}</span>
+                      <span class="mono tabular" style="font-size: 0.94rem; font-weight: 600; color: var(--ink-hero);">
+                        ${escapeHtml(m.value)}
+                      </span>
+                    </div>
+                    <div style="font-size: 0.78rem; color: var(--ink-secondary); margin-top: 0.25rem;">
+                      ${escapeHtml(m.formula)}
+                    </div>
+                    ${
+                      isOpen
+                        ? `<div class="provenance-hash">${escapeHtml(m.source)}<br/>${escapeHtml(m.sha256)}</div>`
+                        : ''
+                    }
+                  </button>
+                `;
+              })
+              .join('')}
+          </div>
+
+          <div class="pane-right">
+            ${
+              state.companySubTab === 'memo'
+                ? `
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span class="kv-label">Living Research Memo</span>
+                <span class="status-pill pill-sky">workbench/memos/${escapeHtml(company.ticker)}.md</span>
+              </div>
+              <div class="evidence-box">
+                <ul class="pipeline-bullets">
+                  ${company.livingMemoSummary.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}
+                </ul>
+              </div>
+            `
+                : `
+              <div>
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.6rem;">
+                  <span class="kv-label">EmbeddedAlan 4-Perspective Interrogation</span>
+                  <span class="status-pill pill-violet">Read-Only Tools</span>
+                </div>
+
+                <div class="perspective-tabs" role="tablist" aria-label="4 Deep Research Perspectives">
+                  ${PERSPECTIVE_LABELS.map(
+                    (p) => `
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected="${state.perspective === p.key ? 'true' : 'false'}"
+                      class="perspective-btn ${state.perspective === p.key ? 'is-active' : ''}"
+                      data-perspective="${p.key}"
+                    >
+                      ${p.label}
+                    </button>
+                  `,
+                  ).join('')}
+                </div>
+              </div>
+
+              <div class="evidence-box">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem;">
+                  <strong style="color: var(--ink-hero); font-size: 0.88rem;">${escapeHtml(activePerspective.title)}</strong>
+                  <div class="chip-group">
+                    ${activePerspective.tools.map((t) => `<span class="event-kind">${escapeHtml(t)}</span>`).join('')}
+                  </div>
+                </div>
+                <ul class="pipeline-bullets" style="margin-top: 0.35rem;">
+                  ${activePerspective.points.map((pt) => `<li>${escapeHtml(pt)}</li>`).join('')}
+                </ul>
+              </div>
+            `
+            }
+
+            <div class="sovereignty-box">
+              <div class="sovereignty-header">
+                <span>human_judgment · Preserved Across Re-Runs</span>
+                <span>${escapeHtml(company.humanJudgment.convictionWeight)}</span>
+              </div>
+              <p class="sovereignty-body">${escapeHtml(company.humanJudgment.ownerNote)}</p>
+              <p style="margin: 0.45rem 0 0; font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-secondary);">
+                Falsification Trigger: ${escapeHtml(company.humanJudgment.falsification)}
+              </p>
+            </div>
+          </div>
+        </div>
+      `
+      }
+    `;
+  }
+
+  function renderThemesView(): string {
+    return `
+      <div class="view-toolbar">
+        <div class="view-summary">
+          Cross-Company Business Archetypes + Append-Only Decision Journal
+        </div>
+        <div class="view-summary tabular">
+          ${THEMES.length} clusters · ${JOURNAL_ENTRIES.length} entries
+        </div>
+      </div>
+
+      <div class="themes-grid">
+        <div class="theme-list">
+          ${THEMES.map(
+            (t) => `
+            <div class="theme-card">
+              <div class="theme-card-top">
+                <span class="theme-name">${escapeHtml(t.name)}</span>
+                <span class="status-pill pill-violet">${escapeHtml(t.signal)}</span>
+              </div>
+              <p style="margin: 0 0 0.65rem; font-size: 0.84rem; color: var(--ink-secondary);">
+                ${escapeHtml(t.summary)}
+              </p>
+              <div class="chip-group">
+                ${t.tickers
+                  .map(
+                    (tk) => `
+                  <button type="button" class="filter-chip" data-open-desk="${tk}">
+                    Open ${escapeHtml(tk)} →
+                  </button>
+                `,
+                  )
+                  .join('')}
+              </div>
+            </div>
+          `,
+          ).join('')}
+        </div>
+
+        <div class="journal-list">
+          <span class="kv-label">Decision Journal (Append-Only Ledger)</span>
+          ${JOURNAL_ENTRIES.map(
+            (j) => `
+            <div class="journal-card">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem;">
+                <span class="m3-nav-left">
+                  <span class="mini-dot" style="background: ${
+                    j.tone === 'strike'
+                      ? 'var(--emerald)'
+                      : j.tone === 'toohard'
+                        ? 'var(--coral)'
+                        : 'var(--sky)'
+                  }"></span>
+                  <span class="ticker-code">${escapeHtml(j.ticker)}</span>
+                  <span class="event-kind">${escapeHtml(j.action)}</span>
+                </span>
+                <span class="mono" style="font-size: 0.7rem; color: var(--ink-muted);">${escapeHtml(j.date)}</span>
+              </div>
+              <p style="margin: 0; font-size: 0.85rem; color: var(--ink-primary); line-height: 1.5;">${escapeHtml(j.note)}</p>
+            </div>
+          `,
+          ).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderPaletteOverlay(): string {
+    const q = state.paletteQuery.trim().toLowerCase();
+    const actions: Array<{ label: string; group: string; key: string; cmd: string }> = [
+      { label: 'Briefing Inbox (Event-Driven L1)', group: 'VIEW', key: '⌘1', cmd: 'view:inbox' },
+      { label: 'Universe Radar (5,142 US Issuers)', group: 'VIEW', key: '⌘2', cmd: 'view:universe' },
+      { label: 'Munger Baskets Overview', group: 'VIEW', key: '⌘3', cmd: 'view:baskets' },
+      { label: 'Themes & Decision Journal', group: 'VIEW', key: '⌘4', cmd: 'view:themes' },
+      { label: 'Trigger L1 / Core Sync', group: 'ACTION', key: '⌘R', cmd: 'action:sync' },
+      ...COMPANIES.map((c) => ({
+        label: `Open ${c.ticker} · ${c.name} (${c.bucket})`,
+        group: 'DOSSIER',
+        key: c.spot,
+        cmd: `ticker:${c.ticker}`,
+      })),
+    ].filter((it) => !q || it.label.toLowerCase().includes(q) || it.group.toLowerCase().includes(q));
+
+    return `
+      <div class="m3-palette-scrim" data-close-palette>
+        <div class="m3-palette-modal" role="dialog" aria-label="M3 Command Palette">
+          <div class="m3-palette-input-row">
+            <span class="mono" style="color: var(--emerald);">&gt;</span>
+            <input
+              id="m3-palette-input"
+              type="text"
+              class="m3-palette-input"
+              placeholder="Jump to view, ticker, or run command…"
+              value="${escapeHtml(state.paletteQuery)}"
+            />
+            <button type="button" class="m3-kbd" data-close-palette>ESC</button>
+          </div>
+          <div class="m3-palette-list">
+            ${actions
+              .map(
+                (a) => `
+              <button type="button" class="m3-palette-row" data-palette-cmd="${escapeHtml(a.cmd)}">
+                <span>
+                  <span class="mono" style="font-size: 0.65rem; color: var(--ink-muted); margin-right: 0.5rem;">${escapeHtml(a.group)}</span>
+                  <span>${escapeHtml(a.label)}</span>
+                </span>
+                <span class="m3-kbd">${escapeHtml(a.key)}</span>
+              </button>
+            `,
+              )
+              .join('')}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function bindEvents(): void {
+    container.querySelectorAll<HTMLElement>('[data-nav-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.navTab as WorkbenchTab | undefined;
+        if (!next) return;
+        state.tab = next;
+        if (next === 'baskets') state.basketFilter = 'All';
+        render();
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-focus-bucket]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const bucket = btn.dataset.focusBucket as CompanyRecord['bucket'] | 'All' | undefined;
+        if (!bucket) return;
+        state.basketFilter = bucket;
+        state.tab = 'baskets';
+        render();
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-open-desk]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const ticker = btn.dataset.openDesk;
+        if (!ticker) return;
+        state.selectedTicker = ticker;
+        state.tab = 'research';
+        state.openProvenanceId =
+          COMPANIES.find((c) => c.ticker === ticker)?.metrics[0]?.id ?? null;
+        render();
+      });
+    });
+
+    container.querySelector('[data-back-baskets]')?.addEventListener('click', () => {
+      state.tab = 'baskets';
+      render();
+    });
+
+    container.querySelector('[data-trigger-sync]')?.addEventListener('click', () => {
+      state.dockNotice = {
+        tag: 'SYNCED',
+        message: 'SEC XBRL facts & Tier-1 quotes verified across 5,142 US issuers. 0 LLM tokens spent.',
+        tone: 'emerald',
+        dismissible: true,
+      };
+      render();
+    });
+
+    container.querySelector('[data-dismiss-dock]')?.addEventListener('click', () => {
+      state.dockNotice = null;
+      render();
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-inbox-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const f = btn.dataset.inboxFilter as InboxFilter | undefined;
+        if (f) {
+          state.inboxFilter = f;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-select-event]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.selectEvent;
+        if (id) {
+          state.selectedEventId = id;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-triage-event]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.triageEvent;
+        const action = btn.dataset.triageAction as InboxEvent['status'] | undefined;
+        if (!id || !action) return;
+        state.eventStatuses[id] = action;
+        const ev = INBOX_EVENTS.find((item) => item.id === id);
+        if (ev) {
+          state.dockNotice = {
+            tag: 'TRIAGE',
+            message: `${ev.ticker} marked as ${action.replace('_', ' ')} in local L1 queue.`,
+            tone: action === 'too_hard' ? 'gold' : 'sky',
+            dismissible: true,
+          };
+        }
+        render();
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-universe-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const preset = btn.dataset.universePreset as UniverseFilter | undefined;
+        if (preset) {
+          state.universeFilter = preset;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-search-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.searchMode as UniverseSearchMode | undefined;
+        if (mode) {
+          state.universeSearchMode = mode;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-select-company]').forEach((row) => {
+      row.addEventListener('click', () => {
+        const ticker = row.dataset.selectCompany;
+        if (ticker) {
+          state.selectedTicker = ticker;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-subtab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.subtab as CompanySubTab | undefined;
+        if (next) {
+          state.companySubTab = next;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-toggle-provenance]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.toggleProvenance;
+        if (id) {
+          state.openProvenanceId = state.openProvenanceId === id ? null : id;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-perspective]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.perspective as PerspectiveKey | undefined;
+        if (key) {
+          state.perspective = key;
+          render();
+        }
+      });
+    });
+
+    container.querySelector('[data-open-palette]')?.addEventListener('click', () => {
+      state.paletteOpen = true;
+      state.paletteQuery = '';
+      render();
+      document.getElementById('m3-palette-input')?.focus();
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-close-palette]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        if (ev.target === el || el.tagName === 'BUTTON') {
+          state.paletteOpen = false;
+          render();
+        }
+      });
+    });
+
+    const paletteInput = document.getElementById('m3-palette-input') as HTMLInputElement | null;
+    if (paletteInput) {
+      paletteInput.addEventListener('input', () => {
+        const caret = paletteInput.selectionStart ?? paletteInput.value.length;
+        state.paletteQuery = paletteInput.value;
+        render();
+        const fresh = document.getElementById('m3-palette-input') as HTMLInputElement | null;
+        if (fresh) {
+          fresh.focus();
+          fresh.setSelectionRange(caret, caret);
+        }
+      });
+    }
+
+    container.querySelectorAll<HTMLElement>('[data-palette-cmd]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const cmd = btn.dataset.paletteCmd || '';
+        state.paletteOpen = false;
+        if (cmd.startsWith('view:')) {
+          state.tab = cmd.slice(5) as WorkbenchTab;
+        } else if (cmd.startsWith('ticker:')) {
+          state.selectedTicker = cmd.slice(7);
+          state.tab = 'research';
+        } else if (cmd === 'action:sync') {
+          state.dockNotice = {
+            tag: 'SYNCED',
+            message: 'Command Palette triggered L0/L1 lakehouse refresh.',
+            tone: 'emerald',
+            dismissible: true,
+          };
+        }
+        render();
+      });
+    });
+  }
+
+  window.addEventListener('keydown', (ev) => {
+    const target = ev.target as HTMLElement | null;
+    const isInput =
+      target &&
+      (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+
+    if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
+      ev.preventDefault();
+      state.paletteOpen = !state.paletteOpen;
+      render();
+      if (state.paletteOpen) document.getElementById('m3-palette-input')?.focus();
+      return;
+    }
+
+    if (ev.key === 'Escape' && state.paletteOpen) {
+      state.paletteOpen = false;
+      render();
+      return;
+    }
+
+    if (isInput || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+    const map: Record<string, WorkbenchTab> = {
+      '1': 'inbox',
+      '2': 'universe',
+      '3': 'baskets',
+      '4': 'themes',
+    };
+    const next = map[ev.key];
+    if (next && state.tab !== next) {
+      state.tab = next;
+      render();
+    }
+  });
+
+  render();
+}

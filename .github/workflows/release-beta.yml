@@ -9,6 +9,7 @@ on:
       - "**.md"
       - ".scratch/**"
       - "workbench/**"
+      - "website/**"
   workflow_dispatch:
     inputs:
       dry_run:
