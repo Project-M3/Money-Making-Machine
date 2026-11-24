@@ -5,6 +5,7 @@ mod company;
 mod components;
 mod format;
 mod inbox;
+mod industry;
 mod journal;
 mod palette;
 mod settings;
@@ -27,6 +28,8 @@ use crate::{
     budget::{self, BudgetConfig, ThemesFile},
     events::{CompanyProfileFetchReport, EventCatchupReport},
     i18n::UiLang,
+    industry::{IndustryProfile, IndustryStatus},
+    industry_research::IndustryResearchEvent,
     lake::{LakeAnnualRow, PeerComparison, UniverseDrawerDetails, UniverseRow, UniverseSummary},
     lake_l1::{L1Summary, SignalEvidence, SignalInboxRow, SignalStatus, SimilarCompanyHit},
     lake_l2::{BudgetStatusReport, ResearchRunRow},
@@ -44,7 +47,11 @@ use gpui::{
     rgb,
 };
 use rust_decimal::Decimal;
-use std::{collections::HashSet, sync::mpsc, time::Instant};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::mpsc,
+    time::Instant,
+};
 use theme::*;
 use universe::UniverseViewState;
 
@@ -61,9 +68,27 @@ pub enum NavView {
     Baskets,
     Dossier,
     Agent,
+    Industry,
     Journal,
     Universe,
     Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum IndustryInputFocus {
+    #[default]
+    None,
+    NewTopic,
+    AddTicker,
+    AlanQuestion,
+    HumanNote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) enum AlanReplyTarget {
+    #[default]
+    Company,
+    Industry(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +307,27 @@ pub struct MungerWorkbench {
     themes_syncing: bool,
     themes_error: Option<String>,
     themes_sync_rx: Option<mpsc::Receiver<Result<ThemesFile, String>>>,
+    industries: Vec<IndustryProfile>,
+    selected_industry_slug: Option<String>,
+    industry_status_filter: Option<IndustryStatus>,
+    industry_peer_rows: Vec<UniverseRow>,
+    industry_primer_md: Option<String>,
+    industry_input_focus: IndustryInputFocus,
+    industry_new_topic_input: String,
+    industry_add_ticker_input: String,
+    industry_alan_input: String,
+    industry_human_note_draft: String,
+    industry_research_running: bool,
+    industry_research_slug: Option<String>,
+    industry_research_progress: Option<String>,
+    industry_research_rx: Option<mpsc::Receiver<IndustryResearchEvent>>,
+    industry_live_perspectives: BTreeMap<String, String>,
+    industry_batch_10k_running: bool,
+    industry_batch_10k_rx: Option<mpsc::Receiver<Result<String, String>>>,
+    industry_alan_messages: Vec<AgentUiMessage>,
+    industry_alan_streaming: bool,
+    industry_alan_status_hint: Option<String>,
+    alan_reply_target: AlanReplyTarget,
     selected_memo_raw: Option<String>,
     selected_memo_parsed: Option<ParsedResearchMemo>,
     selected_research_runs: Vec<ResearchRunRow>,
@@ -422,6 +468,27 @@ impl MungerWorkbench {
             themes_syncing: false,
             themes_error: None,
             themes_sync_rx: None,
+            industries: Vec::new(),
+            selected_industry_slug: None,
+            industry_status_filter: None,
+            industry_peer_rows: Vec::new(),
+            industry_primer_md: None,
+            industry_input_focus: IndustryInputFocus::None,
+            industry_new_topic_input: String::new(),
+            industry_add_ticker_input: String::new(),
+            industry_alan_input: String::new(),
+            industry_human_note_draft: String::new(),
+            industry_research_running: false,
+            industry_research_slug: None,
+            industry_research_progress: None,
+            industry_research_rx: None,
+            industry_live_perspectives: BTreeMap::new(),
+            industry_batch_10k_running: false,
+            industry_batch_10k_rx: None,
+            industry_alan_messages: Vec::new(),
+            industry_alan_streaming: false,
+            industry_alan_status_hint: None,
+            alan_reply_target: AlanReplyTarget::Company,
             selected_memo_raw: None,
             selected_memo_parsed: None,
             selected_research_runs: Vec::new(),
@@ -447,6 +514,7 @@ impl MungerWorkbench {
         };
         wb.reload_from_disk();
         wb.reload_themes_from_disk();
+        wb.reload_industries_from_disk();
         wb.reload_universe_from_lake();
         wb.reload_inbox_from_lake();
         wb.reload_budget_from_lake();
@@ -569,7 +637,7 @@ impl MungerWorkbench {
     }
 
     pub fn trigger_themes_sync(&mut self, cx: &mut Context<Self>) {
-        self.switch_view(NavView::Journal);
+        self.switch_view(NavView::Industry);
         self.start_themes_sync(cx);
     }
 
@@ -669,6 +737,7 @@ impl MungerWorkbench {
                 self.selected_ticker.clear();
                 self.reload_from_disk();
                 self.reload_themes_from_disk();
+                self.reload_industries_from_disk();
                 self.reload_universe_from_lake();
                 self.reload_inbox_from_lake();
                 self.reload_budget_from_lake();
@@ -707,6 +776,7 @@ impl MungerWorkbench {
                 self.selected_ticker.clear();
                 self.reload_from_disk();
                 self.reload_themes_from_disk();
+                self.reload_industries_from_disk();
                 self.reload_universe_from_lake();
                 self.reload_inbox_from_lake();
                 self.reload_budget_from_lake();
@@ -793,6 +863,23 @@ impl MungerWorkbench {
         if self.active_view == NavView::Agent && self.agent_input_focused {
             return Some((&mut self.agent_input_draft, false));
         }
+        if self.active_view == NavView::Industry {
+            match self.industry_input_focus {
+                IndustryInputFocus::NewTopic => {
+                    return Some((&mut self.industry_new_topic_input, false));
+                }
+                IndustryInputFocus::AddTicker => {
+                    return Some((&mut self.industry_add_ticker_input, false));
+                }
+                IndustryInputFocus::AlanQuestion => {
+                    return Some((&mut self.industry_alan_input, false));
+                }
+                IndustryInputFocus::HumanNote => {
+                    return Some((&mut self.industry_human_note_draft, false));
+                }
+                IndustryInputFocus::None => {}
+            }
+        }
         if self.active_view == NavView::Universe && self.universe_state.search_focused {
             self.universe_state.similar_as_ticker = false;
             return Some((&mut self.universe_state.query, true));
@@ -877,6 +964,12 @@ impl MungerWorkbench {
         if view != NavView::Agent {
             self.agent_input_focused = false;
         }
+        if view != NavView::Industry {
+            self.industry_input_focus = IndustryInputFocus::None;
+        } else {
+            self.reload_industries_from_disk();
+            self.reload_themes_from_disk();
+        }
         if view != NavView::Universe {
             self.universe_state.search_focused = false;
         } else {
@@ -885,9 +978,6 @@ impl MungerWorkbench {
         if view == NavView::Inbox {
             self.reload_inbox_from_lake();
             self.reload_budget_from_lake();
-        }
-        if view == NavView::Journal {
-            self.reload_themes_from_disk();
         }
         if matches!(view, NavView::Dossier | NavView::Agent) {
             let cur = self.selected_ticker.clone();
@@ -1012,6 +1102,12 @@ impl MungerWorkbench {
             dirty = true;
         }
         if self.poll_themes_sync() {
+            dirty = true;
+        }
+        if self.poll_industry_research() {
+            dirty = true;
+        }
+        if self.poll_industry_batch_10k() {
             dirty = true;
         }
         if self.poll_background_update() {
@@ -1615,6 +1711,67 @@ impl MungerWorkbench {
             return;
         }
 
+        if self.active_view == NavView::Industry
+            && self.industry_input_focus != IndustryInputFocus::None
+        {
+            match key {
+                "escape" => {
+                    self.industry_input_focus = IndustryInputFocus::None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "backspace" => {
+                    match self.industry_input_focus {
+                        IndustryInputFocus::NewTopic => {
+                            self.industry_new_topic_input.pop();
+                        }
+                        IndustryInputFocus::AddTicker => {
+                            self.industry_add_ticker_input.pop();
+                        }
+                        IndustryInputFocus::AlanQuestion => {
+                            self.industry_alan_input.pop();
+                        }
+                        IndustryInputFocus::HumanNote => {
+                            self.industry_human_note_draft.pop();
+                        }
+                        IndustryInputFocus::None => {}
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "enter" => {
+                    self.handle_industry_input_submit(cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                _ => {
+                    if let Some(ch) = ev.keystroke.key_char.as_deref()
+                        && !ch.is_empty()
+                        && !ch.chars().any(char::is_control)
+                    {
+                        match self.industry_input_focus {
+                            IndustryInputFocus::NewTopic => {
+                                self.industry_new_topic_input.push_str(ch);
+                            }
+                            IndustryInputFocus::AddTicker => {
+                                self.industry_add_ticker_input.push_str(ch);
+                            }
+                            IndustryInputFocus::AlanQuestion => {
+                                self.industry_alan_input.push_str(ch);
+                            }
+                            IndustryInputFocus::HumanNote => {
+                                self.industry_human_note_draft.push_str(ch);
+                            }
+                            IndustryInputFocus::None => {}
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }
+            }
+            return;
+        }
+
         if self.active_view == NavView::Universe && self.universe_state.search_focused {
             match key {
                 "escape" => {
@@ -1920,15 +2077,23 @@ impl MungerWorkbench {
                 }
                 _ => {}
             },
-            NavView::Journal => match key {
+            NavView::Industry => match key {
                 "escape" => {
-                    self.switch_view(NavView::Baskets);
+                    self.switch_view(NavView::Inbox);
                     cx.stop_propagation();
                     cx.notify();
                 }
                 "s" => {
                     self.start_themes_sync(cx);
                     cx.stop_propagation();
+                }
+                _ => {}
+            },
+            NavView::Journal => match key {
+                "escape" => {
+                    self.switch_view(NavView::Baskets);
+                    cx.stop_propagation();
+                    cx.notify();
                 }
                 "c" => {
                     self.copy_cli_command(
@@ -2035,20 +2200,24 @@ impl Render for MungerWorkbench {
                             .when(self.active_view == NavView::Universe, |d| {
                                 d.child(self.render_universe_view(cx))
                             })
+                            .when(self.active_view == NavView::Industry, |d| {
+                                d.child(self.render_industry_view(cx))
+                            })
                             .when(
                                 !in_company
                                     && !matches!(
                                         self.active_view,
-                                        NavView::Inbox | NavView::Universe
+                                        NavView::Inbox | NavView::Universe | NavView::Industry
                                     ),
                                 |d| {
                                     let content = match self.active_view {
                                         NavView::Baskets => self.render_baskets_view(cx),
-                                        NavView::Journal => self.render_themes_and_journal_view(cx),
+                                        NavView::Journal => self.render_journal_view(cx),
                                         NavView::Settings => self.render_settings_view(cx),
                                         NavView::Inbox
                                         | NavView::Dossier
                                         | NavView::Agent
+                                        | NavView::Industry
                                         | NavView::Universe => div(),
                                     };
                                     d.child(

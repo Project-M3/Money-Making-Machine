@@ -1,5 +1,6 @@
 use crate::{
     edgar,
+    industry::{self, IndustryProfile, IndustryStatus},
     lake::{LakeDb, SyncWatermark, UniverseRow},
     lake_l1::{
         DocChunkRow, L1Summary, LakeEventRow, LakeFilingRow, SignalEvidence, SignalInboxRow,
@@ -385,8 +386,15 @@ fn catchup_events_with_env<F: FnMut(&str)>(
 
     // 5. Deterministic Signal Scoring & Inbox Generation
     on_progress("生成确定性收件箱信号与隐空间传导...");
-    match generate_signals_and_ripples(&db, &candidates, &embedder, env, &mut report.errors_sample)
-    {
+    let industries = industry::list_industries(paths).unwrap_or_default();
+    match generate_signals_and_ripples(
+        &db,
+        &candidates,
+        &industries,
+        &embedder,
+        env,
+        &mut report.errors_sample,
+    ) {
         Ok((signals_count, ripples_count)) => {
             report.signals_created_or_updated = signals_count;
             report.ripple_signals_emitted = ripples_count;
@@ -1972,6 +1980,7 @@ pub(crate) fn parse_rss_pub_date(raw: &str) -> (Option<u64>, Option<String>) {
 fn generate_signals_and_ripples(
     db: &LakeDb,
     candidates: &[UniverseRow],
+    industries: &[IndustryProfile],
     embedder: &Embedder,
     env: &CatchupEnv,
     errors: &mut Vec<String>,
@@ -1982,30 +1991,71 @@ fn generate_signals_and_ripples(
         .map(|r| (r.ticker.to_ascii_uppercase(), r))
         .collect();
 
-    // 1. Strike signals (ONLY Circle companies in CORE/WATCH with real valuation assumptions)
-    let mut strike_rows: Vec<&UniverseRow> = candidates
+    struct StrikeCandidate<'a> {
+        row: &'a UniverseRow,
+        eff_strike: Decimal,
+        eff_dist: Decimal,
+        from_industry: Option<&'a IndustryProfile>,
+    }
+
+    // 1. Strike signals (Watchlist CORE/WATCH OR InsideCircle graduated industry)
+    let mut strike_candidates: Vec<StrikeCandidate<'_>> = candidates
         .iter()
-        .filter(|row| {
-            row.in_watchlist
-                && matches!(row.bucket_opt, Some(Bucket::Core) | Some(Bucket::Watch))
-                && !row.is_financial
-                && row.latest_price.is_some()
-                && row.strike_price.is_some()
-                && !has_red_warning(row)
-                && row
-                    .distance_to_strike_pct
-                    .is_some_and(|d| d <= Decimal::from(5))
+        .filter_map(|row| {
+            if row.is_financial || row.latest_price.is_none() || has_red_warning(row) {
+                return None;
+            }
+            let in_watch_circle = row.in_watchlist
+                && matches!(row.bucket_opt, Some(Bucket::Core) | Some(Bucket::Watch));
+            if in_watch_circle {
+                let eff_strike = row.strike_price?;
+                let eff_dist = row.distance_to_strike_pct?;
+                if eff_dist <= Decimal::from(5) {
+                    return Some(StrikeCandidate {
+                        row,
+                        eff_strike,
+                        eff_dist,
+                        from_industry: None,
+                    });
+                }
+                return None;
+            }
+            if matches!(row.bucket_opt, Some(Bucket::Out) | Some(Bucket::TooHard)) {
+                return None;
+            }
+            let ind = industry::find_industry_for_company(industries, &row.ticker, row.sic)?;
+            if ind.status != IndustryStatus::InsideCircle {
+                return None;
+            }
+            let (Some(eff_strike), Some(eff_dist)) =
+                industry::compute_industry_strike_price(row, ind.multiple_low)
+            else {
+                return None;
+            };
+            if eff_dist <= Decimal::from(5) {
+                Some(StrikeCandidate {
+                    row,
+                    eff_strike,
+                    eff_dist,
+                    from_industry: Some(ind),
+                })
+            } else {
+                None
+            }
         })
         .collect();
-    strike_rows.sort_by(|a, b| {
-        b.in_watchlist
-            .cmp(&a.in_watchlist)
-            .then_with(|| a.distance_to_strike_pct.cmp(&b.distance_to_strike_pct))
-            .then_with(|| b.quality_score.cmp(&a.quality_score))
+    strike_candidates.sort_by(|a, b| {
+        b.row
+            .in_watchlist
+            .cmp(&a.row.in_watchlist)
+            .then_with(|| a.eff_dist.cmp(&b.eff_dist))
+            .then_with(|| b.row.quality_score.cmp(&a.row.quality_score))
     });
     let mut active_strike_ids: HashSet<String> = HashSet::new();
-    for row in strike_rows.into_iter().take(MAX_STRIKE_SIGNALS) {
-        let dist = row.distance_to_strike_pct.unwrap_or(Decimal::ZERO);
+    let mut strike_tickers: HashSet<String> = HashSet::new();
+    for item in strike_candidates.into_iter().take(MAX_STRIKE_SIGNALS) {
+        let row = item.row;
+        let dist = item.eff_dist;
         let dist_f = decimal_to_f64(dist);
         let q_f = decimal_to_f64(row.quality_score);
         let score = if dist <= Decimal::ZERO {
@@ -2019,8 +2069,19 @@ fn generate_signals_and_ripples(
         } else {
             "接近击球区"
         };
+        let industry_suffix = item
+            .from_industry
+            .map(|ind| {
+                let mult_lbl = ind
+                    .multiple_low
+                    .map(|m| format!("{}x 锚", m.round_dp(1).normalize()))
+                    .unwrap_or_else(|| "18x 默认锚".to_owned());
+                format!(" · 来自已毕业能力圈行业「{}」({mult_lbl})", ind.title)
+            })
+            .unwrap_or_default();
         let signal_id = format!("strike:{}", row.ticker);
         active_strike_ids.insert(signal_id.clone());
+        strike_tickers.insert(row.ticker.to_ascii_uppercase());
         signals.push(SignalInboxRow {
             signal_id,
             kind: SignalKind::Strike,
@@ -2033,11 +2094,11 @@ fn generate_signals_and_ripples(
                 dist.round_dp(2).normalize()
             ),
             summary: format!(
-                "{} ({}) 现价 {} vs 击球价 {}，5Y ROIC {}%，严苛 FCF 收益率 {}%，质量分 {}。",
+                "{} ({}) 现价 {} vs 击球价 {}，5Y ROIC {}%，严苛 FCF 收益率 {}%，质量分 {}{industry_suffix}。",
                 row.name,
                 row.ticker,
                 format_opt_decimal(row.latest_price, ""),
-                format_opt_decimal(row.strike_price, ""),
+                format_opt_decimal(Some(item.eff_strike), ""),
                 format_opt_decimal(row.roic_5y_avg_pct, ""),
                 format_opt_decimal(row.strict_fcf_yield_pct, ""),
                 row.quality_score.round_dp(1).normalize(),
@@ -2050,11 +2111,16 @@ fn generate_signals_and_ripples(
         });
     }
 
-    // 2. Discovery signals (non-watchlist quantitative candidates; no blind 18x strike claims)
+    // 2. Discovery signals (non-watchlist, non-strike, non-TooHard quantitative candidates)
     let mut discovery_rows: Vec<&UniverseRow> = candidates
         .iter()
         .filter(|row| {
+            let ind_too_hard =
+                industry::find_industry_for_company(industries, &row.ticker, row.sic)
+                    .is_some_and(|ind| ind.status == IndustryStatus::TooHard);
             !row.in_watchlist
+                && !strike_tickers.contains(&row.ticker.to_ascii_uppercase())
+                && !ind_too_hard
                 && !row.is_financial
                 && row.years_of_data >= 5
                 && !has_red_warning(row)
@@ -3324,6 +3390,109 @@ mod tests {
             .filter(|s| s.kind == SignalKind::Ripple && s.status == SignalStatus::Unread)
             .count();
         assert_eq!(unread_ripples, MAX_UNREAD_RIPPLES_TOTAL);
+
+        let _ = fs::remove_dir_all(paths.repo_root);
+    }
+
+    #[test]
+    fn graduated_industry_unlocks_strike_at_human_multiple_and_too_hard_suppresses_discovery() {
+        let paths = temp_paths("graduated_industry_strike");
+        let mut grad = make_universe_row(
+            "SNPS",
+            "0000883241",
+            "Synopsys Inc",
+            "EDA software and semiconductor IP",
+            25,
+            8,
+            false,
+            true,
+            None,
+            vec![],
+        );
+        // Suppose 18x default strike = 100, price = 110 (not struck at 18x),
+        // but human graduates industry with multiple_low = 21 -> strike = 116.67 (> 110 -> in strike zone!)
+        grad.strike_price = Some(Decimal::from(100));
+        grad.latest_price = Some(Decimal::from(110));
+
+        let mut hard = make_universe_row(
+            "BIOT",
+            "0000999888",
+            "Opaque Biotech",
+            "Clinical phase oncology trials",
+            22,
+            6,
+            false,
+            true,
+            None,
+            vec![],
+        );
+        hard.strike_price = Some(Decimal::from(100));
+        hard.latest_price = Some(Decimal::from(80));
+        seed_universe(&paths, vec![grad, hard]);
+
+        let now_ms = 1_795_500_000_000u64;
+        let eda_ind = IndustryProfile {
+            slug: "eda-ip".into(),
+            title: "EDA & IP".into(),
+            status: IndustryStatus::InsideCircle,
+            sic_codes: vec![7372],
+            keywords: vec![],
+            bound_tickers: vec!["SNPS".into()],
+            multiple_low: Some(Decimal::from(21)),
+            multiple_high: Some(Decimal::from(26)),
+            key_kpis: vec![],
+            feynman_questions: vec![],
+            feynman_checked: vec![],
+            human_notes: String::new(),
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+            last_research_run_id: None,
+        };
+        let bio_ind = IndustryProfile {
+            slug: "biotech".into(),
+            title: "Clinical Biotech".into(),
+            status: IndustryStatus::TooHard,
+            sic_codes: vec![2836],
+            keywords: vec![],
+            bound_tickers: vec!["BIOT".into()],
+            multiple_low: None,
+            multiple_high: None,
+            key_kpis: vec![],
+            feynman_questions: vec![],
+            feynman_checked: vec![],
+            human_notes: String::new(),
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+            last_research_run_id: None,
+        };
+        industry::save_industry(&paths, &eda_ind).unwrap();
+        industry::save_industry(&paths, &bio_ind).unwrap();
+
+        let opts = EventCatchupOptions {
+            bootstrap: false,
+            skip_sec: true,
+            skip_news: true,
+            skip_docs: true,
+            max_ciks: 0,
+            max_docs: 0,
+            max_news_tickers: 0,
+        };
+        let env = CatchupEnv {
+            sec_rate_limit_ms: 0,
+            news_rate_limit_ms: 0,
+            now_ms,
+            ..CatchupEnv::live(now_ms)
+        };
+        catchup_events_with_env(&paths, &opts, &env, |_| {}).unwrap();
+
+        let db = LakeDb::open(&paths).unwrap();
+        let all = db.list_inbox_signals(None, None, 100).unwrap();
+        let snps_strike = all
+            .iter()
+            .find(|s| s.signal_id == "strike:SNPS")
+            .expect("graduated industry company should emit strike signal");
+        assert!(snps_strike.summary.contains("21x 锚"));
+        assert!(!all.iter().any(|s| s.primary_ticker == "BIOT"));
 
         let _ = fs::remove_dir_all(paths.repo_root);
     }

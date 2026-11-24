@@ -535,7 +535,10 @@ pub fn apply_deep_research_event_for(
 
 impl MungerWorkbench {
     pub fn is_alan_streaming(&self) -> bool {
-        self.agent_streaming || self.deep_research_running
+        self.agent_streaming
+            || self.industry_alan_streaming
+            || self.deep_research_running
+            || self.industry_research_running
     }
 
     pub(super) fn reload_budget_from_lake(&mut self) {
@@ -762,6 +765,7 @@ impl MungerWorkbench {
         }
         self.agent_input_draft.clear();
         self.agent_input_focused = false;
+        self.alan_reply_target = super::AlanReplyTarget::Company;
         self.agent_session_ticker = Some(ticker.to_string());
         self.agent_streaming = true;
         self.agent_status_hint = Some(
@@ -874,12 +878,21 @@ impl MungerWorkbench {
         }
 
         for ev in events {
-            let mut slice = AgentPanelSlice {
-                streaming: &mut self.agent_streaming,
-                status_hint: &mut self.agent_status_hint,
-                messages: &mut self.agent_messages,
-                tape: &mut self.agent_tape,
-                seq: &mut self.agent_seq,
+            let mut slice = match &self.alan_reply_target {
+                super::AlanReplyTarget::Company => AgentPanelSlice {
+                    streaming: &mut self.agent_streaming,
+                    status_hint: &mut self.agent_status_hint,
+                    messages: &mut self.agent_messages,
+                    tape: &mut self.agent_tape,
+                    seq: &mut self.agent_seq,
+                },
+                super::AlanReplyTarget::Industry(_) => AgentPanelSlice {
+                    streaming: &mut self.industry_alan_streaming,
+                    status_hint: &mut self.industry_alan_status_hint,
+                    messages: &mut self.industry_alan_messages,
+                    tape: &mut self.agent_tape,
+                    seq: &mut self.agent_seq,
+                },
             };
             if apply_interrogator_event_for(
                 &mut slice,

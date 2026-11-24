@@ -177,6 +177,7 @@ impl MungerWorkbench {
         cx.notify();
     }
 
+    #[allow(dead_code)]
     pub(super) fn render_themes_and_journal_view(&self, cx: &mut Context<Self>) -> gpui::Div {
         div()
             .flex()
@@ -185,6 +186,7 @@ impl MungerWorkbench {
             .child(self.render_journal_view(cx))
     }
 
+    #[allow(dead_code)]
     pub(super) fn render_themes_section(&self, cx: &mut Context<Self>) -> gpui::Div {
         let l = self.lang;
         let updated_label = if self.themes_file.updated_at_ms > 0 {

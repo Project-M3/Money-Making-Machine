@@ -125,6 +125,18 @@ impl WorkspacePaths {
         self.workbench_dir.join("journal.json")
     }
 
+    pub fn industries_dir(&self) -> PathBuf {
+        self.workbench_dir.join("industries")
+    }
+
+    pub fn industry_profile_path(&self, slug: &str) -> PathBuf {
+        self.industries_dir().join(format!("{slug}.json"))
+    }
+
+    pub fn industry_primer_path(&self, slug: &str) -> PathBuf {
+        self.industries_dir().join(format!("{slug}.md"))
+    }
+
     pub fn dossier_path(&self, ticker: &str) -> PathBuf {
         self.workbench_dir
             .join("dossiers")

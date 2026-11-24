@@ -14,8 +14,10 @@
 //!   clickable Acme evidence tokens (`[report:TICKER]`, `[xbrl:TICKER]`, `[dossier:TICKER]`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Read;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::time::Duration;
 
 use alan_agent_engine::TrustPosture;
 use alan_agent_engine::tools::{Tool, ToolCapability, ToolContext, ToolRegistry, ToolResult};
@@ -31,6 +33,7 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, mpsc as tokio_mpsc};
 
+use crate::industry::{self, IndustryProfile};
 use crate::lake::{LakeDb, UniverseFilter, UniverseSortBy};
 use crate::lake_l1::SimilarSearchFilter;
 use crate::model::{Bucket, Dossier, HumanJudgment, Latticework, MungerReport};
@@ -525,9 +528,20 @@ impl M3ToolPolicyHook {
                                 | "falsification_metrics"
                                 | "feynman_checked_at"
                                 | "pending_human_review"
+                                | "industry_status"
+                                | "multiple_low"
+                                | "multiple_high"
+                                | "human_notes"
+                                | "feynman_checked"
                         )
                     {
                         return Some("human_judgment");
+                    }
+                    if matches!(
+                        lk.as_str(),
+                        "industries" | "industries_dir" | "industry_profile"
+                    ) {
+                        return Some("industries/");
                     }
                     if matches!(
                         lk.as_str(),
@@ -630,12 +644,50 @@ impl M3ToolPolicyHook {
         if Self::matches_path_segment(&lower, "memos") || lower.contains("workbench/memos") {
             return Some("memos/");
         }
+        if Self::matches_path_segment(&lower, "industries")
+            || lower.contains("workbench/industries")
+        {
+            return Some("industries/");
+        }
         None
     }
 }
 
 impl ToolPolicyHook for M3ToolPolicyHook {
     fn evaluate(&self, tool_name: &str, args: &Value, capability: ToolCapability) -> HookDecision {
+        if tool_name == "m3_web_search" && capability == ToolCapability::Network {
+            let Some(obj) = args.as_object() else {
+                return HookDecision::Deny(
+                    "红线拦截：m3_web_search 参数必须是包含 query 的 JSON 对象。".into(),
+                );
+            };
+            for key in obj.keys() {
+                if !matches!(key.as_str(), "query" | "limit") {
+                    return HookDecision::Deny(format!(
+                        "红线拦截：m3_web_search 不允许参数 `{key}`。"
+                    ));
+                }
+            }
+            let valid_query = obj
+                .get("query")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.trim().is_empty());
+            if !valid_query {
+                return HookDecision::Deny(
+                    "红线拦截：m3_web_search 缺少非空 query 字符串。".into(),
+                );
+            }
+            if let Some(lim) = obj.get("limit") {
+                let valid_lim = lim.as_u64().is_some_and(|v| (1..=8).contains(&v));
+                if !valid_lim {
+                    return HookDecision::Deny(
+                        "红线拦截：m3_web_search limit 必须是 1..=8 之间的整数。".into(),
+                    );
+                }
+            }
+            return HookDecision::Allow;
+        }
+
         if let Some(target) = Self::inspect_value_for_redline(args) {
             return HookDecision::Deny(format!(
                 "红线拦截：{target} 属于不可篡改事实源或人类判断主权区，严禁 Alan 写入或覆盖。"
@@ -1642,12 +1694,388 @@ impl Tool for M3EventsForTickerTool {
     }
 }
 
+struct M3IndustryMatrixTool {
+    paths: WorkspacePaths,
+}
+
+impl Tool for M3IndustryMatrixTool {
+    fn name(&self) -> &str {
+        "m3_industry_matrix"
+    }
+
+    fn description(&self) -> &str {
+        "读取某个行业研究项目或一组代表公司池的 DuckDB L0 确定性 5 年财务矩阵与 10-K 原文片段数。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "industry_slug": { "type": "string", "description": "workbench/industries/<slug>.json 的 slug" },
+                "tickers": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "可选：直接指定代表公司代码列表（最多 15 家）"
+                }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, _ctx: &ToolContext) -> ToolResult {
+        let paths = self.paths.clone();
+        Box::pin(async move {
+            let mut tickers: Vec<String> = Vec::new();
+            let mut industry_meta: Option<Value> = None;
+
+            if let Some(slug) = arguments
+                .get("industry_slug")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                && let Ok(profile) = industry::load_industry(&paths, slug)
+            {
+                tickers.extend(profile.bound_tickers.iter().cloned());
+                industry_meta = Some(json!({
+                    "slug": profile.slug,
+                    "title": profile.title,
+                    "status": profile.status,
+                    "sic_codes": profile.sic_codes,
+                    "multiple_low": profile.multiple_low.map(|d| d.normalize().to_string()),
+                    "multiple_high": profile.multiple_high.map(|d| d.normalize().to_string()),
+                }));
+            }
+
+            if let Some(arr) = arguments.get("tickers").and_then(Value::as_array) {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        let up = s.trim().to_ascii_uppercase();
+                        if !up.is_empty() && !tickers.iter().any(|t| t.eq_ignore_ascii_case(&up)) {
+                            tickers.push(up);
+                        }
+                    }
+                }
+            }
+            tickers.truncate(15);
+
+            if tickers.is_empty() {
+                return Ok(json!({
+                    "ok": true,
+                    "lake_available": false,
+                    "industry": industry_meta,
+                    "rows": [],
+                }));
+            }
+
+            let Some(db) = LakeDb::open_read_only_if_exists(&paths)? else {
+                return Ok(json!({
+                    "ok": true,
+                    "lake_available": false,
+                    "industry": industry_meta,
+                    "tickers": tickers,
+                    "rows": [],
+                }));
+            };
+
+            let rows = db.load_universe_rows_by_tickers(&tickers)?;
+            let sec_counts = db.count_sec_10k_chunks_by_ticker(&tickers)?;
+
+            let matrix: Vec<Value> = rows
+                .into_iter()
+                .map(|r| {
+                    let up = r.ticker.to_ascii_uppercase();
+                    json!({
+                        "ticker": r.ticker,
+                        "name": r.name,
+                        "sic": r.sic,
+                        "sic_description": r.sic_description,
+                        "years_of_data": r.years_of_data,
+                        "roic_5y_avg_pct": r.roic_5y_avg_pct.map(|v| v.round_dp(2).normalize().to_string()),
+                        "gross_margin_5y_avg_pct": r.gross_margin_5y_avg_pct.map(|v| v.round_dp(2).normalize().to_string()),
+                        "strict_owner_earnings": r.strict_owner_earnings.map(|v| v.round_dp(0).normalize().to_string()),
+                        "strict_fcf_yield_pct": r.strict_fcf_yield_pct.map(|v| v.round_dp(2).normalize().to_string()),
+                        "sbc_to_ocf_pct": r.sbc_to_ocf_pct.map(|v| v.round_dp(2).normalize().to_string()),
+                        "share_change_3y_pct": r.share_change_3y_pct.map(|v| v.round_dp(2).normalize().to_string()),
+                        "net_debt_to_oe": r.net_debt_to_oe.map(|v| v.round_dp(2).normalize().to_string()),
+                        "quality_score": r.quality_score.round_dp(1).normalize().to_string(),
+                        "latest_price": r.latest_price.map(|v| v.round_dp(2).normalize().to_string()),
+                        "strike_price_18x": r.strike_price.map(|v| v.round_dp(2).normalize().to_string()),
+                        "sec_10k_chunks": sec_counts.get(&up).copied().unwrap_or(0),
+                        "warnings": r.parsed_warnings().into_iter().map(|w| w.title).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "ok": true,
+                "lake_available": true,
+                "industry": industry_meta,
+                "count": matrix.len(),
+                "rows": matrix,
+            }))
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSearchHit {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
+struct M3WebSearchTool;
+
+impl Tool for M3WebSearchTool {
+    fn name(&self) -> &str {
+        "m3_web_search"
+    }
+
+    fn description(&self) -> &str {
+        "搜索公开网络行业资料、竞争格局演变、历史周期与产业链信息（结果标记为 source_type=web，严禁替代 SEC 10-K 确定性财报数据）。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "公开网页检索关键词（建议中/英文行业词，如 EDA duopoly Synopsys Cadence profit pool history）" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 8, "default": 5 }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Network
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, _ctx: &ToolContext) -> ToolResult {
+        Box::pin(async move {
+            let query = arguments
+                .get("query")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .context("m3_web_search 缺少 query 参数")?
+                .to_owned();
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map_or(5usize, |v| usize::try_from(v).unwrap_or(5))
+                .clamp(1, 8);
+
+            let query_clone = query.clone();
+            let fetch_res =
+                tokio::task::spawn_blocking(move || run_public_web_search(&query_clone, limit))
+                    .await;
+
+            match fetch_res {
+                Ok(Ok(hits)) => Ok(json!({
+                    "ok": true,
+                    "source_type": "web",
+                    "citation_rule": "请在正文中与 SEC 10-K 一手引用严格区分并标注 [Web: 标题 (URL)]",
+                    "query": query,
+                    "count": hits.len(),
+                    "results": hits.into_iter().map(|h| json!({
+                        "title": h.title,
+                        "url": h.url,
+                        "snippet": h.snippet,
+                        "source_type": "web",
+                    })).collect::<Vec<_>>(),
+                })),
+                Ok(Err(err)) => Ok(json!({
+                    "ok": false,
+                    "source_type": "web",
+                    "query": query,
+                    "results": [],
+                    "warning": format!("公开网页搜索暂不可用（已安全降级为本地 SEC/DuckDB 检索）：{err:#}"),
+                })),
+                Err(err) => Ok(json!({
+                    "ok": false,
+                    "source_type": "web",
+                    "query": query,
+                    "results": [],
+                    "warning": format!("网页搜索任务中止：{err}"),
+                })),
+            }
+        })
+    }
+}
+
+fn run_public_web_search(query: &str, limit: usize) -> Result<Vec<WebSearchHit>> {
+    const MAX_SEARCH_BYTES: usize = 256 * 1024;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Project-M3/0.3")
+        .build()
+        .context("初始化网页搜索客户端失败")?;
+
+    let mut url = reqwest::Url::parse("https://html.duckduckgo.com/html/")?;
+    url.query_pairs_mut().append_pair("q", query);
+
+    let resp = client.get(url).send().context("请求公开网页搜索引擎失败")?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("HTTP {status}");
+    }
+    let mut buf = Vec::with_capacity(32 * 1024);
+    resp.take(MAX_SEARCH_BYTES as u64 + 1)
+        .read_to_end(&mut buf)
+        .context("读取搜索结果失败")?;
+    if buf.len() > MAX_SEARCH_BYTES {
+        buf.truncate(MAX_SEARCH_BYTES);
+    }
+    let html = String::from_utf8_lossy(&buf);
+    Ok(parse_ddg_html_results(&html, limit))
+}
+
+pub fn parse_ddg_html_results(html: &str, limit: usize) -> Vec<WebSearchHit> {
+    let mut hits = Vec::new();
+    let mut search_pos = 0usize;
+    let marker = "class=\"result__a\"";
+
+    while hits.len() < limit {
+        let Some(rel_idx) = html[search_pos..].find(marker) else {
+            break;
+        };
+        let tag_start = search_pos + rel_idx;
+        let after_marker = tag_start + marker.len();
+        let Some(close_gt) = html[after_marker..].find('>') else {
+            break;
+        };
+        let open_lt = html[..tag_start].rfind('<').unwrap_or(tag_start);
+        let anchor_tag = &html[open_lt..=after_marker + close_gt];
+        let raw_href = extract_attr(anchor_tag, "href").unwrap_or_default();
+        let resolved_url = normalize_ddg_href(&raw_href);
+
+        let title_start = after_marker + close_gt + 1;
+        let Some(end_a) = html[title_start..].find("</a>") else {
+            break;
+        };
+        let raw_title = &html[title_start..title_start + end_a];
+        let title = clean_html_text(raw_title);
+
+        let rest_start = title_start + end_a + 4;
+        let snippet_window_end = (rest_start + 2400).min(html.len());
+        let window = &html[rest_start..snippet_window_end];
+        let snippet = extract_ddg_snippet(window);
+
+        if !title.is_empty() && resolved_url.starts_with("http") {
+            hits.push(WebSearchHit {
+                title,
+                url: resolved_url,
+                snippet,
+            });
+        }
+        search_pos = rest_start;
+    }
+    hits
+}
+
+fn extract_attr(fragment: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let pos = fragment.rfind(&needle)?;
+    let val_start = pos + needle.len();
+    let val_end = fragment[val_start..].find('"')?;
+    Some(decode_html_entities(
+        &fragment[val_start..val_start + val_end],
+    ))
+}
+
+fn extract_ddg_snippet(window: &str) -> String {
+    if let Some(pos) = window.find("class=\"result__snippet\"") {
+        let after = &window[pos..];
+        if let Some(gt) = after.find('>') {
+            let body = &after[gt + 1..];
+            if let Some(end) = body.find("</a>").or_else(|| body.find("</div>")) {
+                return clean_html_text(&body[..end]);
+            }
+        }
+    }
+    String::new()
+}
+
+fn normalize_ddg_href(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let normalized = if trimmed.starts_with("//") {
+        format!("https:{trimmed}")
+    } else if trimmed.starts_with('/') {
+        format!("https://html.duckduckgo.com{trimmed}")
+    } else {
+        trimmed.to_owned()
+    };
+    if let Ok(parsed) = reqwest::Url::parse(&normalized) {
+        if parsed.path().starts_with("/l/") {
+            for (k, v) in parsed.query_pairs() {
+                if k == "uddg" && !v.trim().is_empty() {
+                    return v.into_owned();
+                }
+            }
+        }
+        return parsed.to_string();
+    }
+    normalized
+}
+
+fn clean_html_text(raw: &str) -> String {
+    let mut no_tags = String::with_capacity(raw.len());
+    let mut in_tag = false;
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                let next_is_punct = matches!(
+                    chars.peek().copied(),
+                    Some('.' | ',' | ';' | ':' | '!' | '?' | ')' | ']')
+                );
+                if !next_is_punct && !no_tags.ends_with(' ') {
+                    no_tags.push(' ');
+                }
+            }
+            _ if !in_tag => no_tags.push(ch),
+            _ => {}
+        }
+    }
+    let decoded = decode_html_entities(&no_tags);
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn decode_html_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+}
+
 enum InterrogatorCommand {
     Submit {
         ticker: String,
         name: String,
         bucket: Bucket,
         question: String,
+    },
+    SubmitPrompt {
+        display_prompt: String,
+        full_prompt: String,
     },
     Interrupt,
     Reset,
@@ -1750,6 +2178,23 @@ impl M3InterrogatorHandle {
                                                 push_event(&events_worker, InterrogatorEvent::UserSubmitted {
                                                     submission_id,
                                                     prompt: question,
+                                                });
+                                            }
+                                            Err(err) => {
+                                                push_event(&events_worker, InterrogatorEvent::Error {
+                                                    message: friendly_m3_credentials_error(&format!("{err:#}")),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    InterrogatorCommand::SubmitPrompt { display_prompt, full_prompt } => {
+                                        fs_worker.refresh();
+                                        match client.submit_text(full_prompt).await {
+                                            Ok(submission_id) => {
+                                                active_submission = Some(submission_id.clone());
+                                                push_event(&events_worker, InterrogatorEvent::UserSubmitted {
+                                                    submission_id,
+                                                    prompt: display_prompt,
                                                 });
                                             }
                                             Err(err) => {
@@ -1910,6 +2355,18 @@ impl M3InterrogatorHandle {
         });
     }
 
+    pub fn submit_prompt(&self, display_prompt: impl Into<String>, full_prompt: impl Into<String>) {
+        let display = display_prompt.into();
+        let full = full_prompt.into();
+        if display.trim().is_empty() || full.trim().is_empty() {
+            return;
+        }
+        let _ = self.cmd_tx.send(InterrogatorCommand::SubmitPrompt {
+            display_prompt: display,
+            full_prompt: full,
+        });
+    }
+
     pub fn interrupt(&self) {
         let _ = self.cmd_tx.send(InterrogatorCommand::Interrupt);
     }
@@ -1950,6 +2407,55 @@ pub fn compose_interrogation_turn(
     )
 }
 
+pub fn compose_industry_tutor_turn(
+    profile: &IndustryProfile,
+    primer_excerpt: &str,
+    question: &str,
+) -> String {
+    let tickers = if profile.bound_tickers.is_empty() {
+        "暂无绑定标的".to_owned()
+    } else {
+        profile.bound_tickers.join(", ")
+    };
+    let anchor = profile
+        .valuation_anchor_label()
+        .unwrap_or_else(|| "尚未由人类设定".to_owned());
+    let excerpt = if primer_excerpt.trim().is_empty() {
+        "（尚未生成行业活手册正文，请直接调用工具检索代表公司 10-K、DuckDB 财务矩阵与公开网页资料）"
+            .to_owned()
+    } else {
+        truncate_chars(primer_excerpt, 2000)
+    };
+    format!(
+        "[当前行业学习台：{} (slug: `{}`) | 代表公司池：{tickers} | 人类估值锚：{anchor}]\n\
+         请务必调用 `m3_industry_matrix`、`m3_events_for_ticker`（按需）或 `m3_web_search` 核对事实；\n\
+         并在引用出处时严格区分 `[SEC 10-K: TICKER]`（一手官方年报/财务）与 `[Web: 标题 (URL)]`（公开网页资料）；严禁给出买卖建议或代改人类判断。\n\n\
+         当前行业活手册摘要：\n{excerpt}\n\n\
+         人类提问：{question}",
+        profile.title, profile.slug
+    )
+}
+
+pub fn compose_feynman_quiz_turn(profile: &IndustryProfile, primer_excerpt: &str) -> String {
+    let tickers = if profile.bound_tickers.is_empty() {
+        "暂无绑定标的".to_owned()
+    } else {
+        profile.bound_tickers.join(", ")
+    };
+    let excerpt = truncate_chars(primer_excerpt, 2000);
+    format!(
+        "[费曼通关自测：{} (slug: `{}`) | 代表公司池：{tickers}]\n\
+         请先用 `m3_industry_matrix` 查看代表公司 5Y ROIC、毛利与资本开支差异，然后严格模仿查理·芒格，向我提出 **4 道极具穿透力的费曼通关拷问**（编号 1–4）：\n\
+         1. 利润池与单位经济（为什么不是最赚钱的环节在承担周期风险？）\n\
+         2. 护城河与替代品边界（客户为什么不能自己做，或者几年后会被谁颠覆？）\n\
+         3. 历史死法与杠杆反噬（这个行业过去 20 年破产或长期毁灭股东价值的公司通常犯了什么错？）\n\
+         4. 估值锚验证（我能否用一句话说清它合理的股东盈余倍数区间，以及什么指标变化说明我判断错了？）\n\
+         不要直接帮我作答！列出这 4 个问题后等待我用大白话回答，再由你指出逻辑漏洞。\n\n\
+         行业手册参考：\n{excerpt}",
+        profile.title, profile.slug
+    )
+}
+
 /// Builds and boots Project-M3's isolated `EmbeddedAlan` V2 instance.
 pub async fn boot_m3_embedded(
     paths: WorkspacePaths,
@@ -1979,7 +2485,11 @@ pub async fn boot_m3_embedded(
     tools.register(M3SemanticNeighborsTool {
         paths: paths.clone(),
     });
-    tools.register(M3EventsForTickerTool { paths });
+    tools.register(M3EventsForTickerTool {
+        paths: paths.clone(),
+    });
+    tools.register(M3IndustryMatrixTool { paths });
+    tools.register(M3WebSearchTool);
 
     let process = AgentProcessConfig {
         trust_posture: TrustPosture::ConfinedTrusted,
@@ -3142,5 +3652,77 @@ mod tests {
             })
             .expect("spawn test thread");
         handle.join().expect("embedded lake tools test panicked");
+    }
+
+    #[test]
+    fn policy_hook_allows_valid_web_search_and_blocks_industry_writes_and_other_network_tools() {
+        let hook = M3ToolPolicyHook;
+        assert!(matches!(
+            hook.evaluate(
+                "m3_web_search",
+                &json!({"query": "EDA semiconductor software industries profit pool", "limit": 4}),
+                ToolCapability::Network
+            ),
+            HookDecision::Allow
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "m3_web_search",
+                &json!({"query": "  "}),
+                ToolCapability::Network
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "arbitrary_fetch",
+                &json!({"url": "https://example.com"}),
+                ToolCapability::Network
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "write_file",
+                &json!({"path": "workbench/industries/eda.json"}),
+                ToolCapability::Write
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "m3_update_draft",
+                &json!({"ticker": "SNPS", "multiple_low": 15}),
+                ToolCapability::Write
+            ),
+            HookDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn parse_ddg_html_results_decodes_uddg_urls_and_strips_tags() {
+        let html = r#"
+        <div class="result">
+          <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FElectronic_design_automation&amp;rut=1"><b>EDA</b> &amp; Duopoly</a>
+          <a class="result__snippet" href="//duckduckgo.com/l/?uddg=...">Synopsys &amp; Cadence share &gt;70% of <em>core EDA</em>.</a>
+        </div>
+        <div class="result">
+          <a class="result__a" href="https://sec.gov/example">SEC Filing Note</a>
+          <div class="result__snippet">Direct URL item</div>
+        </div>
+        "#;
+        let hits = parse_ddg_html_results(html, 5);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].title, "EDA & Duopoly");
+        assert_eq!(
+            hits[0].url,
+            "https://en.wikipedia.org/wiki/Electronic_design_automation"
+        );
+        assert_eq!(
+            hits[0].snippet,
+            "Synopsys & Cadence share >70% of core EDA."
+        );
+        assert_eq!(hits[1].title, "SEC Filing Note");
+        assert_eq!(hits[1].url, "https://sec.gov/example");
     }
 }

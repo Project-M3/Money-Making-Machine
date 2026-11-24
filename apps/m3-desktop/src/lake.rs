@@ -1830,6 +1830,144 @@ impl LakeDb {
         }))
     }
 
+    pub fn load_universe_rows_by_tickers(&self, tickers: &[String]) -> Result<Vec<UniverseRow>> {
+        let mut norm_tickers: Vec<String> = Vec::new();
+        let mut seen = HashSet::new();
+        for raw in tickers {
+            let up = raw.trim().to_ascii_uppercase();
+            if !up.is_empty() && seen.insert(up.clone()) {
+                norm_tickers.push(up);
+            }
+        }
+        if norm_tickers.is_empty() || !self.table_exists("universe_snapshot")? {
+            return Ok(Vec::new());
+        }
+        let _tx = ReadSnapshotTx::begin(&self.conn)?;
+        let placeholders = vec!["?"; norm_tickers.len()].join(", ");
+        let sql = format!(
+            "SELECT {UNIVERSE_SELECT_COLS}
+             FROM universe_snapshot
+             WHERE UPPER(ticker) IN ({placeholders})
+             ORDER BY in_watchlist DESC, quality_score DESC, cik ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<Box<dyn ToSql>> = norm_tickers
+            .iter()
+            .map(|t| Box::new(t.clone()) as Box<dyn ToSql>)
+            .collect();
+        let refs = params.iter().map(|b| b.as_ref());
+        let rows = stmt.query_map(params_from_iter(refs), read_universe_row)?;
+        let mut by_ticker: HashMap<String, UniverseRow> = HashMap::new();
+        for r in rows {
+            let row = r?;
+            let key = row.ticker.to_ascii_uppercase();
+            by_ticker.entry(key).or_insert(row);
+        }
+        let mut ordered = Vec::with_capacity(by_ticker.len());
+        for t in norm_tickers {
+            if let Some(row) = by_ticker.remove(&t) {
+                ordered.push(row);
+            }
+        }
+        Ok(ordered)
+    }
+
+    pub fn load_universe_rows_by_sic(&self, sic: u32, limit: usize) -> Result<Vec<UniverseRow>> {
+        if limit == 0 || !self.table_exists("universe_snapshot")? {
+            return Ok(Vec::new());
+        }
+        let _tx = ReadSnapshotTx::begin(&self.conn)?;
+        let sql_limit = i64::try_from(limit).unwrap_or(10);
+        let sql = format!(
+            "SELECT {UNIVERSE_SELECT_COLS}
+             FROM universe_snapshot
+             WHERE sic = ?
+             ORDER BY quality_score DESC, ticker ASC
+             LIMIT ?"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![i64::from(sic), sql_limit], read_universe_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn search_universe_top_tickers(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<UniverseRow>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() || limit == 0 || !self.table_exists("universe_snapshot")? {
+            return Ok(Vec::new());
+        }
+        let _tx = ReadSnapshotTx::begin(&self.conn)?;
+        let pattern = format!("%{}%", trimmed.to_ascii_lowercase());
+        let sql_limit = i64::try_from(limit).unwrap_or(10);
+        let sql = format!(
+            "SELECT {UNIVERSE_SELECT_COLS}
+             FROM universe_snapshot
+             WHERE LOWER(ticker) LIKE ?
+                OR LOWER(name) LIKE ?
+                OR LOWER(COALESCE(sic_description, '')) LIKE ?
+             ORDER BY
+                CASE WHEN UPPER(ticker) = UPPER(?) THEN 0 ELSE 1 END ASC,
+                quality_score DESC,
+                ticker ASC
+             LIMIT ?"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params![pattern, pattern, pattern, trimmed, sql_limit],
+            read_universe_row,
+        )?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn count_sec_10k_chunks_by_ticker(
+        &self,
+        tickers: &[String],
+    ) -> Result<HashMap<String, usize>> {
+        let norm: Vec<String> = tickers
+            .iter()
+            .map(|t| t.trim().to_ascii_uppercase())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if norm.is_empty() || !self.table_exists("doc_chunks")? {
+            return Ok(HashMap::new());
+        }
+        let _tx = ReadSnapshotTx::begin(&self.conn)?;
+        let placeholders = vec!["?"; norm.len()].join(", ");
+        let sql = format!(
+            "SELECT UPPER(ticker), COUNT(*)
+             FROM doc_chunks
+             WHERE UPPER(ticker) IN ({placeholders})
+               AND doc_type = 'sec_10k'
+             GROUP BY UPPER(ticker)"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<Box<dyn ToSql>> = norm
+            .iter()
+            .map(|t| Box::new(t.clone()) as Box<dyn ToSql>)
+            .collect();
+        let refs = params.iter().map(|b| b.as_ref());
+        let rows = stmt.query_map(params_from_iter(refs), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        let mut out = HashMap::new();
+        for r in rows {
+            let (t, cnt) = r?;
+            out.insert(t, usize::try_from(cnt.max(0)).unwrap_or(0));
+        }
+        Ok(out)
+    }
+
     pub(crate) fn load_previous_sec_snapshot(&self) -> Result<PrevSecLakeSnapshot> {
         let mut all_ciks = HashSet::new();
         let mut parsed_ciks = HashSet::new();

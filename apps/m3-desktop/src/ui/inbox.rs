@@ -2,12 +2,14 @@ use super::{
     FontRoles, MungerWorkbench, NavView,
     components::*,
     format::*,
+    industry::industry_status_colors,
     theme::*,
     universe::{UniverseSearchMode, format_sic_line},
 };
 use crate::{
     events::{EventCatchupOptions, catchup_events_with_progress, fetch_company_10k_profile},
     i18n::UiLang,
+    industry::{self, IndustryStatus},
     lake::{LakeDb, UniverseDrawerDetails, UniverseFilter},
     lake_l1::{SignalEvidence, SignalInboxRow, SignalKind, SignalStatus},
     lake_l2::BudgetStatusReport,
@@ -1320,6 +1322,11 @@ impl MungerWorkbench {
             .as_ref()
             .filter(|d| d.row.ticker.eq_ignore_ascii_case(&sig.primary_ticker));
 
+        let matched_ind = industry::find_industry_for_company(
+            &self.industries,
+            &sig.primary_ticker,
+            details_opt.and_then(|d| d.row.sic),
+        );
         let (circle_badge_label, cb_fg, cb_bg, cb_br) = if let Some(rep) = report_opt {
             let (fg, bg, br) = bucket_colors(rep.bucket);
             (
@@ -1331,6 +1338,19 @@ impl MungerWorkbench {
                 bg,
                 br,
             )
+        } else if let Some(ind) = matched_ind {
+            let (fg, bg, br) = industry_status_colors(ind.status);
+            let lbl = match (ind.status, l) {
+                (IndustryStatus::InsideCircle, UiLang::Zh) => format!("能力圈行业 · {}", ind.title),
+                (IndustryStatus::InsideCircle, UiLang::En) => {
+                    format!("Circle Ind. · {}", ind.title)
+                }
+                (IndustryStatus::Studying, UiLang::Zh) => format!("行业学习中 · {}", ind.title),
+                (IndustryStatus::Studying, UiLang::En) => format!("Studying · {}", ind.title),
+                (IndustryStatus::TooHard, UiLang::Zh) => format!("行业 Too Hard · {}", ind.title),
+                (IndustryStatus::TooHard, UiLang::En) => format!("Ind. Too Hard · {}", ind.title),
+            };
+            (lbl, fg, bg, br)
         } else if let Some(det) = details_opt {
             let lbl = match (l, det.row.sic) {
                 (UiLang::Zh, Some(sic)) => format!("未研究行业 · SIC {sic}"),
@@ -1347,6 +1367,13 @@ impl MungerWorkbench {
                 SLATE_BORDER,
             )
         };
+        let ind_ticker = sig.primary_ticker.clone();
+        let ind_name = details_opt
+            .map(|d| d.row.name.clone())
+            .or_else(|| report_opt.map(|r| r.name.clone()))
+            .unwrap_or_else(|| sig.primary_ticker.clone());
+        let ind_sic = details_opt.and_then(|d| d.row.sic);
+        let ind_sic_desc = details_opt.and_then(|d| d.row.sic_description.clone());
 
         div()
             .flex()
@@ -1378,7 +1405,13 @@ impl MungerWorkbench {
                                         &self.fonts,
                                     ))
                                     .child(badge(st_label.into(), st_fg, st_bg, st_br, &self.fonts))
-                                    .child(badge(circle_badge_label, cb_fg, cb_bg, cb_br, &self.fonts))
+                                    .child(badge(
+                                        circle_badge_label,
+                                        cb_fg,
+                                        cb_bg,
+                                        cb_br,
+                                        &self.fonts,
+                                    ))
                                     .child(
                                         div()
                                             .font_family(self.fonts.mono_num.clone())
@@ -1466,22 +1499,18 @@ impl MungerWorkbench {
                             .child(Self::inbox_action_button(
                                 "inbox-act-industry",
                                 l.t("研究所在行业", "Research Industry"),
-                                "⌘4",
+                                "⌘3",
                                 false,
                                 (SKY_FG, SKY_BG, SKY_BORDER),
                                 &self.fonts,
-                                cx.listener(|this, _, _, cx| {
-                                    this.switch_view(NavView::Journal);
-                                    this.banner = Some((
-                                        this.lang
-                                            .t(
-                                                "已打开主题图谱（即将升级为独立「行业研究」工作台）",
-                                                "Opened Themes view (upgrading to Industry Research Studio next)",
-                                            )
-                                            .into(),
-                                        false,
-                                    ));
-                                    cx.notify();
+                                cx.listener(move |this, _, _, cx| {
+                                    this.open_or_create_industry_for_company(
+                                        &ind_ticker,
+                                        &ind_name,
+                                        ind_sic,
+                                        ind_sic_desc.as_deref(),
+                                        cx,
+                                    );
                                 }),
                             ))
                             .child(Self::inbox_action_button(

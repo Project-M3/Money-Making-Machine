@@ -1234,7 +1234,7 @@ fn bilingual_ui_helpers_render_english_copy() {
 
     let en = UiLang::En;
     let notice = resolve_sidebar_dock_notice_for(
-        None, false, None, false, None, false, false, false, false, false, en,
+        None, false, None, false, None, false, false, None, false, false, false, false, en,
     );
     assert!(notice.is_none());
 
@@ -1247,6 +1247,8 @@ fn bilingual_ui_helpers_render_english_copy() {
         None,
         false,
         false,
+        None,
+        false,
         false,
         false,
         false,
@@ -1257,7 +1259,7 @@ fn bilingual_ui_helpers_render_english_copy() {
     assert!(err_notice.dismissible);
 
     let syncing_notice = resolve_sidebar_dock_notice_for(
-        None, true, None, false, None, false, false, false, false, false, en,
+        None, true, None, false, None, false, false, None, false, false, false, false, en,
     )
     .expect("syncing notice expected");
     assert!(syncing_notice.message.contains("Syncing"));

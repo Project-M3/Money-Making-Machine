@@ -39,6 +39,8 @@ pub(super) fn resolve_sidebar_dock_notice_for(
     inbox_catching_up: bool,
     inbox_progress: Option<&str>,
     deep_research_running: bool,
+    industry_research_running: bool,
+    industry_progress: Option<&str>,
     syncing: bool,
     themes_syncing: bool,
     update_checking: bool,
@@ -109,6 +111,23 @@ pub(super) fn resolve_sidebar_dock_notice_for(
                 .to_owned(),
             dot_color: SKY_FG,
             border_color: SKY_BORDER,
+            dismissible: false,
+        });
+    }
+    if industry_research_running {
+        return Some(SidebarDockNotice {
+            tag: "INDUSTRY L2",
+            message: industry_progress
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| {
+                    lang.t(
+                        "Alan 4 视角行业深研运行中…",
+                        "Running 4-perspective industry research…",
+                    )
+                })
+                .to_owned(),
+            dot_color: VIOLET_FG,
+            border_color: VIOLET_BORDER,
             dismissible: false,
         });
     }
@@ -186,6 +205,8 @@ pub(super) fn resolve_sidebar_dock_notice_from(
         inbox_catching_up,
         inbox_progress,
         deep_research_running,
+        false,
+        None,
         syncing,
         themes_syncing,
         update_checking,
@@ -218,16 +239,23 @@ impl MungerWorkbench {
                 SKY_FG,
             ),
             (
+                NavView::Industry,
+                l.t("行业研究", "Industry Research"),
+                "⌘3",
+                self.active_view == NavView::Industry,
+                VIOLET_FG,
+            ),
+            (
                 NavView::Baskets,
                 l.t("能力圈总览", "Circle"),
-                "⌘3",
+                "⌘4",
                 self.active_view == NavView::Baskets && self.basket_filter.is_none(),
                 INK_HERO,
             ),
             (
                 NavView::Journal,
-                l.t("主题与账本", "Themes & Journal"),
-                "⌘4",
+                l.t("决策账本", "Decision Journal"),
+                "⌘5",
                 self.active_view == NavView::Journal,
                 GOLD_FG,
             ),
@@ -617,6 +645,8 @@ impl MungerWorkbench {
             self.inbox_catching_up,
             self.inbox_catchup_progress.as_deref(),
             self.deep_research_running,
+            self.industry_research_running,
+            self.industry_research_progress.as_deref(),
             self.syncing,
             self.themes_syncing,
             self.update_checking,
@@ -916,11 +946,24 @@ impl MungerWorkbench {
                     )
                 }
             }
+            NavView::Industry => {
+                if let Some(ind) = self.selected_industry() {
+                    format!(
+                        "{} · {} ({})",
+                        l.t("行业研究", "Industry Research"),
+                        ind.title,
+                        ind.status.label_for(l)
+                    )
+                } else {
+                    l.t(
+                        "行业研究工作台 · Alan Deep Research",
+                        "Industry Research Studio · Alan Deep Research",
+                    )
+                    .to_owned()
+                }
+            }
             NavView::Journal => l
-                .t(
-                    "主题图谱与决策账本 · Themes & Journal",
-                    "Themes & Decision Journal",
-                )
+                .t("决策账本 · Decision Journal", "Decision Journal")
                 .to_owned(),
             NavView::Universe => l
                 .t(
@@ -1209,11 +1252,18 @@ impl MungerWorkbench {
                         "1 Financials & Memo · 2 Deep Research & Alan · 3 XBRL · t TTM/FY · j/k switch · p Prompt · c CLI · esc back",
                     ),
                 ),
+                NavView::Industry => (
+                    VIOLET_FG,
+                    l.t(
+                        "新建行业 / 选中代表公司 / Alan 4 视角深研 + Web 检索 + 费曼通关进能力圈 · s 同步 SIC 聚类 · ⌘K 命令",
+                        "New Study / Bound Peers / Alan 4-Lens + Web Search + Feynman Graduation · s sync SIC clusters · ⌘K commands",
+                    ),
+                ),
                 NavView::Journal => (
                     GOLD_FG,
                     l.t(
-                        "s 同步主题图谱 · / 或 ⌘K 命令面板 · c 复制 journal CLI · esc 返回总览",
-                        "s sync themes · / or ⌘K palette · c copy journal CLI · esc back to Circle",
+                        "/ 或 ⌘K 命令面板 · c 复制 journal CLI · esc 返回总览",
+                        "/ or ⌘K palette · c copy journal CLI · esc back to Circle",
                     ),
                 ),
                 NavView::Universe => (
@@ -1277,7 +1327,7 @@ impl MungerWorkbench {
                         .text_color(rgb(INK_MUTED))
                         .child(match self.active_view {
                             NavView::Inbox => "L0/L1 · 0 FLAGSHIP TOKEN",
-                            NavView::Agent => "EMBEDDED ALAN · PAPER ONLY",
+                            NavView::Agent | NavView::Industry => "EMBEDDED ALAN · PAPER ONLY",
                             NavView::Universe => "DUCKDB L0/L1 · ZERO-LLM",
                             _ => "ZERO-LLM · PAPER ONLY",
                         }),

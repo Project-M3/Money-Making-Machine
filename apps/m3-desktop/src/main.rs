@@ -6,6 +6,8 @@ mod cli;
 mod edgar;
 mod events;
 mod i18n;
+mod industry;
+mod industry_research;
 mod lake;
 mod lake_l1;
 mod lake_l2;
@@ -65,6 +67,7 @@ actions!(
         SelectAll,
         ViewInbox,
         ViewUniverse,
+        ViewIndustry,
         ViewBaskets,
         ViewDossier,
         ViewAgent,
@@ -179,8 +182,9 @@ pub(crate) fn build_app_menus(lang: UiLang) -> Vec<Menu> {
             items: vec![
                 MenuItem::action(lang.t("简报收件箱", "Briefing Inbox"), ViewInbox),
                 MenuItem::action(lang.t("全市场雷达", "Universe Radar"), ViewUniverse),
+                MenuItem::action(lang.t("行业研究", "Industry Research"), ViewIndustry),
                 MenuItem::action(lang.t("能力圈总览", "Circle Overview"), ViewBaskets),
-                MenuItem::action(lang.t("主题与账本", "Themes & Journal"), ViewJournal),
+                MenuItem::action(lang.t("决策账本", "Decision Journal"), ViewJournal),
                 MenuItem::separator(),
                 MenuItem::action(lang.t("财报与活研报", "Financials & Memo"), ViewDossier),
                 MenuItem::action("Research Desk · Alan", ViewAgent),
@@ -293,10 +297,11 @@ fn bind_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-a", SelectAll, None),
         KeyBinding::new("cmd-1", ViewInbox, None),
         KeyBinding::new("cmd-2", ViewUniverse, None),
-        KeyBinding::new("cmd-3", ViewBaskets, None),
-        KeyBinding::new("cmd-4", ViewJournal, None),
-        KeyBinding::new("cmd-5", ViewDossier, None),
-        KeyBinding::new("cmd-6", ViewAgent, None),
+        KeyBinding::new("cmd-3", ViewIndustry, None),
+        KeyBinding::new("cmd-4", ViewBaskets, None),
+        KeyBinding::new("cmd-5", ViewJournal, None),
+        KeyBinding::new("cmd-6", ViewDossier, None),
+        KeyBinding::new("cmd-7", ViewAgent, None),
         KeyBinding::new("cmd-[", BackToBaskets, None),
         KeyBinding::new("cmd-t", ToggleBasis, None),
         KeyBinding::new("cmd-shift-v", ToggleBasketsView, None),
@@ -350,6 +355,10 @@ fn register_window_actions(cx: &mut App, window: gpui::WindowHandle<MungerWorkbe
     });
     register_window_action::<ViewUniverse>(cx, window, |v, _, cx| {
         v.switch_view(NavView::Universe);
+        cx.notify();
+    });
+    register_window_action::<ViewIndustry>(cx, window, |v, _, cx| {
+        v.switch_view(NavView::Industry);
         cx.notify();
     });
     register_window_action::<ViewBaskets>(cx, window, |v, _, cx| {

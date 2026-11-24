@@ -93,6 +93,24 @@ impl MungerWorkbench {
             group: "VIEW".into(),
             title: l
                 .t(
+                    "行业研究 · Industry Research Studio",
+                    "Industry Research · Alan Studio",
+                )
+                .into(),
+            subtitle: l
+                .t(
+                    "4 视角行业深研、10-K/Web 出处分离、费曼自测与能力圈毕业阈值",
+                    "4-lens industry study, separated 10-K/Web citations, Feynman quiz & Circle graduation",
+                )
+                .into(),
+            shortcut: Some("⌘3"),
+            dot_color: VIOLET_FG,
+            action: PaletteAction::SwitchView(NavView::Industry),
+        });
+        items.push(PaletteItem {
+            group: "VIEW".into(),
+            title: l
+                .t(
                     "能力圈总览 (CORE / WATCH / OUT / TOO HARD)",
                     "Circle Overview (CORE / WATCH / OUT / TOO HARD)",
                 )
@@ -103,7 +121,7 @@ impl MungerWorkbench {
                     "Today's signals and four-tier Circle triage",
                 )
                 .into(),
-            shortcut: Some("⌘3"),
+            shortcut: Some("⌘4"),
             dot_color: INK_PRIMARY,
             action: PaletteAction::FocusBasket(None),
         });
@@ -240,15 +258,15 @@ impl MungerWorkbench {
         items.push(PaletteItem {
             group: "VIEW".into(),
             title: l
-                .t("主题与账本 · Themes & Journal", "Themes & Decision Journal")
+                .t("决策账本 · Decision Journal", "Decision Journal")
                 .into(),
             subtitle: l
                 .t(
-                    "跨公司商业原型图谱 + 事前冻结决策账本 (100% 现金与 S&P 500)",
-                    "Business archetypes + append-only decision journal vs S&P 500",
+                    "事前冻结决策账本 (100% 现金与 S&P 500 对比)",
+                    "Append-only decision journal vs 100% cash & S&P 500",
                 )
                 .into(),
-            shortcut: Some("⌘4"),
+            shortcut: Some("⌘5"),
             dot_color: GOLD_FG,
             action: PaletteAction::SwitchView(NavView::Journal),
         });

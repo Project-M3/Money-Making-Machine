@@ -2756,6 +2756,46 @@ impl MungerWorkbench {
             .child(
                 div()
                     .id(gpui::SharedString::from(format!(
+                        "univ-research-ind-{}",
+                        row.cik
+                    )))
+                    .w_full()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(rgba(SKY_BG))
+                    .border_1()
+                    .border_color(rgba(SKY_BORDER))
+                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                    .active(|s| s.bg(rgb(BG_ACTIVE)))
+                    .cursor_pointer()
+                    .text_center()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgb(SKY_FG))
+                    .on_click({
+                        let tk = row.ticker.clone();
+                        let nm = row.name.clone();
+                        let sic = row.sic;
+                        let sic_desc = row.sic_description.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            this.open_or_create_industry_for_company(
+                                &tk,
+                                &nm,
+                                sic,
+                                sic_desc.as_deref(),
+                                cx,
+                            );
+                        })
+                    })
+                    .child(self.lang.t(
+                        "研究所在行业 · Industry Studio (⌘3)",
+                        "Research Industry · Industry Studio (⌘3)",
+                    )),
+            )
+            .child(
+                div()
+                    .id(gpui::SharedString::from(format!(
                         "univ-find-similar-{}",
                         row.cik
                     )))
