@@ -1,20 +1,618 @@
 use super::{
-    AgentMessageRole, AgentUiMessage, DossierTab, MungerWorkbench, NavView, components::*, theme::*,
+    AgentMessageRole, AgentUiMessage, DossierTab, MungerWorkbench, NavView, components::*,
+    format::*, theme::*,
 };
 use crate::{
     alan_interrogator::{
         AcmeEvidenceKind, InterrogatorEvent, M3InterrogatorHandle, TuringTapeEntry, TuringTapeKind,
         parse_acme_evidence_tokens,
     },
+    cli,
+    lake::LakeDb,
+    lake_l1::SimilarSearchFilter,
+    lake_l2::ResearchRunStatus,
     model::{Bucket, Dossier, MungerReport},
-    store,
+    research::{
+        self, DeepResearchEvent, DeepResearchPerspective, DeepResearchRequest, DeepResearchResult,
+    },
+    store::{self, WorkspacePaths},
 };
 use gpui::{Context, div, prelude::*, px, rgb, rgba};
-use std::collections::HashMap;
+use rust_decimal::Decimal;
+use std::{collections::HashMap, sync::mpsc};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoSection {
+    pub id: String,
+    pub heading: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ParsedResearchMemo {
+    pub title: String,
+    pub metadata: Vec<(String, String)>,
+    pub sections: Vec<MemoSection>,
+    pub citations: Vec<String>,
+    pub human_notes: Option<String>,
+}
+
+/// Parses a `workbench/memos/<TICKER>.md` Living Research Memo into structured sections & citations.
+pub fn parse_research_memo(raw: &str) -> ParsedResearchMemo {
+    let mut parsed = ParsedResearchMemo::default();
+    let mut current_heading: Option<String> = None;
+    let mut current_lines: Vec<String> = Vec::new();
+    let mut in_preamble = true;
+
+    let flush_section = |parsed: &mut ParsedResearchMemo, heading: String, lines: Vec<String>| {
+        let body = lines.join("\n").trim().to_owned();
+        let lower = heading.to_ascii_lowercase();
+        if lower.contains("evidence & citations") || lower == "citations" {
+            let mut cites = Vec::new();
+            for line in body.lines() {
+                let t = line.trim();
+                if t.is_empty() || (t.starts_with('_') && t.ends_with('_')) {
+                    continue;
+                }
+                cites.push(t.to_owned());
+            }
+            parsed.citations = cites;
+        } else if lower.starts_with("human notes") {
+            let cleaned: Vec<&str> = body
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with("<!--"))
+                .collect();
+            if !cleaned.is_empty() {
+                parsed.human_notes = Some(cleaned.join("\n"));
+            }
+        }
+
+        let id = if lower.contains("(moat)") {
+            "moat".to_owned()
+        } else if lower.contains("(accounting)") {
+            "accounting".to_owned()
+        } else if lower.contains("(latent_peers)") {
+            "latent_peers".to_owned()
+        } else if lower.contains("(premortem)") {
+            "premortem".to_owned()
+        } else if lower.contains("deterministic financial snapshot") {
+            "snapshot".to_owned()
+        } else if lower.contains("evidence & citations") {
+            "citations".to_owned()
+        } else if lower.starts_with("human notes") {
+            "human_notes".to_owned()
+        } else {
+            lower.replace(' ', "_")
+        };
+
+        parsed.sections.push(MemoSection { id, heading, body });
+    };
+
+    for line in raw.lines() {
+        let trimmed = line.trim_end();
+        if in_preamble && parsed.title.is_empty() && trimmed.starts_with("# ") {
+            parsed.title = trimmed.trim_start_matches("# ").trim().to_owned();
+            continue;
+        }
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            in_preamble = false;
+            if let Some(prev) = current_heading.replace(heading.trim().to_owned()) {
+                let lines = std::mem::take(&mut current_lines);
+                flush_section(&mut parsed, prev, lines);
+            }
+            continue;
+        }
+        if in_preamble {
+            if let Some(rest) = trimmed.trim().strip_prefix("- **")
+                && let Some((k, v)) = rest.split_once("**:")
+            {
+                parsed
+                    .metadata
+                    .push((k.trim().to_owned(), v.trim().trim_matches('`').to_owned()));
+            }
+        } else {
+            current_lines.push(trimmed.to_owned());
+        }
+    }
+
+    if let Some(last) = current_heading {
+        flush_section(&mut parsed, last, current_lines);
+    }
+
+    parsed
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerspectiveUiStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl PerspectiveUiStatus {
+    pub fn label_cn(self) -> &'static str {
+        match self {
+            Self::Pending => "待命",
+            Self::Running => "分析中…",
+            Self::Completed => "已完成",
+            Self::Failed => "未完成",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeepResearchPerspectiveUi {
+    pub id: String,
+    pub title_cn: String,
+    pub status: PerspectiveUiStatus,
+    pub tools_used: Vec<String>,
+    pub stream_text: String,
+    pub summary_chars: usize,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+pub fn default_deep_research_perspectives() -> Vec<DeepResearchPerspectiveUi> {
+    DeepResearchPerspective::all()
+        .into_iter()
+        .map(|p| DeepResearchPerspectiveUi {
+            id: p.id().to_owned(),
+            title_cn: p.title_cn().to_owned(),
+            status: PerspectiveUiStatus::Pending,
+            tools_used: Vec::new(),
+            stream_text: String::new(),
+            summary_chars: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+        })
+        .collect()
+}
+
+pub struct DeepResearchUiSlice<'a> {
+    pub running: &'a mut bool,
+    pub run_id: &'a mut Option<String>,
+    pub status_note: &'a mut Option<String>,
+    pub budget_blocked: &'a mut Option<String>,
+    pub perspectives: &'a mut Vec<DeepResearchPerspectiveUi>,
+    pub last_result: &'a mut Option<DeepResearchResult>,
+    pub tape: &'a mut Vec<TuringTapeEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeepResearchEventEffect {
+    pub reload_context: bool,
+    pub banner: Option<(String, bool)>,
+}
+
+pub fn apply_deep_research_event(
+    state: &mut DeepResearchUiSlice<'_>,
+    ev: &DeepResearchEvent,
+) -> DeepResearchEventEffect {
+    match ev {
+        DeepResearchEvent::Started { run_id, ticker } => {
+            *state.running = true;
+            *state.run_id = Some(run_id.clone());
+            *state.budget_blocked = None;
+            *state.status_note = Some(format!("正在启动 4 视角并行深研 ({ticker})…"));
+            let seq = state.tape.len() + 1;
+            state.tape.push(TuringTapeEntry {
+                seq,
+                call_id: Some(run_id.clone()),
+                kind: TuringTapeKind::Input,
+                summary: format!("Deep Research 启动 · {ticker} ({run_id})"),
+                detail: Some("4 并行视角：护城河 / 会计排雷 / 隐空间同行 / 5年逆向验尸".to_owned()),
+                status: "started".to_owned(),
+            });
+            DeepResearchEventEffect {
+                reload_context: false,
+                banner: None,
+            }
+        }
+        DeepResearchEvent::BudgetBlocked {
+            run_id,
+            ticker,
+            reason,
+        } => {
+            *state.running = false;
+            *state.run_id = Some(run_id.clone());
+            *state.budget_blocked = Some(reason.clone());
+            *state.status_note = Some(format!("预算闸门硬拦截：{reason}"));
+            for p in state.perspectives.iter_mut() {
+                if p.status == PerspectiveUiStatus::Pending {
+                    p.status = PerspectiveUiStatus::Failed;
+                }
+            }
+            let seq = state.tape.len() + 1;
+            state.tape.push(TuringTapeEntry {
+                seq,
+                call_id: Some(run_id.clone()),
+                kind: TuringTapeKind::Policy,
+                summary: format!("预算硬拦截 · {ticker}（0 LLM Token）"),
+                detail: Some(reason.clone()),
+                status: "blocked_budget".to_owned(),
+            });
+            DeepResearchEventEffect {
+                reload_context: true,
+                banner: Some((
+                    format!("{ticker} Deep Research 已被预算闸门拦截：{reason}"),
+                    true,
+                )),
+            }
+        }
+        DeepResearchEvent::PerspectiveStarted { perspective, label } => {
+            *state.status_note = Some(format!("4 视角并行推进中 · {label}…"));
+            if let Some(p) = state
+                .perspectives
+                .iter_mut()
+                .find(|item| item.id == *perspective)
+            {
+                p.status = PerspectiveUiStatus::Running;
+            }
+            DeepResearchEventEffect {
+                reload_context: false,
+                banner: None,
+            }
+        }
+        DeepResearchEvent::ToolStarted {
+            perspective,
+            name,
+            title,
+        } => {
+            if let Some(p) = state
+                .perspectives
+                .iter_mut()
+                .find(|item| item.id == *perspective)
+                && !p.tools_used.iter().any(|t| t == name)
+            {
+                p.tools_used.push(name.clone());
+            }
+            let seq = state.tape.len() + 1;
+            state.tape.push(TuringTapeEntry {
+                seq,
+                call_id: Some(format!("dr-{perspective}-{name}-{seq}")),
+                kind: TuringTapeKind::Tool,
+                summary: if title.is_empty() || title == name {
+                    format!("[{perspective}] {name}")
+                } else {
+                    format!("[{perspective}] {name} · {title}")
+                },
+                detail: None,
+                status: "running".to_owned(),
+            });
+            DeepResearchEventEffect {
+                reload_context: false,
+                banner: None,
+            }
+        }
+        DeepResearchEvent::ToolFinished {
+            perspective,
+            name,
+            status,
+        } => {
+            let is_denied = status.contains("denied") || status.contains("blocked");
+            let prefix = format!("[{perspective}] {name}");
+            if let Some(row) = state
+                .tape
+                .iter_mut()
+                .rev()
+                .find(|r| r.summary.starts_with(&prefix) && r.status == "running")
+            {
+                row.status = status.clone();
+                if is_denied {
+                    row.kind = TuringTapeKind::Policy;
+                }
+            } else {
+                let seq = state.tape.len() + 1;
+                state.tape.push(TuringTapeEntry {
+                    seq,
+                    call_id: None,
+                    kind: if is_denied {
+                        TuringTapeKind::Policy
+                    } else {
+                        TuringTapeKind::Tool
+                    },
+                    summary: prefix,
+                    detail: None,
+                    status: status.clone(),
+                });
+            }
+            DeepResearchEventEffect {
+                reload_context: false,
+                banner: None,
+            }
+        }
+        DeepResearchEvent::PerspectiveDelta { perspective, chunk } => {
+            if let Some(p) = state
+                .perspectives
+                .iter_mut()
+                .find(|item| item.id == *perspective)
+            {
+                p.status = PerspectiveUiStatus::Running;
+                p.stream_text.push_str(chunk);
+            }
+            DeepResearchEventEffect {
+                reload_context: false,
+                banner: None,
+            }
+        }
+        DeepResearchEvent::PerspectiveFinished {
+            perspective,
+            summary_chars,
+        } => {
+            if let Some(p) = state
+                .perspectives
+                .iter_mut()
+                .find(|item| item.id == *perspective)
+            {
+                p.status = PerspectiveUiStatus::Completed;
+                p.summary_chars = *summary_chars;
+            }
+            DeepResearchEventEffect {
+                reload_context: false,
+                banner: None,
+            }
+        }
+        DeepResearchEvent::Synthesizing { ticker } => {
+            *state.status_note = Some(format!(
+                "正在合成 {ticker} Living Research Memo（保留 ## Human Notes）…"
+            ));
+            DeepResearchEventEffect {
+                reload_context: false,
+                banner: None,
+            }
+        }
+        DeepResearchEvent::Completed { result } => {
+            *state.running = false;
+            *state.run_id = Some(result.run_id.clone());
+            *state.last_result = Some((**result).clone());
+            for outcome in &result.perspectives {
+                if let Some(p) = state
+                    .perspectives
+                    .iter_mut()
+                    .find(|item| item.id == outcome.perspective)
+                {
+                    p.status = PerspectiveUiStatus::Completed;
+                    p.tools_used = outcome.tools_used.clone();
+                    if p.stream_text.is_empty() {
+                        p.stream_text = outcome.content.clone();
+                    }
+                    p.summary_chars = outcome.content.chars().count();
+                    p.input_tokens = outcome.input_tokens;
+                    p.output_tokens = outcome.output_tokens;
+                }
+            }
+            let cost_str = result.cost_usd.round_dp(4).normalize();
+            let memo_label = result.memo_path.as_deref().unwrap_or("workbench/memos");
+            *state.status_note = Some(format!(
+                "完成 · {} in / {} out · ${cost_str} · {memo_label}",
+                result.input_tokens, result.output_tokens
+            ));
+            let seq = state.tape.len() + 1;
+            state.tape.push(TuringTapeEntry {
+                seq,
+                call_id: Some(result.run_id.clone()),
+                kind: TuringTapeKind::Out,
+                summary: format!(
+                    "Deep Research 完成 · {} (${cost_str} · {} 引用)",
+                    result.ticker,
+                    result.citations.len()
+                ),
+                detail: Some(memo_label.to_owned()),
+                status: "completed".to_owned(),
+            });
+            DeepResearchEventEffect {
+                reload_context: true,
+                banner: Some((
+                    format!(
+                        "{} Deep Research 完成（{} in / {} out · ${cost_str}）· 已写入 {memo_label}",
+                        result.ticker, result.input_tokens, result.output_tokens
+                    ),
+                    false,
+                )),
+            }
+        }
+        DeepResearchEvent::Failed {
+            run_id,
+            ticker,
+            error,
+        } => {
+            *state.running = false;
+            if !run_id.is_empty() {
+                *state.run_id = Some(run_id.clone());
+            }
+            *state.status_note = Some(format!("Deep Research 未完成：{error}"));
+            for p in state.perspectives.iter_mut() {
+                if matches!(
+                    p.status,
+                    PerspectiveUiStatus::Pending | PerspectiveUiStatus::Running
+                ) {
+                    p.status = PerspectiveUiStatus::Failed;
+                }
+            }
+            let seq = state.tape.len() + 1;
+            state.tape.push(TuringTapeEntry {
+                seq,
+                call_id: (!run_id.is_empty()).then(|| run_id.clone()),
+                kind: TuringTapeKind::Error,
+                summary: format!("Deep Research 失败 · {ticker}"),
+                detail: Some(error.clone()),
+                status: "failed".to_owned(),
+            });
+            DeepResearchEventEffect {
+                reload_context: true,
+                banner: Some((format!("{ticker} Deep Research 失败：{error}"), true)),
+            }
+        }
+    }
+}
 
 impl MungerWorkbench {
     pub fn is_alan_streaming(&self) -> bool {
-        self.agent_streaming
+        self.agent_streaming || self.deep_research_running
+    }
+
+    pub(super) fn reload_budget_from_lake(&mut self) {
+        if self.universe_syncing {
+            return;
+        }
+        if let Ok(report) = cli::load_budget_status_report(&self.paths) {
+            self.budget_report = Some(report);
+        }
+    }
+
+    pub(super) fn reload_research_desk_context(&mut self, ticker: &str) {
+        let upper = ticker.trim().to_ascii_uppercase();
+        self.selected_memo_raw = research::load_research_memo(&self.paths, &upper);
+        self.selected_memo_parsed = self.selected_memo_raw.as_deref().map(parse_research_memo);
+
+        if !self.universe_syncing
+            && let Ok(Some(db)) = LakeDb::open_read_only_if_exists(&self.paths)
+        {
+            self.selected_research_runs =
+                db.list_research_runs(Some(&upper), 8).unwrap_or_default();
+            self.selected_peers = db.query_peers(&upper, 6).ok();
+            self.selected_similar_hits = db
+                .search_similar(
+                    &upper,
+                    true,
+                    &SimilarSearchFilter {
+                        exclude_financials: true,
+                        limit: 5,
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_default();
+        } else if self.universe_syncing {
+            // Keep existing lake state while universe sync owns the DuckDB lock.
+        } else {
+            self.selected_research_runs.clear();
+            self.selected_peers = None;
+            self.selected_similar_hits.clear();
+        }
+
+        self.reload_budget_from_lake();
+    }
+
+    pub(super) fn start_deep_research(
+        &mut self,
+        ticker: &str,
+        focus: Option<String>,
+        trigger: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let upper = ticker.trim().to_ascii_uppercase();
+        if upper.is_empty() {
+            return;
+        }
+        if self.deep_research_running {
+            self.banner = Some((
+                "Deep Research 任务正在执行中，请等待当前运行完成".into(),
+                false,
+            ));
+            cx.notify();
+            return;
+        }
+        if self.universe_syncing {
+            self.banner = Some((
+                "全美股 L0 湖仓正在同步，请完成后再发起 Deep Research".into(),
+                false,
+            ));
+            cx.notify();
+            return;
+        }
+
+        self.deep_research_running = true;
+        self.deep_research_ticker = Some(upper.clone());
+        self.deep_research_run_id = None;
+        self.deep_research_budget_blocked = None;
+        self.deep_research_perspectives = default_deep_research_perspectives();
+        self.deep_research_status_note = Some(format!("正在准备 {upper} · 4 视角并行深研…"));
+
+        let root = self.paths.repo_root.clone();
+        let req = DeepResearchRequest {
+            ticker: upper.clone(),
+            focus,
+            trigger: trigger.to_owned(),
+        };
+        let (tx, rx) = mpsc::channel();
+        self.deep_research_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let paths = WorkspacePaths::from_root(root);
+            if let Err(err) = research::run_deep_research(&paths, &req, Some(tx.clone())) {
+                let _ = tx.send(DeepResearchEvent::Failed {
+                    run_id: String::new(),
+                    ticker: req.ticker,
+                    error: format!("{err:#}"),
+                });
+            }
+        });
+
+        cx.notify();
+    }
+
+    pub(super) fn poll_deep_research_events(&mut self) -> bool {
+        let Some(rx) = self.deep_research_rx.take() else {
+            return false;
+        };
+        let mut events = Vec::new();
+        let mut disconnected = false;
+        loop {
+            match rx.try_recv() {
+                Ok(ev) => events.push(ev),
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.deep_research_rx = Some(rx);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        if events.is_empty() {
+            if disconnected && self.deep_research_running {
+                self.deep_research_running = false;
+                return true;
+            }
+            return false;
+        }
+
+        let mut reload_ctx = false;
+        let mut latest_banner: Option<(String, bool)> = None;
+        for ev in &events {
+            let mut slice = DeepResearchUiSlice {
+                running: &mut self.deep_research_running,
+                run_id: &mut self.deep_research_run_id,
+                status_note: &mut self.deep_research_status_note,
+                budget_blocked: &mut self.deep_research_budget_blocked,
+                perspectives: &mut self.deep_research_perspectives,
+                last_result: &mut self.deep_research_last_result,
+                tape: &mut self.agent_tape,
+            };
+            let effect = apply_deep_research_event(&mut slice, ev);
+            if effect.reload_context {
+                reload_ctx = true;
+            }
+            if let Some(b) = effect.banner {
+                latest_banner = Some(b);
+            }
+        }
+
+        if let Some(b) = latest_banner {
+            self.banner = Some(b);
+        }
+        if reload_ctx {
+            let target = self
+                .deep_research_ticker
+                .clone()
+                .unwrap_or_else(|| self.selected_ticker.clone());
+            self.reload_research_desk_context(&target);
+        }
+        true
     }
 
     pub(super) fn ensure_alan_handle(&mut self) -> M3InterrogatorHandle {
@@ -137,12 +735,13 @@ impl MungerWorkbench {
     }
 
     pub fn poll_alan_events(&mut self) -> bool {
+        let mut dirty = self.poll_deep_research_events();
         let Some(handle) = self.alan_handle.as_ref() else {
-            return false;
+            return dirty;
         };
         let events = handle.drain_events();
         if events.is_empty() {
-            return false;
+            return dirty;
         }
 
         let mut reload_disk = false;
@@ -176,7 +775,8 @@ impl MungerWorkbench {
         if reload_disk {
             self.reload_from_disk();
         }
-        true
+        dirty = true;
+        dirty
     }
 
     pub(super) fn render_company_agent_body(
@@ -198,6 +798,12 @@ impl MungerWorkbench {
         let dossier_file = format!("workbench/dossiers/{}.json", rep.ticker);
         let dossier_cmd = format!("./apps/m3-desktop/m3 dossier {}", rep.ticker);
         let ticker_cli = rep.ticker.clone();
+
+        canvas_el = canvas_el
+            .child(self.render_deep_research_console(rep, cx))
+            .child(self.render_cross_company_context_strip(&rep.ticker, cx))
+            .child(self.render_living_research_memo_card(&rep.ticker, cx))
+            .child(self.render_research_runs_history_card(&rep.ticker));
 
         canvas_el = self.render_embedded_alan_console(canvas_el, rep, cx);
 
@@ -1035,6 +1641,814 @@ impl MungerWorkbench {
 
         canvas_el = canvas_el.child(console_card);
         canvas_el
+    }
+
+    pub(super) fn render_deep_research_console(
+        &self,
+        rep: &MungerReport,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let dispatch_ticker = rep.ticker.clone();
+        let active_for_ticker = self
+            .deep_research_ticker
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case(&rep.ticker));
+
+        let (budget_txt, budget_fg, budget_bg, budget_br) = if let Some(b) = &self.budget_report {
+            let used = b.usage.total_cost_usd.round_dp(2).normalize();
+            let limit = b.config.monthly_budget_usd.round_dp(2).normalize();
+            let exhausted =
+                b.remaining_monthly_usd <= Decimal::ZERO || b.remaining_monthly_tokens == 0;
+            let (fg, bg, br) = if exhausted {
+                (CORAL_FG, CORAL_BG, CORAL_BORDER)
+            } else if b.config.monthly_budget_usd > Decimal::ZERO
+                && used * Decimal::from(10) >= b.config.monthly_budget_usd * Decimal::from(8)
+            {
+                (GOLD_FG, GOLD_BG, GOLD_BORDER)
+            } else {
+                (EMERALD_FG, EMERALD_BG, EMERALD_BORDER)
+            };
+            (format!("本月 AI 预算 ${used:.2} / ${limit:.2}"), fg, bg, br)
+        } else {
+            (
+                "本月 AI 预算 $0.00 / $10.00".to_owned(),
+                EMERALD_FG,
+                EMERALD_BG,
+                EMERALD_BORDER,
+            )
+        };
+
+        let status_badge = if self.deep_research_running {
+            badge(
+                "4 视角并行分析中…".into(),
+                VIOLET_FG,
+                VIOLET_BG,
+                VIOLET_BORDER,
+                &self.fonts,
+            )
+        } else if active_for_ticker && self.deep_research_budget_blocked.is_some() {
+            badge(
+                "预算闸门已拦截".into(),
+                CORAL_FG,
+                CORAL_BG,
+                CORAL_BORDER,
+                &self.fonts,
+            )
+        } else if active_for_ticker
+            && self
+                .deep_research_last_result
+                .as_ref()
+                .is_some_and(|r| r.status == "completed")
+        {
+            badge(
+                "最近运行已完成".into(),
+                EMERALD_FG,
+                EMERALD_BG,
+                EMERALD_BORDER,
+                &self.fonts,
+            )
+        } else {
+            badge(
+                "受预算硬门控 · 只读湖仓工具".into(),
+                SKY_FG,
+                SKY_BG,
+                SKY_BORDER,
+                &self.fonts,
+            )
+        };
+
+        let mut card = card_shell().child(
+            div()
+                .px_4()
+                .py_3()
+                .bg(rgb(BG_WELL))
+                .border_b_1()
+                .border_color(rgb(BORDER_HAIRLINE))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(VIOLET_FG)))
+                        .child(
+                            div()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(INK_HERO))
+                                .child(format!("Research Desk · Deep Research ({})", rep.ticker)),
+                        )
+                        .child(status_badge)
+                        .child(badge(
+                            budget_txt,
+                            budget_fg,
+                            budget_bg,
+                            budget_br,
+                            &self.fonts,
+                        )),
+                )
+                .child(
+                    div()
+                        .id("dr-dispatch-btn")
+                        .px_3()
+                        .py_1p5()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .border_1()
+                        .when(self.deep_research_running, |d| {
+                            d.bg(rgb(BG_SURFACE))
+                                .border_color(rgb(BORDER_SUBTLE))
+                                .text_color(rgb(INK_MUTED))
+                        })
+                        .when(!self.deep_research_running, |d| {
+                            d.bg(rgb(CTA_BG))
+                                .border_color(rgb(CTA_BG))
+                                .hover(|s| s.bg(rgb(CTA_BG_HOVER)))
+                                .active(|s| s.bg(rgb(CTA_BG_ACTIVE)))
+                                .text_color(rgb(CTA_INK))
+                        })
+                        .font_family(self.fonts.ui.clone())
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.start_deep_research(&dispatch_ticker, None, "manual", cx);
+                        }))
+                        .child(if self.deep_research_running {
+                            "4 视角并行运行中…"
+                        } else {
+                            "Deep Research · 4 视角并行"
+                        }),
+                ),
+        );
+
+        if active_for_ticker && let Some(reason) = &self.deep_research_budget_blocked {
+            card = card.child(
+                div()
+                    .px_4()
+                    .py_2p5()
+                    .bg(rgba(CORAL_BG))
+                    .border_b_1()
+                    .border_color(rgba(CORAL_BORDER))
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .text_color(rgb(CORAL_FG))
+                    .child(format!("预算硬闸门已拦截（0 LLM Token 消耗）：{reason}")),
+            );
+        } else if active_for_ticker && let Some(note) = &self.deep_research_status_note {
+            card = card.child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .bg(rgb(BG_ROW_ALT))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .font_family(self.fonts.mono_term.clone())
+                    .text_size(px(11.))
+                    .text_color(rgb(INK_SECONDARY))
+                    .child(note.clone()),
+            );
+        }
+
+        let perspectives: Vec<DeepResearchPerspectiveUi> =
+            if active_for_ticker && !self.deep_research_perspectives.is_empty() {
+                self.deep_research_perspectives.clone()
+            } else {
+                default_deep_research_perspectives()
+            };
+
+        let left_pair: Vec<&DeepResearchPerspectiveUi> = perspectives.iter().take(2).collect();
+        let right_pair: Vec<&DeepResearchPerspectiveUi> =
+            perspectives.iter().skip(2).take(2).collect();
+
+        let render_p_card = |p: &DeepResearchPerspectiveUi| {
+            let (st_fg, st_bg, st_br) = match p.status {
+                PerspectiveUiStatus::Pending => (INK_MUTED, BG_WELL, BORDER_SUBTLE),
+                PerspectiveUiStatus::Running => (VIOLET_FG, VIOLET_BG, VIOLET_BORDER),
+                PerspectiveUiStatus::Completed => (EMERALD_FG, EMERALD_BG, EMERALD_BORDER),
+                PerspectiveUiStatus::Failed => (CORAL_FG, CORAL_BG, CORAL_BORDER),
+            };
+            let excerpt: String = if p.stream_text.trim().is_empty() {
+                match p.status {
+                    PerspectiveUiStatus::Pending => "点击「Deep Research · 4 视角并行」后，由独立只读子会话并行核验一手的财报/公告证据。".into(),
+                    PerspectiveUiStatus::Running => "正在检索 Lakehouse 工具与生成分析结论…".into(),
+                    PerspectiveUiStatus::Completed => format!("已完成（{} 字符，已合并至 Living Research Memo）", p.summary_chars),
+                    PerspectiveUiStatus::Failed => "未产生输出（已保留既有工作区状态）".into(),
+                }
+            } else {
+                let chars: Vec<char> = p.stream_text.trim().chars().collect();
+                if chars.len() > 220 {
+                    format!("{}…", chars[..220].iter().collect::<String>())
+                } else {
+                    p.stream_text.trim().to_owned()
+                }
+            };
+            let tools_line = if p.tools_used.is_empty() {
+                "tools: —".to_owned()
+            } else {
+                format!("tools: {}", p.tools_used.join(", "))
+            };
+            let tok_line = if p.input_tokens > 0 || p.output_tokens > 0 {
+                format!("{}in / {}out", p.input_tokens, p.output_tokens)
+            } else if p.summary_chars > 0 {
+                format!("{} chars", p.summary_chars)
+            } else {
+                p.id.clone()
+            };
+
+            div()
+                .flex_1()
+                .min_w_0()
+                .p_3()
+                .rounded_md()
+                .bg(rgb(BG_VIEWPORT))
+                .border_1()
+                .border_color(rgb(BORDER_HAIRLINE))
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(INK_HERO))
+                                .child(p.title_cn.clone()),
+                        )
+                        .child(badge(
+                            p.status.label_cn().into(),
+                            st_fg,
+                            st_bg,
+                            st_br,
+                            &self.fonts,
+                        )),
+                )
+                .child(
+                    div()
+                        .font_family(self.fonts.ui.clone())
+                        .text_xs()
+                        .line_height(px(18.))
+                        .text_color(if p.stream_text.trim().is_empty() {
+                            rgb(INK_MUTED)
+                        } else {
+                            rgb(INK_PRIMARY)
+                        })
+                        .child(excerpt),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .font_family(self.fonts.mono_term.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(INK_MUTED))
+                        .child(div().truncate().child(tools_line))
+                        .child(tok_line),
+                )
+        };
+
+        card.child(
+            div()
+                .p_4()
+                .flex()
+                .flex_col()
+                .gap_2p5()
+                .child(
+                    div()
+                        .flex()
+                        .gap_2p5()
+                        .children(left_pair.into_iter().map(render_p_card)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2p5()
+                        .children(right_pair.into_iter().map(render_p_card)),
+                ),
+        )
+    }
+
+    pub(super) fn render_cross_company_context_strip(
+        &self,
+        ticker: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let has_peers = self
+            .selected_peers
+            .as_ref()
+            .is_some_and(|p| p.target.ticker.eq_ignore_ascii_case(ticker) && p.peer_count > 1);
+        let has_similar = !self.selected_similar_hits.is_empty();
+
+        let mut card = card_shell()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(section_header(
+                "跨公司对照 · 同业分位数 & 隐空间 Lookalike",
+                if has_peers || has_similar {
+                    "DUCKDB L0/L1 · 0 LLM TOKEN".into()
+                } else {
+                    "等待 L0/L1 湖仓数据".into()
+                },
+                &self.fonts,
+            ));
+
+        if !has_peers && !has_similar {
+            return card.child(
+                div()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .text_color(rgb(INK_MUTED))
+                    .child("同步全美股 L0/L1 湖仓后，此处展示 SIC 同业 ROIC/毛利/FCF 分位数与语义 Lookalike 近邻公司。"),
+            );
+        }
+
+        if let Some(peers) = self
+            .selected_peers
+            .as_ref()
+            .filter(|p| p.target.ticker.eq_ignore_ascii_case(ticker) && p.peer_count > 1)
+        {
+            let roic_p = peers
+                .roic_percentile
+                .map(|v| format!("P{v:.0}"))
+                .unwrap_or_else(|| "—".into());
+            let gm_p = peers
+                .gross_margin_percentile
+                .map(|v| format!("P{v:.0}"))
+                .unwrap_or_else(|| "—".into());
+            let fcf_p = peers
+                .strict_fcf_yield_percentile
+                .map(|v| format!("P{v:.0}"))
+                .unwrap_or_else(|| "—".into());
+
+            card = card.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(badge(
+                                format!("{} · {} 家同行", peers.sic_group, peers.peer_count),
+                                SKY_FG,
+                                SKY_BG,
+                                SKY_BORDER,
+                                &self.fonts,
+                            ))
+                            .child(
+                                div()
+                                    .font_family(self.fonts.mono_num.clone())
+                                    .text_xs()
+                                    .text_color(rgb(INK_PRIMARY))
+                                    .child(format!(
+                                        "ROIC {roic_p} · 毛利率 {gm_p} · 严苛 FCF {fcf_p}"
+                                    )),
+                            ),
+                    )
+                    .child(div().flex().items_center().flex_wrap().gap_1p5().children(
+                        peers.top_peers.iter().take(5).enumerate().map(|(i, p)| {
+                            let jump = p.ticker.clone();
+                            let roic_s = p
+                                .roic_5y_avg_pct
+                                .map(|v| format!("{v:.0}%"))
+                                .unwrap_or_else(|| "—".into());
+                            div()
+                                .id(("peer-chip", i))
+                                .px_2()
+                                .py_0p5()
+                                .rounded_xs()
+                                .bg(rgb(BG_WELL))
+                                .border_1()
+                                .border_color(rgb(BORDER_SUBTLE))
+                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                .cursor_pointer()
+                                .font_family(self.fonts.mono_num.clone())
+                                .text_size(px(11.))
+                                .text_color(rgb(INK_SECONDARY))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_theme_member(&jump, cx);
+                                }))
+                                .child(format!("{} {roic_s}", p.ticker))
+                        }),
+                    )),
+            );
+        }
+
+        if has_similar {
+            card = card.child(
+                div()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .text_color(rgb(INK_MUTED))
+                            .child("隐空间 Lookalike:"),
+                    )
+                    .children(
+                        self.selected_similar_hits
+                            .iter()
+                            .enumerate()
+                            .map(|(i, hit)| {
+                                let jump = hit.company.ticker.clone();
+                                let sim_pct = (hit.score * 100.0).round() as i64;
+                                let doc_type =
+                                    hit.evidence.first().map_or("10-K", |e| e.doc_type.as_str());
+                                div()
+                                    .id(("sim-chip", i))
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_xs()
+                                    .bg(rgba(VIOLET_BG))
+                                    .border_1()
+                                    .border_color(rgba(VIOLET_BORDER))
+                                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                                    .cursor_pointer()
+                                    .font_family(self.fonts.mono_num.clone())
+                                    .text_size(px(11.))
+                                    .text_color(rgb(VIOLET_FG))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.open_theme_member(&jump, cx);
+                                    }))
+                                    .child(format!(
+                                        "{} · {}% · {}",
+                                        hit.company.ticker, sim_pct, doc_type
+                                    ))
+                            }),
+                    ),
+            );
+        }
+
+        card
+    }
+
+    pub(super) fn render_living_research_memo_card(
+        &self,
+        ticker: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let memo_rel = format!("workbench/memos/{ticker}.md");
+        let refresh_ticker = ticker.to_owned();
+        let copy_raw = self.selected_memo_raw.clone();
+
+        let header = div()
+            .px_4()
+            .py_2p5()
+            .bg(rgb(BG_WELL))
+            .border_b_1()
+            .border_color(rgb(BORDER_HAIRLINE))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(EMERALD_FG)))
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(INK_HERO))
+                            .child(format!("Living Research Memo · {memo_rel}")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .when_some(copy_raw, |d, md| {
+                        let lbl = format!("Memo {ticker}");
+                        d.child(
+                            div()
+                                .id("memo-copy-md")
+                                .px_2()
+                                .py_1()
+                                .rounded_sm()
+                                .bg(rgb(BG_SURFACE))
+                                .border_1()
+                                .border_color(rgb(BORDER_PILL))
+                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                .cursor_pointer()
+                                .font_family(self.fonts.mono_term.clone())
+                                .text_size(px(11.))
+                                .text_color(rgb(INK_SECONDARY))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_cli_command(md.clone(), &lbl, cx);
+                                    cx.notify();
+                                }))
+                                .child("复制 Markdown"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("memo-refresh-disk")
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .bg(rgb(BG_SURFACE))
+                            .border_1()
+                            .border_color(rgb(BORDER_PILL))
+                            .hover(|s| s.bg(rgb(BG_HOVER)))
+                            .cursor_pointer()
+                            .font_family(self.fonts.ui.clone())
+                            .text_size(px(11.))
+                            .text_color(rgb(INK_PRIMARY))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.reload_research_desk_context(&refresh_ticker);
+                                this.banner =
+                                    Some((format!("已从磁盘刷新 {refresh_ticker} Memo"), false));
+                                cx.notify();
+                            }))
+                            .child("刷新"),
+                    ),
+            );
+
+        let mut card = card_shell().child(header);
+
+        let Some(memo) = &self.selected_memo_parsed else {
+            return card.child(
+                div()
+                    .p_4()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .line_height(px(19.))
+                    .text_color(rgb(INK_MUTED))
+                    .child(format!(
+                        "尚未生成 {memo_rel}。点击上方「Deep Research · 4 视角并行」或运行 `m3 research run {ticker}` 后将在此展示结构化活研报与一手引用。"
+                    )),
+            );
+        };
+
+        if !memo.metadata.is_empty() {
+            card = card.child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .bg(rgb(BG_ROW_ALT))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap_3()
+                    .children(memo.metadata.iter().map(|(k, v)| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .font_family(self.fonts.mono_term.clone())
+                                    .text_size(px(10.))
+                                    .text_color(rgb(INK_MUTED))
+                                    .child(format!("{k}:")),
+                            )
+                            .child(
+                                div()
+                                    .font_family(self.fonts.mono_num.clone())
+                                    .text_size(px(10.))
+                                    .text_color(rgb(INK_PRIMARY))
+                                    .child(v.clone()),
+                            )
+                    })),
+            );
+        }
+
+        let perspective_sections: Vec<&MemoSection> = memo
+            .sections
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.id.as_str(),
+                    "moat" | "accounting" | "latent_peers" | "premortem"
+                )
+            })
+            .collect();
+
+        let mut body = div().p_4().flex().flex_col().gap_3();
+        for sec in perspective_sections {
+            body = body.child(
+                div()
+                    .p_3()
+                    .rounded_sm()
+                    .bg(rgb(BG_VIEWPORT))
+                    .border_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(INK_HERO))
+                            .child(sec.heading.clone()),
+                    )
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .line_height(px(20.))
+                            .text_color(rgb(INK_SECONDARY))
+                            .child(sec.body.clone()),
+                    ),
+            );
+        }
+
+        if !memo.citations.is_empty() {
+            body = body.child(
+                div()
+                    .p_3()
+                    .rounded_sm()
+                    .bg(rgb(BG_VIEWPORT))
+                    .border_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .font_family(self.fonts.mono_term.clone())
+                            .text_size(px(10.))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(rgb(SKY_FG))
+                            .child(format!("EVIDENCE & CITATIONS ({})", memo.citations.len())),
+                    )
+                    .children(memo.citations.iter().take(8).map(|cite| {
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_size(px(11.))
+                            .line_height(px(17.))
+                            .text_color(rgb(INK_SECONDARY))
+                            .child(cite.clone())
+                    })),
+            );
+        }
+
+        if let Some(notes) = &memo.human_notes {
+            body = body.child(
+                div()
+                    .p_3()
+                    .rounded_sm()
+                    .bg(rgba(GOLD_BG))
+                    .border_1()
+                    .border_color(rgba(GOLD_BORDER))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(GOLD_FG))
+                            .child("## Human Notes（人类主权区 · Deep Research 永不覆盖）"),
+                    )
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .line_height(px(19.))
+                            .text_color(rgb(INK_PRIMARY))
+                            .child(notes.clone()),
+                    ),
+            );
+        }
+
+        card.child(body)
+    }
+
+    pub(super) fn render_research_runs_history_card(&self, ticker: &str) -> gpui::Div {
+        let mut card = card_shell()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_2p5()
+            .child(section_header(
+                &format!("Deep Research 审计记录 · {ticker}"),
+                format!(
+                    "{} 条最近运行（m3.duckdb · research_runs）",
+                    self.selected_research_runs.len()
+                ),
+                &self.fonts,
+            ));
+
+        if self.selected_research_runs.is_empty() {
+            return card.child(
+                div()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .text_color(rgb(INK_MUTED))
+                    .child("暂无该标的的 Deep Research 运行记录。"),
+            );
+        }
+
+        for (idx, run) in self.selected_research_runs.iter().enumerate() {
+            let (st_label, st_fg, st_bg, st_br) = match run.status {
+                ResearchRunStatus::Completed => {
+                    ("completed", EMERALD_FG, EMERALD_BG, EMERALD_BORDER)
+                }
+                ResearchRunStatus::BlockedBudget => {
+                    ("blocked_budget", CORAL_FG, CORAL_BG, CORAL_BORDER)
+                }
+                ResearchRunStatus::Failed => ("failed", GOLD_FG, GOLD_BG, GOLD_BORDER),
+                ResearchRunStatus::Running => ("running", VIOLET_FG, VIOLET_BG, VIOLET_BORDER),
+            };
+            let detail_txt = run
+                .error
+                .as_deref()
+                .or(run.memo_path.as_deref())
+                .unwrap_or("—")
+                .to_owned();
+            card = card.child(
+                div()
+                    .py_2()
+                    .when(idx + 1 < self.selected_research_runs.len(), |d| {
+                        d.border_b_1().border_color(rgb(BORDER_HAIRLINE))
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .child(badge(st_label.into(), st_fg, st_bg, st_br, &self.fonts))
+                            .child(
+                                div()
+                                    .font_family(self.fonts.mono_term.clone())
+                                    .text_size(px(11.))
+                                    .text_color(rgb(INK_PRIMARY))
+                                    .child(run.run_id.clone()),
+                            )
+                            .child(
+                                div()
+                                    .font_family(self.fonts.mono_term.clone())
+                                    .text_size(px(10.))
+                                    .text_color(rgb(INK_MUTED))
+                                    .child(format!("[{}]", run.trigger)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .font_family(self.fonts.mono_term.clone())
+                                    .text_size(px(10.))
+                                    .text_color(rgb(INK_SECONDARY))
+                                    .truncate()
+                                    .child(detail_txt),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2p5()
+                            .font_family(self.fonts.mono_num.clone())
+                            .text_size(px(11.))
+                            .text_color(rgb(INK_SECONDARY))
+                            .child(format!("{}in/{}out", run.input_tokens, run.output_tokens))
+                            .child(format!("${:.4}", run.cost_usd.round_dp(4).normalize()))
+                            .child(fmt_time_cn(Some(run.started_at_ms))),
+                    ),
+            );
+        }
+
+        card
     }
 }
 

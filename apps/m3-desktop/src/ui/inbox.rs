@@ -6,10 +6,12 @@ use crate::{
     events::{EventCatchupOptions, catchup_events_with_progress},
     lake::{LakeDb, UniverseFilter},
     lake_l1::{SignalEvidence, SignalInboxRow, SignalKind, SignalStatus},
+    lake_l2::BudgetStatusReport,
     model::Bucket,
     store::{self, WorkspacePaths},
 };
 use gpui::{Context, div, prelude::*, px, rgb, rgba};
+use rust_decimal::Decimal;
 use std::{
     sync::mpsc,
     time::{Duration, Instant},
@@ -146,6 +148,26 @@ pub fn signal_status_badge(status: SignalStatus) -> (&'static str, u32, u32, u32
         SignalStatus::TooHard => ("TOO HARD", SLATE_FG, SLATE_BG, SLATE_BORDER),
         SignalStatus::Archived => ("已归档", INK_MUTED, BG_WELL, BORDER_SUBTLE),
     }
+}
+
+/// Formats the monthly AI budget watermark for the Inbox KPI ribbon (`本月 AI 预算 $X.XX / $10.00`).
+pub fn budget_watermark_summary(report: Option<&BudgetStatusReport>) -> (String, u32) {
+    let Some(r) = report else {
+        return ("本月 AI 预算 $0.00 / $10.00".to_owned(), EMERALD_FG);
+    };
+    let used = r.usage.total_cost_usd.round_dp(2).normalize();
+    let limit = r.config.monthly_budget_usd.round_dp(2).normalize();
+    let exhausted = r.remaining_monthly_usd <= Decimal::ZERO || r.remaining_monthly_tokens == 0;
+    let color = if exhausted {
+        CORAL_FG
+    } else if r.config.monthly_budget_usd > Decimal::ZERO
+        && used * Decimal::from(10) >= r.config.monthly_budget_usd * Decimal::from(8)
+    {
+        GOLD_FG
+    } else {
+        EMERALD_FG
+    };
+    (format!("本月 AI 预算 ${used:.2} / ${limit:.2}"), color)
 }
 
 /// Evaluates whether startup/background auto-catchup should be skipped.
@@ -320,6 +342,9 @@ impl MungerWorkbench {
             Ok(Some(db)) => {
                 let summary_res = db.l1_summary();
                 let list_res = db.list_inbox_signals(None, None, 500);
+                if let Ok(budget) = db.budget_status_report(&self.paths) {
+                    self.budget_report = Some(budget);
+                }
                 match (summary_res, list_res) {
                     (Ok(summary), Ok(signals)) => {
                         self.inbox_summary = Some(summary);
@@ -511,6 +536,8 @@ impl MungerWorkbench {
                 .map(|r| r.ticker.clone())
                 .unwrap_or(ticker);
             self.select_company(&canonical, Some(NavView::Agent));
+            self.start_deep_research(&canonical, None, "inbox", cx);
+            return;
         }
 
         cx.notify();
@@ -645,6 +672,7 @@ impl MungerWorkbench {
         let u_sum = self.universe_summary.clone().unwrap_or_default();
         let l1_sum = self.inbox_summary.clone().unwrap_or_default();
         let last_catchup = fmt_time_cn(l1_sum.last_catchup_ms);
+        let (budget_label, budget_col) = budget_watermark_summary(self.budget_report.as_ref());
 
         div()
             .h(px(44.))
@@ -703,6 +731,25 @@ impl MungerWorkbench {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .child(badge(
+                        budget_label,
+                        budget_col,
+                        if budget_col == CORAL_FG {
+                            CORAL_BG
+                        } else if budget_col == GOLD_FG {
+                            GOLD_BG
+                        } else {
+                            EMERALD_BG
+                        },
+                        if budget_col == CORAL_FG {
+                            CORAL_BORDER
+                        } else if budget_col == GOLD_FG {
+                            GOLD_BORDER
+                        } else {
+                            EMERALD_BORDER
+                        },
+                        &self.fonts,
+                    ))
                     .child(badge(
                         "L0/L1 · 0 Flagship Token".into(),
                         EMERALD_FG,
@@ -1123,7 +1170,7 @@ impl MungerWorkbench {
                             ))
                             .child(Self::inbox_action_button(
                                 "inbox-act-alan",
-                                "Alan 审讯",
+                                "派 Alan 深研",
                                 "d",
                                 false,
                                 (VIOLET_FG, VIOLET_BG, VIOLET_BORDER),

@@ -54,6 +54,13 @@ apps/m3-desktop/m3 events catchup --bootstrap --max-ciks 25 --max-docs 12 --max-
 apps/m3-desktop/m3 events list --ticker PTC --type sec_8k --limit 20
 apps/m3-desktop/m3 inbox list --status unread --limit 20
 apps/m3-desktop/m3 inbox triage <SIGNAL_ID> --status watch --promote-watch
+
+# 10. L2 Alan Deep Research（4 视角并行）、预算门控与商业原型主题图谱
+apps/m3-desktop/m3 research run ADSK --focus "云转型净留存与 SBC 控制" --trigger cli
+apps/m3-desktop/m3 research status --ticker ADSK --limit 10
+apps/m3-desktop/m3 budget status
+apps/m3-desktop/m3 themes sync
+apps/m3-desktop/m3 themes list
 ```
 
 #### `m3 universe` 子命令契约
@@ -74,6 +81,15 @@ apps/m3-desktop/m3 inbox triage <SIGNAL_ID> --status watch --promote-watch
 - `m3 inbox list [--status unread|all|watch|too_hard|researching|archived] [--kind discovery|ripple|strike|red_flag] [--limit N]`：返回 `{ "status_filter", "kind_filter", "summary", "count", "signals" }`，每条 `SignalInboxRow` 包含可溯源 `evidence` 卡片（`doc_type`、`section`、`filing_date`、`quote`、`source_url`、`similarity`）。
 - `m3 inbox triage <SIGNAL_ID> --status unread|researching|watch|too_hard|archived [--promote-watch]`：更新信号分拣状态；传入 `--promote-watch` 时同步将 `primary_ticker` 加入 `workbench/watchlist.json`（`WATCH` 篮子）并刷新 DuckDB `in_watchlist` 标记。不会触碰任何 `human_judgment` 栏位。
 
+#### `m3 research`、`m3 budget` 与 `m3 themes` 子命令契约
+
+- `m3 research run <TICKER> [--focus "..."] [--trigger manual|inbox|cli]`：
+  - 先读取 `workbench/budget.json` 与 `m3.duckdb` 当月累计消耗并执行 `evaluate_budget_gate` **硬预算预检**；若超限或月/次配额为 `0`，在启动 `EmbeddedAlan` 或发起任何 LLM 请求前立即阻断，记录 `blocked_budget` 审计行并返回 `ok: false`（附带结构化 `DeepResearchResult`）。
+  - 预算放行后，启动受 `M3ToolPolicyHook` 保护的进程内 `EmbeddedAlan` 并并行调度 4 个只读子分析师会话（`护城河`、`会计排雷`、`隐空间同行`、`5年逆向验尸`），写入 `workbench/memos/<TICKER>.md`（保留既有的 `## Human Notes` 人类手写区）并记录 `research_runs` 审计行。
+- `m3 research status [--ticker SYM] [--limit N]`：查询 `m3.duckdb` 中的 `research_runs` 历史记录（`--limit` 默认 `20`，范围 `1..=500`）及当前月度预算状态；未同步湖仓时返回空列表与默认预算配置。
+- `m3 budget status`：返回 `BudgetStatusReport`（`workbench/budget.json` 配额配置 + 当月 Token / USD 消耗 + 剩余额度 + 周度自动触发剩余配额）。
+- `m3 themes sync` / `m3 themes list`：`sync` 基于 `universe_snapshot` 与 `doc_chunks` 确定性聚合 SIC + 隐空间商业原型簇并原子写入 `workbench/themes.json`（保留人类编辑的 `user_notes`）；`list` 读取 `workbench/themes.json`。
+
 ---
 
 ## 2. 结构化事实来源与权限边界
@@ -82,13 +98,16 @@ apps/m3-desktop/m3 inbox triage <SIGNAL_ID> --status watch --promote-watch
 | :--- | :--- | :--- | :--- |
 | `workbench/watchlist.json` | Git 跟踪 | 人类 / `m3 add` / UI 沙盒 | 标的列表、分桶（`core`(`IN`) / `watch` / `out`(`OUT`) / `too_hard`）、数据来源与估值倍数假设。 |
 | `workbench/dossiers/<TICKER>.json` | Git 跟踪 | Alan（仅草稿区）/ 人类（`human_judgment`） | 三句话业务、跨学科格栅、事前验尸由 Alan 起草；**`human_judgment` 仅限用户本人填写或费曼答辩确认后写入，Agent 严禁代填。** |
+| `workbench/memos/<TICKER>.md` | Git 跟踪 | `m3 research run` / Research Desk | 4 视角并行深研生成的活研究备忘录（含确定性指标快照与原文引用）；**`## Human Notes` 标题及以下人类笔记永不被覆盖。** |
+| `workbench/budget.json` | Git 跟踪 | 人类（Alan 工具禁写） | L2 Deep Research 月度/单次 USD 与 Token 硬上限及自动触发配额。 |
+| `workbench/themes.json` | Git 跟踪 | `m3 themes sync` / UI（保留 `user_notes`） | 跨公司商业原型聚类图谱；Alan 工具禁止改写。 |
 | `workbench/journal.json` | Git 跟踪 | `m3 journal record` / 人类 | 模拟决策账本（100% 现金起步 + 标普 500 对照），事前冻结记录不可篡改历史条目。 |
 | `data/munger/raw/sec/*.json` | Git 忽略 | `m3 sync` / GUI 同步 | SEC EDGAR 一手原始 XBRL JSON，带 SHA-256 校验。 |
 | `data/munger/raw/prices/*.json` | Git 忽略 | `m3 sync` / GUI 同步 | Yahoo Finance 日级股价快照（含 `^GSPC`）。 |
 | `data/munger/computed/<TICKER>.json` | Git 忽略 | Rust 计算引擎 | 确定性 `MungerReport`，所有金额与比率以十进制字符串保存，是桌面 UI 与 `m3 report` 的事实来源。 |
 | `data/munger/lake/raw/sec/*` | Git 忽略 | `m3 universe sync` / UI 同步 | SEC 批量归档缓存（`company_tickers_exchange.json`、`submissions.zip`、`companyfacts.zip`）。 |
 | `data/munger/lake/parquet/` | Git 忽略 | `m3 universe sync` / UI 同步 | 不可变代际目录（`gen-*/`）与原子 `manifest.json` 发布的 ZSTD 压缩 Parquet 事实表（`companies`、`facts_annual`、`facts_ttm`、`prices_daily`），保留 `raw_sha256` 与 XBRL 溯源。 |
-| `data/munger/lake/m3.duckdb` | Git 忽略 | `m3 universe sync` / UI 同步 | 嵌入式 DuckDB 湖仓（`universe_snapshot`、`sync_watermarks`、`v_*` 视图），由 `m3 universe status/screen/peers` 只读查询。 |
+| `data/munger/lake/m3.duckdb` | Git 忽略 | `m3 universe sync` / `events catchup` / `research run` | 嵌入式 DuckDB 湖仓（`universe_snapshot`、`sync_watermarks`、`events`、`doc_chunks`、`signal_inbox`、`research_runs`、`v_*` 视图）；Alan 工具仅可执行只读查询。 |
 
 ---
 

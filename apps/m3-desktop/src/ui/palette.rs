@@ -87,11 +87,38 @@ impl MungerWorkbench {
         });
         items.push(PaletteItem {
             group: "VIEW".into(),
-            title: format!("Alan 审讯台 · {}", self.selected_ticker),
-            subtitle: "独立 AI 幕僚审讯与 Prompt/CLI 协同".into(),
+            title: format!(
+                "Research Desk · Deep Research & Alan ({})",
+                self.selected_ticker
+            ),
+            subtitle: "4 视角并行深研、Living Research Memo 与费曼审讯".into(),
             shortcut: None,
             dot_color: VIOLET_FG,
             action: PaletteAction::SwitchView(NavView::Agent),
+        });
+        items.push(PaletteItem {
+            group: "RESEARCH".into(),
+            title: format!("Deep Research · 4 视角并行深研 ({})", self.selected_ticker),
+            subtitle: "受预算硬门控：护城河 / 会计排雷 / 隐空间同行 / 5年逆向验尸".into(),
+            shortcut: None,
+            dot_color: VIOLET_FG,
+            action: PaletteAction::RunDeepResearch(self.selected_ticker.clone()),
+        });
+        items.push(PaletteItem {
+            group: "BUDGET".into(),
+            title: "Budget Status · 查看本月 AI 预算与配额".into(),
+            subtitle: "查看 workbench/budget.json 限额、本月 Token 消耗与剩余配额".into(),
+            shortcut: None,
+            dot_color: EMERALD_FG,
+            action: PaletteAction::ShowBudgetStatus,
+        });
+        items.push(PaletteItem {
+            group: "THEMES".into(),
+            title: "Sync Themes · 同步跨公司商业原型主题图谱".into(),
+            subtitle: "从 DuckDB 湖仓生成 workbench/themes.json 并保留人类批注".into(),
+            shortcut: Some("s"),
+            dot_color: SKY_FG,
+            action: PaletteAction::SyncThemes,
         });
         items.push(PaletteItem {
             group: "VIEW".into(),
@@ -103,8 +130,8 @@ impl MungerWorkbench {
         });
         items.push(PaletteItem {
             group: "VIEW".into(),
-            title: "决策账本 · 机会成本对照".into(),
-            subtitle: "PAPER RESEARCH FIXTURE · 100% 现金与 S&P 500 基准".into(),
+            title: "主题与账本 · Themes & Journal".into(),
+            subtitle: "跨公司商业原型图谱 + 事前冻结决策账本 (100% 现金与 S&P 500)".into(),
             shortcut: Some("⌘4"),
             dot_color: GOLD_FG,
             action: PaletteAction::SwitchView(NavView::Journal),
@@ -297,6 +324,40 @@ impl MungerWorkbench {
             }
             PaletteAction::OpenAgent(ticker) => {
                 self.select_company(&ticker, Some(NavView::Agent));
+            }
+            PaletteAction::RunDeepResearch(ticker) => {
+                self.select_company(&ticker, Some(NavView::Agent));
+                self.start_deep_research(&ticker, None, "manual", cx);
+                return;
+            }
+            PaletteAction::ShowBudgetStatus => {
+                self.reload_budget_from_lake();
+                if let Some(b) = &self.budget_report {
+                    let used = b.usage.total_cost_usd.round_dp(4).normalize();
+                    let limit = b.config.monthly_budget_usd.round_dp(2).normalize();
+                    let rem = b.remaining_monthly_usd.round_dp(4).normalize();
+                    let tok_used = b
+                        .usage
+                        .total_input_tokens
+                        .saturating_add(b.usage.total_output_tokens);
+                    self.banner = Some((
+                        format!(
+                            "本月 AI 预算 ({})：已用 ${used} / ${limit}（剩余 ${rem} · Token {tok_used} / {} · 完成 {} / 拦截 {}）",
+                            b.usage.month_utc,
+                            b.config.monthly_token_limit,
+                            b.usage.completed_runs,
+                            b.usage.blocked_runs
+                        ),
+                        false,
+                    ));
+                } else {
+                    self.banner = Some(("无法读取 AI 预算状态".into(), true));
+                }
+            }
+            PaletteAction::SyncThemes => {
+                self.switch_view(NavView::Journal);
+                self.start_themes_sync(cx);
+                return;
             }
             PaletteAction::SwitchView(view) => {
                 self.switch_view(view);

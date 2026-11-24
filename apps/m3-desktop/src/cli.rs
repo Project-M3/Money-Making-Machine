@@ -1,9 +1,12 @@
 use crate::{
     app_config,
+    budget::{self, ThemesFile},
     events::{self, EventCatchupOptions},
     lake::{LakeDb, UniverseFilter, UniverseSortBy, UniverseSummary},
     lake_l1::{L1Summary, SignalKind, SignalStatus, SimilarSearchFilter},
+    lake_l2::{BudgetStatusReport, MonthlyBudgetUsage},
     model::{Bucket, JournalAction, SyncStatusFile, parse_decimal_token},
+    research::{self, DeepResearchRequest},
     store::{self, WorkspacePaths},
     universe::{self, UniverseSyncOptions},
     update::{self, ReleaseChannel, UpdateOptions},
@@ -42,9 +45,12 @@ pub fn run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
         "universe" => cmd_universe(paths, rest),
         "events" => cmd_events(paths, rest),
         "inbox" => cmd_inbox(paths, rest),
+        "research" => cmd_research(paths, rest),
+        "budget" => cmd_budget(paths, rest),
+        "themes" => cmd_themes(paths, rest),
         "start" => cmd_start(paths),
         _ => anyhow::bail!(
-            "usage: m3 status | sync [--ticker SYM] [--prices-only] | report <SYM> | dossier <SYM> | add <SYM> ... | journal [list|record ...] | universe [status|sync|screen|peers|similar ...] | events [catchup|list ...] | inbox [list|triage ...] | version | workspace [show|set <PATH>] | update [--check] [--channel stable|beta] [channel [stable|beta]] | start"
+            "usage: m3 status | sync [--ticker SYM] [--prices-only] | report <SYM> | dossier <SYM> | add <SYM> ... | journal [list|record ...] | universe [status|sync|screen|peers|similar ...] | events [catchup|list ...] | inbox [list|triage ...] | research [run|status ...] | budget status | themes [list|sync] | version | workspace [show|set <PATH>] | update [--check] [--channel stable|beta] [channel [stable|beta]] | start"
         ),
     }
 }
@@ -854,6 +860,229 @@ fn cmd_inbox_triage(paths: &WorkspacePaths, args: &[String]) -> Result<serde_jso
             "signal": signal,
             "promoted_to_watch": promoted,
         }
+    }))
+}
+
+const MAX_RESEARCH_STATUS_LIMIT: usize = 500;
+
+fn fallback_budget_status_report(paths: &WorkspacePaths) -> Result<BudgetStatusReport> {
+    let config = budget::load_budget_config(paths)?;
+    let month_utc = chrono::Utc::now().format("%Y-%m").to_string();
+    let remaining_monthly_usd = config.monthly_budget_usd.max(Decimal::ZERO).normalize();
+    let remaining_monthly_tokens = config.monthly_token_limit;
+    let auto_trigger_remaining_weekly = if config.auto_trigger_enabled {
+        config.weekly_auto_quota
+    } else {
+        0
+    };
+    Ok(BudgetStatusReport {
+        config,
+        usage: MonthlyBudgetUsage {
+            month_utc,
+            total_runs: 0,
+            completed_runs: 0,
+            blocked_runs: 0,
+            failed_runs: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cost_usd: Decimal::ZERO,
+            weekly_auto_runs: 0,
+        },
+        remaining_monthly_usd,
+        remaining_monthly_tokens,
+        auto_trigger_remaining_weekly,
+    })
+}
+
+pub(crate) fn load_budget_status_report(paths: &WorkspacePaths) -> Result<BudgetStatusReport> {
+    match LakeDb::open_read_only_if_exists(paths)? {
+        Some(db) => db.budget_status_report(paths),
+        None => fallback_budget_status_report(paths),
+    }
+}
+
+fn cmd_research(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("status");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "run" => cmd_research_run(paths, rest),
+        "status" => cmd_research_status(paths, rest),
+        _ => anyhow::bail!(
+            "usage: m3 research <run <TICKER> [--focus \"...\"] [--trigger manual|inbox|cli]|status [--ticker SYM] [--limit N]>"
+        ),
+    }
+}
+
+fn cmd_research_run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut ticker: Option<String> = None;
+    let mut focus: Option<String> = None;
+    let mut trigger = "cli".to_owned();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--focus" => {
+                i += 1;
+                let raw = args.get(i).context("--focus requires text")?.trim();
+                ensure!(!raw.is_empty(), "--focus cannot be empty");
+                focus = Some(raw.to_owned());
+            }
+            "--trigger" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .context("--trigger requires manual|inbox|cli")?
+                    .trim()
+                    .to_ascii_lowercase();
+                ensure!(
+                    matches!(raw.as_str(), "manual" | "inbox" | "cli"),
+                    "invalid --trigger '{raw}'; expected manual|inbox|cli"
+                );
+                trigger = raw;
+            }
+            other if other.starts_with('-') => {
+                anyhow::bail!("unknown research run flag: {other}");
+            }
+            sym => {
+                ensure!(
+                    ticker.is_none(),
+                    "unexpected extra argument for research run: {sym}"
+                );
+                let normalized = sym.trim().to_ascii_uppercase();
+                ensure!(!normalized.is_empty(), "ticker cannot be empty");
+                ticker = Some(normalized);
+            }
+        }
+        i += 1;
+    }
+
+    let ticker = ticker.context(
+        "usage: m3 research run <TICKER> [--focus \"...\"] [--trigger manual|inbox|cli]",
+    )?;
+    let req = DeepResearchRequest {
+        ticker,
+        focus,
+        trigger,
+    };
+    let result = research::run_deep_research(paths, &req, None)?;
+    if result.status == "completed" {
+        Ok(json!({
+            "schema_version": 1,
+            "ok": true,
+            "data": result
+        }))
+    } else {
+        let err_msg = result
+            .error
+            .clone()
+            .unwrap_or_else(|| format!("deep research ended with status '{}'", result.status));
+        Ok(json!({
+            "schema_version": 1,
+            "ok": false,
+            "error": err_msg,
+            "data": result
+        }))
+    }
+}
+
+fn cmd_research_status(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut ticker: Option<String> = None;
+    let mut limit: usize = 20;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--ticker" => {
+                i += 1;
+                let raw = args.get(i).context("--ticker requires symbol")?.trim();
+                ensure!(!raw.is_empty(), "--ticker cannot be empty");
+                ticker = Some(raw.to_ascii_uppercase());
+            }
+            "--limit" => {
+                limit = parse_usize_flag(args, &mut i, "--limit", 1, MAX_RESEARCH_STATUS_LIMIT)?;
+            }
+            other => anyhow::bail!("unknown research status flag: {other}"),
+        }
+        i += 1;
+    }
+
+    let (runs, budget) = match LakeDb::open_read_only_if_exists(paths)? {
+        Some(db) => (
+            db.list_research_runs(ticker.as_deref(), limit)?,
+            db.budget_status_report(paths)?,
+        ),
+        None => (Vec::new(), fallback_budget_status_report(paths)?),
+    };
+    let memo_path = ticker.as_deref().and_then(|sym| {
+        let p = research::memo_path_for(paths, sym);
+        p.exists().then(|| p.display().to_string())
+    });
+
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "ticker_filter": ticker,
+            "memo_path": memo_path,
+            "count": runs.len(),
+            "runs": runs,
+            "budget": budget,
+        }
+    }))
+}
+
+fn cmd_budget(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("status");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "status" => cmd_budget_status(paths, rest),
+        _ => anyhow::bail!("usage: m3 budget status"),
+    }
+}
+
+fn cmd_budget_status(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    if let Some(unexpected) = args.first() {
+        anyhow::bail!("unknown budget status argument: {unexpected}");
+    }
+    let report = load_budget_status_report(paths)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": report
+    }))
+}
+
+fn cmd_themes(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("list");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "list" => cmd_themes_list(paths, rest),
+        "sync" => cmd_themes_sync(paths, rest),
+        _ => anyhow::bail!("usage: m3 themes <list|sync>"),
+    }
+}
+
+fn cmd_themes_list(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    if let Some(unexpected) = args.first() {
+        anyhow::bail!("unknown themes list argument: {unexpected}");
+    }
+    let themes: ThemesFile = budget::load_themes(paths)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": themes
+    }))
+}
+
+fn cmd_themes_sync(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    if let Some(unexpected) = args.first() {
+        anyhow::bail!("unknown themes sync argument: {unexpected}");
+    }
+    let db = LakeDb::open_read_only_if_exists(paths)?
+        .context("universe lake has not been synced yet; run `m3 universe sync` first")?;
+    let themes = db.sync_and_load_themes(paths)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": themes
     }))
 }
 
@@ -2351,6 +2580,248 @@ mod tests {
         .unwrap();
         assert_eq!(sim_with_fin["ok"], true);
         assert_eq!(sim_with_fin["data"]["hits"][0]["company"]["ticker"], "BAC");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_l2_budget_themes_research_status_and_budget_blocked_run() {
+        use crate::{
+            budget::BudgetConfig,
+            lake_l1::DocChunkRow,
+            lake_l2::{ResearchRunRow, ResearchRunStatus},
+            latent::{
+                LOCAL_EMBEDDING_DIM, LOCAL_EMBEDDING_MODEL, encode_embedding_json, local_embed,
+                sha256_hex,
+            },
+        };
+
+        let dir = std::env::temp_dir().join(format!(
+            "m3-cli-l2-suite-{}-{}",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workbench/dossiers")).unwrap();
+        let paths = WorkspacePaths::from_root(dir.clone());
+
+        store::save_watchlist(
+            &paths,
+            &WatchlistFile {
+                schema_version: 1,
+                benchmark_symbol: "^GSPC".into(),
+                default_target_return_pct: Decimal::from(10),
+                companies: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        // 1. Unsynced defaults for budget status, research status, themes list, and error for themes sync.
+        let b_init = run(&paths, &["budget".into(), "status".into()]).unwrap();
+        assert_eq!(b_init["ok"], true);
+        assert_eq!(b_init["data"]["config"]["monthly_budget_usd"], "10");
+        assert_eq!(b_init["data"]["remaining_monthly_usd"], "10");
+        assert_eq!(b_init["data"]["usage"]["total_runs"], 0);
+
+        let r_init = run(&paths, &["research".into(), "status".into()]).unwrap();
+        assert_eq!(r_init["ok"], true);
+        assert_eq!(r_init["data"]["count"], 0);
+
+        let t_init = run(&paths, &["themes".into(), "list".into()]).unwrap();
+        assert_eq!(t_init["ok"], true);
+        assert_eq!(t_init["data"]["clusters"].as_array().unwrap().len(), 0);
+
+        let t_sync_err = run(&paths, &["themes".into(), "sync".into()]).unwrap_err();
+        assert!(t_sync_err.to_string().contains("m3 universe sync"));
+
+        // Flag validation for research run & research status.
+        assert!(run(&paths, &["research".into(), "run".into()]).is_err());
+        assert!(
+            run(
+                &paths,
+                &[
+                    "research".into(),
+                    "run".into(),
+                    "ADSK".into(),
+                    "--trigger".into(),
+                    "bogus".into()
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                &paths,
+                &[
+                    "research".into(),
+                    "status".into(),
+                    "--limit".into(),
+                    "0".into()
+                ]
+            )
+            .is_err()
+        );
+
+        // 2. Seed synthetic L0/L1 lakehouse + one historical L2 research run.
+        let snapshot = vec![
+            synthetic_universe_row(SyntheticRowSpec {
+                ticker: "ADSK",
+                cik: "0000769397",
+                sic: Some(7372),
+                sic_desc: Some("Prepackaged Software"),
+                is_financial: false,
+                roic_5y: Some(28),
+                gm_5y: Some(91),
+                sbc_ocf: Some(42),
+                share_3y: Some(-2),
+                dist: Some(12),
+                fcf_yield: Some(4),
+                quality: 82,
+            }),
+            synthetic_universe_row(SyntheticRowSpec {
+                ticker: "PTC",
+                cik: "0000857005",
+                sic: Some(7372),
+                sic_desc: Some("Prepackaged Software"),
+                is_financial: false,
+                roic_5y: Some(22),
+                gm_5y: Some(80),
+                sbc_ocf: Some(18),
+                share_3y: Some(1),
+                dist: Some(-5),
+                fcf_yield: Some(5),
+                quality: 86,
+            }),
+        ];
+
+        {
+            let mut db = LakeDb::open(&paths).unwrap();
+            db.replace_sec_lake_data(&[], &[], &[], &snapshot).unwrap();
+            db.ensure_l1_schema(&paths).unwrap();
+            let adsk_text =
+                "Autodesk CAD subscription design software for architecture and engineering.";
+            let ptc_text = "PTC industrial CAD PLM subscription software for manufacturing.";
+            db.upsert_doc_chunks(&[
+                DocChunkRow {
+                    chunk_id: "chunk-adsk-theme".into(),
+                    cik: "0000769397".into(),
+                    ticker: "ADSK".into(),
+                    doc_type: "10-K".into(),
+                    source_id: "acc-adsk".into(),
+                    period_end: Some("2026-01-31".into()),
+                    filing_date: Some("2026-03-10".into()),
+                    section: "item_1".into(),
+                    title: "Business".into(),
+                    content: adsk_text.into(),
+                    content_sha256: sha256_hex(adsk_text.as_bytes()),
+                    source_url: "https://www.sec.gov/adsk".into(),
+                    embedding_model: LOCAL_EMBEDDING_MODEL.into(),
+                    embedding_dim: LOCAL_EMBEDDING_DIM,
+                    embedding_json: encode_embedding_json(&local_embed(adsk_text)),
+                },
+                DocChunkRow {
+                    chunk_id: "chunk-ptc-theme".into(),
+                    cik: "0000857005".into(),
+                    ticker: "PTC".into(),
+                    doc_type: "10-K".into(),
+                    source_id: "acc-ptc".into(),
+                    period_end: Some("2025-09-30".into()),
+                    filing_date: Some("2025-11-15".into()),
+                    section: "item_1".into(),
+                    title: "Business".into(),
+                    content: ptc_text.into(),
+                    content_sha256: sha256_hex(ptc_text.as_bytes()),
+                    source_url: "https://www.sec.gov/ptc".into(),
+                    embedding_model: LOCAL_EMBEDDING_MODEL.into(),
+                    embedding_dim: LOCAL_EMBEDDING_DIM,
+                    embedding_json: encode_embedding_json(&local_embed(ptc_text)),
+                },
+            ])
+            .unwrap();
+
+            db.insert_research_run(&ResearchRunRow {
+                run_id: "run-hist-1".into(),
+                ticker: "ADSK".into(),
+                trigger: "manual".into(),
+                focus: Some("moat".into()),
+                model: "test-model".into(),
+                input_tokens: 1_000,
+                output_tokens: 500,
+                cost_usd: Decimal::new(15, 2),
+                started_at_ms: store::now_ms().saturating_sub(1_000),
+                finished_at_ms: Some(store::now_ms()),
+                status: ResearchRunStatus::Completed,
+                error: None,
+                memo_path: Some("workbench/memos/ADSK.md".into()),
+                perspectives_json: "[]".into(),
+                citations_json: "[]".into(),
+            })
+            .unwrap();
+        }
+
+        // 3. `m3 themes sync` + `m3 themes list`
+        let t_sync = run(&paths, &["themes".into(), "sync".into()]).unwrap();
+        assert_eq!(t_sync["ok"], true);
+        assert!(t_sync["data"]["total_indexed_companies"].as_u64().unwrap() >= 2);
+        assert!(!t_sync["data"]["clusters"].as_array().unwrap().is_empty());
+
+        let t_list = run(&paths, &["themes".into(), "list".into()]).unwrap();
+        assert_eq!(t_list["ok"], true);
+        assert_eq!(
+            t_list["data"]["clusters"].as_array().unwrap().len(),
+            t_sync["data"]["clusters"].as_array().unwrap().len()
+        );
+
+        // 4. `m3 research status` + `m3 budget status`
+        let r_status = run(
+            &paths,
+            &[
+                "research".into(),
+                "status".into(),
+                "--ticker".into(),
+                "adsk".into(),
+                "--limit".into(),
+                "5".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(r_status["ok"], true);
+        assert_eq!(r_status["data"]["count"], 1);
+        assert_eq!(r_status["data"]["runs"][0]["run_id"], "run-hist-1");
+
+        // 5. `m3 research run` with budget exhausted -> hard-blocked cleanly without LLM boot.
+        budget::save_budget_config(
+            &paths,
+            &BudgetConfig {
+                monthly_budget_usd: Decimal::ZERO,
+                ..BudgetConfig::default()
+            },
+        )
+        .unwrap();
+
+        let blocked = run(
+            &paths,
+            &[
+                "research".into(),
+                "run".into(),
+                "PTC".into(),
+                "--focus".into(),
+                "check moat".into(),
+                "--trigger".into(),
+                "cli".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(blocked["ok"], false);
+        assert_eq!(blocked["data"]["status"], "blocked_budget");
+        assert_eq!(blocked["data"]["input_tokens"], 0);
+        assert_eq!(blocked["data"]["cost_usd"], "0");
+
+        let b_after = run(&paths, &["budget".into(), "status".into()]).unwrap();
+        assert_eq!(b_after["ok"], true);
+        assert_eq!(b_after["data"]["usage"]["completed_runs"], 1);
+        assert_eq!(b_after["data"]["usage"]["blocked_runs"], 1);
+        assert_eq!(b_after["data"]["usage"]["total_cost_usd"], "0.15");
 
         let _ = fs::remove_dir_all(&dir);
     }

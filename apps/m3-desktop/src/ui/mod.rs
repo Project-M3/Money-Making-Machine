@@ -11,20 +11,25 @@ mod shell;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod themes;
 mod universe;
 
+use agent::{DeepResearchPerspectiveUi, ParsedResearchMemo, default_deep_research_perspectives};
 use format::{build_alan_interrogation_prompt, filter_palette_items, filter_reports_for_basket};
 use inbox::{InboxFilter, InboxViewState};
 
 use crate::{
     alan_interrogator::{AcmeEvidenceToken, M3InterrogatorHandle, TuringTapeEntry},
+    budget::ThemesFile,
     events::EventCatchupReport,
     lake::{LakeAnnualRow, PeerComparison, UniverseRow, UniverseSummary},
     lake_l1::{L1Summary, SignalInboxRow, SignalStatus, SimilarCompanyHit},
+    lake_l2::{BudgetStatusReport, ResearchRunRow},
     model::{
         Bucket, DecisionJournal, Dossier, MungerReport, PriceHistorySnapshot, PriceSnapshot,
         SyncStatusFile, ValuationAssumptions,
     },
+    research::{DeepResearchEvent, DeepResearchResult},
     store::{self, WorkspacePaths},
     universe::UniverseSyncReport,
     update::{self, PassiveUpdateNotice, ReleaseChannel, UpdateOptions, UpdateReport},
@@ -141,6 +146,9 @@ pub struct TodayPulse {
 pub enum PaletteAction {
     OpenDossier(String),
     OpenAgent(String),
+    RunDeepResearch(String),
+    ShowBudgetStatus,
+    SyncThemes,
     SwitchView(NavView),
     FocusBasket(Option<Bucket>),
     ToggleBasketsView,
@@ -239,6 +247,24 @@ pub struct MungerWorkbench {
     inbox_catchup_rx: Option<mpsc::Receiver<Result<EventCatchupReport, String>>>,
     inbox_progress_rx: Option<mpsc::Receiver<String>>,
     inbox_last_auto_catchup_at: Option<Instant>,
+    budget_report: Option<BudgetStatusReport>,
+    themes_file: ThemesFile,
+    themes_syncing: bool,
+    themes_error: Option<String>,
+    themes_sync_rx: Option<mpsc::Receiver<Result<ThemesFile, String>>>,
+    selected_memo_raw: Option<String>,
+    selected_memo_parsed: Option<ParsedResearchMemo>,
+    selected_research_runs: Vec<ResearchRunRow>,
+    selected_peers: Option<PeerComparison>,
+    selected_similar_hits: Vec<SimilarCompanyHit>,
+    deep_research_running: bool,
+    deep_research_ticker: Option<String>,
+    deep_research_run_id: Option<String>,
+    deep_research_perspectives: Vec<DeepResearchPerspectiveUi>,
+    deep_research_status_note: Option<String>,
+    deep_research_budget_blocked: Option<String>,
+    deep_research_last_result: Option<DeepResearchResult>,
+    deep_research_rx: Option<mpsc::Receiver<DeepResearchEvent>>,
     update_channel: ReleaseChannel,
     update_notice: Option<PassiveUpdateNotice>,
     update_checking: bool,
@@ -352,6 +378,24 @@ impl MungerWorkbench {
             inbox_catchup_rx: None,
             inbox_progress_rx: None,
             inbox_last_auto_catchup_at: None,
+            budget_report: None,
+            themes_file: ThemesFile::default(),
+            themes_syncing: false,
+            themes_error: None,
+            themes_sync_rx: None,
+            selected_memo_raw: None,
+            selected_memo_parsed: None,
+            selected_research_runs: Vec::new(),
+            selected_peers: None,
+            selected_similar_hits: Vec::new(),
+            deep_research_running: false,
+            deep_research_ticker: None,
+            deep_research_run_id: None,
+            deep_research_perspectives: default_deep_research_perspectives(),
+            deep_research_status_note: None,
+            deep_research_budget_blocked: None,
+            deep_research_last_result: None,
+            deep_research_rx: None,
             update_channel: effective_ch,
             update_notice: initial_notice,
             update_checking: false,
@@ -363,8 +407,10 @@ impl MungerWorkbench {
             paths,
         };
         wb.reload_from_disk();
+        wb.reload_themes_from_disk();
         wb.reload_universe_from_lake();
         wb.reload_inbox_from_lake();
+        wb.reload_budget_from_lake();
         wb.maybe_start_startup_catchup();
         wb
     }
@@ -417,6 +463,7 @@ impl MungerWorkbench {
             self.sandbox_target_return = rep.assumptions.target_return_pct;
             self.sandbox_expected_growth = rep.assumptions.expected_growth_pct;
         }
+        self.reload_research_desk_context(ticker);
     }
 
     pub fn select_company(&mut self, ticker: &str, open_view: Option<NavView>) {
@@ -476,6 +523,14 @@ impl MungerWorkbench {
         }
         if view == NavView::Inbox {
             self.reload_inbox_from_lake();
+            self.reload_budget_from_lake();
+        }
+        if view == NavView::Journal {
+            self.reload_themes_from_disk();
+        }
+        if matches!(view, NavView::Dossier | NavView::Agent) {
+            let cur = self.selected_ticker.clone();
+            self.reload_research_desk_context(&cur);
         }
         self.active_view = view;
     }
@@ -566,6 +621,9 @@ impl MungerWorkbench {
     pub fn poll_background_sync(&mut self) -> bool {
         let mut dirty = self.poll_universe_sync();
         if self.poll_l1_catchup() {
+            dirty = true;
+        }
+        if self.poll_themes_sync() {
             dirty = true;
         }
         if self.poll_background_update() {
@@ -1356,6 +1414,10 @@ impl MungerWorkbench {
                     cx.stop_propagation();
                     cx.notify();
                 }
+                "s" => {
+                    self.start_themes_sync(cx);
+                    cx.stop_propagation();
+                }
                 "c" => {
                     self.copy_cli_command(
                         "./apps/m3-desktop/m3 journal list".into(),
@@ -1508,7 +1570,7 @@ impl Render for MungerWorkbench {
                                 |d| {
                                     let content = match self.active_view {
                                         NavView::Baskets => self.render_baskets_view(cx),
-                                        NavView::Journal => self.render_journal_view(cx),
+                                        NavView::Journal => self.render_themes_and_journal_view(cx),
                                         NavView::Inbox
                                         | NavView::Dossier
                                         | NavView::Agent

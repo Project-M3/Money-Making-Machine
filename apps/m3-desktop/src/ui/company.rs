@@ -66,8 +66,9 @@ impl MungerWorkbench {
 
         let prompt_ticker = rep.ticker.clone();
         let prompt_str = build_alan_interrogation_prompt(&rep.ticker, &rep.name, rep.bucket);
+        let dr_header_ticker = rep.ticker.clone();
 
-        // Unified 44px Sub-header: Routine Tabs + Single Contextual Control
+        // Unified 44px Sub-header: Routine Tabs + Research Desk Dispatcher + Basis Control
         let subheader = div()
             .h(px(44.))
             .flex_shrink_0()
@@ -113,7 +114,7 @@ impl MungerWorkbench {
                         seg_group()
                             .child(seg_tab(
                                 "tab-overview",
-                                "1 财报与 K 线",
+                                "1 财报与活研报",
                                 is_tab_overview,
                                 None,
                                 false,
@@ -126,7 +127,7 @@ impl MungerWorkbench {
                             ))
                             .child(seg_tab(
                                 "tab-agent",
-                                "2 Alan 审讯台",
+                                "2 Deep Research & Alan",
                                 is_tab_agent,
                                 Some((VIOLET_FG, VIOLET_BG)),
                                 false,
@@ -156,6 +157,33 @@ impl MungerWorkbench {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .when(!is_tab_agent, |d| {
+                        d.child(
+                            div()
+                                .id("comp-quick-deep-research")
+                                .px_2p5()
+                                .py_1()
+                                .rounded_sm()
+                                .bg(rgba(VIOLET_BG))
+                                .border_1()
+                                .border_color(rgba(VIOLET_BORDER))
+                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                .cursor_pointer()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(VIOLET_FG))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.active_view = NavView::Agent;
+                                    this.start_deep_research(&dr_header_ticker, None, "manual", cx);
+                                }))
+                                .child(if self.deep_research_running {
+                                    "Deep Research 运行中…"
+                                } else {
+                                    "Deep Research · 4 视角并行"
+                                }),
+                        )
+                    })
                     .when(is_tab_agent, |d| {
                         d.child(
                             div()
@@ -520,6 +548,11 @@ impl MungerWorkbench {
                     )),
             );
         }
+
+        // Cross-company Peer Percentiles & Lookalike strip + Living Research Memo
+        canvas_el = canvas_el
+            .child(self.render_cross_company_context_strip(&rep.ticker, cx))
+            .child(self.render_living_research_memo_card(&rep.ticker, cx));
 
         // Block 3: Human Sovereignty & Feynman Gate
         if let Some(dossier) = &self.selected_dossier {

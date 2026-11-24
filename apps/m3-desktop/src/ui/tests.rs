@@ -1,23 +1,30 @@
-use super::agent::{AgentPanelSlice, apply_interrogator_event};
+use super::agent::{
+    AgentPanelSlice, DeepResearchUiSlice, PerspectiveUiStatus, apply_deep_research_event,
+    apply_interrogator_event, default_deep_research_perspectives, parse_research_memo,
+};
 use super::company::roic_unavailable_label;
 use super::format::*;
 use super::inbox::{
-    InboxFilter, InboxViewState, count_inbox_filter, filter_inbox_signals,
-    resolve_active_inbox_signal, should_skip_auto_catchup, should_skip_auto_catchup_with,
-    signal_kind_badge, signal_status_badge, step_inbox_selection,
+    InboxFilter, InboxViewState, budget_watermark_summary, count_inbox_filter,
+    filter_inbox_signals, resolve_active_inbox_signal, should_skip_auto_catchup,
+    should_skip_auto_catchup_with, signal_kind_badge, signal_status_badge, step_inbox_selection,
 };
 use super::theme::*;
+use super::themes::{format_theme_member_distance, format_theme_member_roic};
 use super::universe::{
     UniversePreset, UniverseSearchMode, UniverseViewState, apply_ui_row_guards,
     build_scatter_model, format_watch_promote_banner, is_lake_empty, resolve_active_universe_row,
 };
 use super::*;
 use crate::alan_interrogator::{InterrogatorEvent, TuringTapeKind};
+use crate::budget::{BudgetConfig, ThemeClusterMember};
 use crate::lake::{UniverseRow, UniverseSortBy, UniverseSummary};
 use crate::lake_l1::{SignalEvidence, SignalInboxRow, SignalKind, SignalStatus};
+use crate::lake_l2::{BudgetStatusReport, MonthlyBudgetUsage};
 use crate::model::{
     DataSource, OhlcBar, StrikeZoneStatus, ValuationAssumptions, ValuationSnapshot,
 };
+use crate::research::{DeepResearchEvent, DeepResearchResult, PerspectiveOutcome};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 
@@ -878,5 +885,244 @@ fn universe_similar_search_state_and_palette_actions_wire_cleanly() {
     assert_eq!(
         filter_palette_items(&items, "lookalike")[0].action,
         PaletteAction::FocusSimilarSearch
+    );
+}
+
+#[test]
+fn milestone_c_memo_parser_deep_research_events_budget_themes_and_palette() {
+    let md = "\
+# ADSK · Autodesk, Inc. — Living Research Memo
+
+- **Run ID**: `run-42`
+- **Updated Date**: 2026-11-24
+- **Trigger**: `manual`
+- **Model**: `connection-service-default`
+- **Usage**: `1200` in / `400` out tokens · `$0.0096` USD
+
+## Deterministic Financial Snapshot
+
+| 指标 | 确定性数值 | 来源 |
+| --- | --- | --- |
+| 5Y ROIC 均值 | 28.00% | `calculator.rs` |
+
+## 护城河 (moat)
+
+High switching costs across AEC CAD workflows.
+
+## 会计排雷 (accounting)
+
+Watch SBC dilution relative to OCF.
+
+## 隐空间同行 (latent_peers)
+
+Closely aligned with PTC and SNPS.
+
+## 5年逆向验尸 (premortem)
+
+Cloud migration churn or pricing backlash.
+
+## Evidence & Citations
+
+1. **[ADSK]** `10-K · item_1` (2026-03-10, sim `0.95`): \"AEC design platform\" — https://www.sec.gov/adsk
+
+## Human Notes
+
+Keep watching SBC ratio before adding size.
+";
+
+    let parsed = parse_research_memo(md);
+    assert_eq!(parsed.title, "ADSK · Autodesk, Inc. — Living Research Memo");
+    assert_eq!(parsed.metadata.len(), 5);
+    assert_eq!(parsed.metadata[0], ("Run ID".into(), "run-42".into()));
+    assert_eq!(parsed.citations.len(), 1);
+    assert!(parsed.citations[0].contains("ADSK"));
+    assert_eq!(
+        parsed.human_notes.as_deref(),
+        Some("Keep watching SBC ratio before adding size.")
+    );
+    assert!(parsed.sections.iter().any(|s| s.id == "moat"));
+    assert!(parsed.sections.iter().any(|s| s.id == "premortem"));
+
+    // Deep Research streaming state transitions (completed + budget-blocked)
+    let mut running = false;
+    let mut run_id = None;
+    let mut status_note = None;
+    let mut budget_blocked = None;
+    let mut perspectives = default_deep_research_perspectives();
+    let mut last_result = None;
+    let mut tape = Vec::new();
+
+    let events = [
+        DeepResearchEvent::Started {
+            run_id: "run-1".into(),
+            ticker: "ADSK".into(),
+        },
+        DeepResearchEvent::PerspectiveStarted {
+            perspective: "moat".into(),
+            label: "护城河".into(),
+        },
+        DeepResearchEvent::ToolStarted {
+            perspective: "moat".into(),
+            name: "m3_peer_percentiles".into(),
+            title: "ADSK".into(),
+        },
+        DeepResearchEvent::ToolFinished {
+            perspective: "moat".into(),
+            name: "m3_peer_percentiles".into(),
+            status: "completed".into(),
+        },
+        DeepResearchEvent::PerspectiveDelta {
+            perspective: "moat".into(),
+            chunk: "Strong moat.".into(),
+        },
+        DeepResearchEvent::PerspectiveFinished {
+            perspective: "moat".into(),
+            summary_chars: 12,
+        },
+        DeepResearchEvent::Completed {
+            result: Box::new(DeepResearchResult {
+                run_id: "run-1".into(),
+                ticker: "ADSK".into(),
+                trigger: "manual".into(),
+                status: "completed".into(),
+                model: "test-model".into(),
+                memo_path: Some("workbench/memos/ADSK.md".into()),
+                input_tokens: 500,
+                output_tokens: 200,
+                cost_usd: Decimal::new(45, 4),
+                perspectives: vec![PerspectiveOutcome {
+                    perspective: "moat".into(),
+                    title: "护城河".into(),
+                    content: "Strong moat.".into(),
+                    tools_used: vec!["m3_peer_percentiles".into()],
+                    input_tokens: 500,
+                    output_tokens: 200,
+                }],
+                citations: Vec::new(),
+                error: None,
+                finished_at_ms: 1_795_500_000_000,
+            }),
+        },
+    ];
+    let mut last_effect = None;
+    for ev in &events {
+        let mut slice = DeepResearchUiSlice {
+            running: &mut running,
+            run_id: &mut run_id,
+            status_note: &mut status_note,
+            budget_blocked: &mut budget_blocked,
+            perspectives: &mut perspectives,
+            last_result: &mut last_result,
+            tape: &mut tape,
+        };
+        last_effect = Some(apply_deep_research_event(&mut slice, ev));
+    }
+    assert!(!running);
+    assert!(last_effect.unwrap().reload_context);
+    assert_eq!(perspectives[0].status, PerspectiveUiStatus::Completed);
+    assert_eq!(perspectives[0].input_tokens, 500);
+    assert_eq!(tape.last().unwrap().kind, TuringTapeKind::Out);
+
+    // Budget-blocked event
+    let mut slice = DeepResearchUiSlice {
+        running: &mut running,
+        run_id: &mut run_id,
+        status_note: &mut status_note,
+        budget_blocked: &mut budget_blocked,
+        perspectives: &mut perspectives,
+        last_result: &mut last_result,
+        tape: &mut tape,
+    };
+    let blocked_eff = apply_deep_research_event(
+        &mut slice,
+        &DeepResearchEvent::BudgetBlocked {
+            run_id: "run-2".into(),
+            ticker: "PTC".into(),
+            reason: "月度预算已用尽".into(),
+        },
+    );
+    assert!(blocked_eff.reload_context);
+    assert!(blocked_eff.banner.unwrap().1);
+    assert_eq!(budget_blocked.as_deref(), Some("月度预算已用尽"));
+    assert_eq!(tape.last().unwrap().kind, TuringTapeKind::Policy);
+
+    // Inbox budget watermark summary
+    let (default_lbl, default_col) = budget_watermark_summary(None);
+    assert_eq!(default_lbl, "本月 AI 预算 $0.00 / $10.00");
+    assert_eq!(default_col, EMERALD_FG);
+
+    let exhausted_report = BudgetStatusReport {
+        config: BudgetConfig::default(),
+        usage: MonthlyBudgetUsage {
+            month_utc: "2026-11".into(),
+            total_runs: 3,
+            completed_runs: 3,
+            blocked_runs: 0,
+            failed_runs: 0,
+            total_input_tokens: 100_000,
+            total_output_tokens: 50_000,
+            total_cost_usd: Decimal::new(1000, 2),
+            weekly_auto_runs: 0,
+        },
+        remaining_monthly_usd: Decimal::ZERO,
+        remaining_monthly_tokens: 1_850_000,
+        auto_trigger_remaining_weekly: 0,
+    };
+    let (ex_lbl, ex_col) = budget_watermark_summary(Some(&exhausted_report));
+    assert_eq!(ex_lbl, "本月 AI 预算 $10.00 / $10.00");
+    assert_eq!(ex_col, CORAL_FG);
+
+    // Themes member formatting
+    let member = ThemeClusterMember {
+        ticker: "ADSK".into(),
+        cik: "0000769397".into(),
+        name: "Autodesk".into(),
+        sic: Some(7372),
+        sic_description: Some("Prepackaged Software".into()),
+        roic_5y_avg_pct: Some(Decimal::from(28)),
+        distance_to_strike_pct: Some(Decimal::new(-55, 1)),
+        in_watchlist: true,
+    };
+    assert_eq!(format_theme_member_roic(&member), "ROIC 28%");
+    assert_eq!(format_theme_member_distance(&member), "-5.50%");
+
+    // Milestone C Command Palette items
+    let c_palette = vec![
+        PaletteItem {
+            group: "RESEARCH".into(),
+            title: "Deep Research · 4 视角并行深研 (ADSK)".into(),
+            subtitle: "受预算硬门控".into(),
+            shortcut: None,
+            dot_color: VIOLET_FG,
+            action: PaletteAction::RunDeepResearch("ADSK".into()),
+        },
+        PaletteItem {
+            group: "BUDGET".into(),
+            title: "Budget Status · 查看本月 AI 预算与配额".into(),
+            subtitle: "budget.json".into(),
+            shortcut: None,
+            dot_color: EMERALD_FG,
+            action: PaletteAction::ShowBudgetStatus,
+        },
+        PaletteItem {
+            group: "THEMES".into(),
+            title: "Sync Themes · 同步跨公司商业原型主题图谱".into(),
+            subtitle: "themes.json".into(),
+            shortcut: Some("s"),
+            dot_color: SKY_FG,
+            action: PaletteAction::SyncThemes,
+        },
+    ];
+    assert_eq!(
+        filter_palette_items(&c_palette, "deep research")[0].action,
+        PaletteAction::RunDeepResearch("ADSK".into())
+    );
+    assert_eq!(
+        filter_palette_items(&c_palette, "budget status")[0].action,
+        PaletteAction::ShowBudgetStatus
+    );
+    assert_eq!(
+        filter_palette_items(&c_palette, "sync themes")[0].action,
+        PaletteAction::SyncThemes
     );
 }

@@ -36,7 +36,7 @@ impl MungerWorkbench {
             ),
             (
                 NavView::Journal,
-                "决策账本",
+                "主题与账本",
                 "⌘4",
                 self.active_view == NavView::Journal,
                 GOLD_FG,
@@ -392,9 +392,12 @@ impl MungerWorkbench {
                 (None, None) => "篮子总览".to_owned(),
             },
             NavView::Dossier | NavView::Agent => {
-                format!("{} · {}", self.selected_ticker, selected_name)
+                format!(
+                    "{} · {} · Research Desk",
+                    self.selected_ticker, selected_name
+                )
             }
-            NavView::Journal => "决策账本".to_owned(),
+            NavView::Journal => "主题图谱与决策账本 · Themes & Journal".to_owned(),
             NavView::Universe => "全市场雷达 · US Lakehouse L0/L1".to_owned(),
         };
 
@@ -649,11 +652,11 @@ impl MungerWorkbench {
                     } else {
                         EMERALD_FG
                     },
-                    "1 财报K线 · 2 Alan · 3 XBRL · t TTM/FY · j/k 换股 · p Prompt · c CLI · esc 返回",
+                    "1 财报与活研报 · 2 Deep Research & Alan · 3 XBRL · t TTM/FY · j/k 换股 · p Prompt · c CLI · esc 返回",
                 ),
                 NavView::Journal => (
                     GOLD_FG,
-                    "/ 或 ⌘K 命令面板 · c 复制 journal CLI · esc 返回总览",
+                    "s 同步主题图谱 · / 或 ⌘K 命令面板 · c 复制 journal CLI · esc 返回总览",
                 ),
                 NavView::Universe => (
                     SKY_FG,

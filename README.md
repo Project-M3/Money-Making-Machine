@@ -49,8 +49,8 @@ m3 update                  # 下载校验 SHA-256 并原子替换 /Applications/
 
 ## 文档入口
 
-- [GPUI 工作台与 CLI](apps/m3-desktop/README.md)：Munger Workbench 桌面界面与 JSON CLI 说明
-- [Agent 数据与控制接口](docs/agent-interface.md)：结构化命令（`status / sync / report / dossier / add / journal`）与文件契约
+- [GPUI 工作台与 CLI](apps/m3-desktop/README.md)：Munger Workbench 桌面界面（Inbox、Universe、Research Desk、Themes & Journal）与 JSON CLI 说明
+- [Agent 数据与控制接口](docs/agent-interface.md)：结构化命令（`status / sync / report / dossier / add / journal / universe / events / inbox / research / budget / themes`）与文件契约
 - [芒格人机审讯工作流](docs/munger-workflow.md)：能力圈过滤、跨学科格栅、事前验尸与费曼答辩协议
 - [技术架构方向](docs/architecture.md)：四层架构、`workbench/` 与 `data/munger/` 目录边界
 - [v2 演进架构与里程碑设计](docs/v2-architecture.md)：全美股 DuckDB/Parquet 湖仓、事件驱动流、隐空间综合与 Alan Deep Research 蓝图（设计阶段）

@@ -902,6 +902,38 @@ impl MungerWorkbench {
         cx.notify();
     }
 
+    /// Promotes a Universe company to `Watch` if needed, opens its Research Desk,
+    /// and dispatches a 4-perspective Alan Deep Research run.
+    pub(super) fn dispatch_universe_company_research(
+        &mut self,
+        row: &UniverseRow,
+        cx: &mut Context<Self>,
+    ) {
+        if self.live_watchlist_bucket(row).is_none() {
+            self.add_universe_company_to_watch(row, cx);
+        }
+        let canonical = self
+            .reports
+            .iter()
+            .find(|r| r.ticker.eq_ignore_ascii_case(&row.ticker))
+            .map(|r| r.ticker.clone())
+            .unwrap_or_else(|| row.ticker.trim().to_ascii_uppercase());
+        if self
+            .reports
+            .iter()
+            .any(|r| r.ticker.eq_ignore_ascii_case(&canonical))
+        {
+            self.select_company(&canonical, Some(NavView::Agent));
+            self.start_deep_research(&canonical, None, "manual", cx);
+        } else {
+            self.banner = Some((
+                format!("无法派发 {} 深研：请先完成观察池入池", row.ticker),
+                true,
+            ));
+            cx.notify();
+        }
+    }
+
     fn live_watchlist_bucket(&self, row: &UniverseRow) -> Option<Bucket> {
         self.reports
             .iter()
@@ -2357,6 +2389,7 @@ impl MungerWorkbench {
                     ),
             )
             .child(if live_bkt.is_some() {
+                let row_for_research = row.clone();
                 div()
                     .flex()
                     .gap_2()
@@ -2403,35 +2436,65 @@ impl MungerWorkbench {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(VIOLET_FG))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_company(&ticker_alan, Some(NavView::Agent));
-                                cx.notify();
+                                let _ = &ticker_alan;
+                                this.dispatch_universe_company_research(&row_for_research, cx);
                             }))
-                            .child("Alan 审讯"),
+                            .child("派 Alan 深研"),
                     )
             } else {
-                div().child(
-                    div()
-                        .id(gpui::SharedString::from(format!(
-                            "univ-add-watch-{}",
-                            row.cik
-                        )))
-                        .w_full()
-                        .py_2()
-                        .rounded_md()
-                        .bg(rgb(CTA_BG))
-                        .hover(|s| s.bg(rgb(CTA_BG_HOVER)))
-                        .active(|s| s.bg(rgb(CTA_BG_ACTIVE)))
-                        .cursor_pointer()
-                        .text_center()
-                        .font_family(self.fonts.ui.clone())
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(rgb(CTA_INK))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.add_universe_company_to_watch(&row_for_add, cx);
-                        }))
-                        .child("加入观察池 (WATCH)"),
-                )
+                let row_for_research = row.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "univ-add-watch-{}",
+                                row.cik
+                            )))
+                            .w_full()
+                            .py_2()
+                            .rounded_md()
+                            .bg(rgb(CTA_BG))
+                            .hover(|s| s.bg(rgb(CTA_BG_HOVER)))
+                            .active(|s| s.bg(rgb(CTA_BG_ACTIVE)))
+                            .cursor_pointer()
+                            .text_center()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(CTA_INK))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.add_universe_company_to_watch(&row_for_add, cx);
+                            }))
+                            .child("加入观察池 (WATCH)"),
+                    )
+                    .child(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "univ-watch-research-{}",
+                                row.cik
+                            )))
+                            .w_full()
+                            .py_1p5()
+                            .rounded_md()
+                            .bg(rgba(VIOLET_BG))
+                            .border_1()
+                            .border_color(rgba(VIOLET_BORDER))
+                            .hover(|s| s.bg(rgb(BG_HOVER)))
+                            .active(|s| s.bg(rgb(BG_ACTIVE)))
+                            .cursor_pointer()
+                            .text_center()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(VIOLET_FG))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.dispatch_universe_company_research(&row_for_research, cx);
+                            }))
+                            .child("入池并派 Alan 深研 · Deep Research"),
+                    )
             })
             .child(
                 div()

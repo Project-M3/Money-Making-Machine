@@ -3,13 +3,18 @@
 //! - Mounts read-only `/mnt/m3` exposing `watchlist.json`, `journal.json`,
 //!   `computed/<TICKER>.json`, and `dossiers/<TICKER>.json`.
 //! - Registers deterministic M3 tools (`m3_status`, `m3_report`, `m3_dossier`,
-//!   `m3_update_draft`) backed directly by `store.rs` and `calculator.rs`.
+//!   `m3_update_draft`, `m3_universe_query`, `m3_peer_percentiles`,
+//!   `m3_semantic_neighbors`, `m3_events_for_ticker`) backed directly by
+//!   `store.rs`, `calculator.rs`, `lake.rs`, and `lake_l1.rs`.
 //! - Enforces [`M3ToolPolicyHook`] unconditionally denying any tool call
-//!   touching `human_judgment`, `computed/`, `raw/`, `journal.json`, or `watchlist.json`.
+//!   touching `human_judgment`, `computed/`, `raw/`, `data/munger/`, `m3.duckdb`,
+//!   `.parquet`, `lake/`, `journal.json`, `watchlist.json`, `budget.json`,
+//!   `themes.json`, or `memos/`.
 //! - Emits live streamed prose, `alanworks.app`-style Turing Tape rows, and
 //!   clickable Acme evidence tokens (`[report:TICKER]`, `[xbrl:TICKER]`, `[dossier:TICKER]`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
 use alan_agent_engine::TrustPosture;
@@ -21,16 +26,20 @@ use alan_os_host::embed::{
 };
 use alan_shell::Shell;
 use anyhow::{Context, Result};
+use duckdb::params;
+use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, mpsc as tokio_mpsc};
 
+use crate::lake::{LakeDb, UniverseFilter, UniverseSortBy};
+use crate::lake_l1::SimilarSearchFilter;
 use crate::model::{Bucket, Dossier, HumanJudgment, Latticework, MungerReport};
 use crate::store::{self, WorkspacePaths};
 
 const M3_INTERROGATOR_SYSTEM_PROMPT: &str = "\
 你是 Project-M3 的查理·芒格跨学科研究幕僚 Alan（费曼审讯台）。请严格遵循以下纪律：
-1. 严禁自行心算、编造或篡改任何财务数字、估值倍数、ROIC 或击球价；需要数据时必须调用 `m3_status`、`m3_report` 或 `m3_dossier`，或读取只读 `/mnt/m3` 挂载树。
-2. 允许通过 `m3_update_draft` 更新公司档案草稿区（`three_sentence_business`、`latticework`、`premortem`、`open_questions`），但严禁修改或代填 `human_judgment`、`computed/`、`raw/` 与 `journal.json`（系统会在工具策略层硬拦截）。
+1. 严禁自行心算、编造或篡改任何财务数字、估值倍数、ROIC 或击球价；需要数据时必须调用 `m3_status`、`m3_report`、`m3_dossier` 或只读湖仓工具（`m3_universe_query`、`m3_peer_percentiles`、`m3_semantic_neighbors`、`m3_events_for_ticker`），或读取只读 `/mnt/m3` 挂载树。
+2. 允许通过 `m3_update_draft` 更新公司档案草稿区（`three_sentence_business`、`latticework`、`premortem`、`open_questions`），但严禁修改或代填 `human_judgment`、`computed/`、`raw/`、`data/munger/`、`m3.duckdb`、`.parquet`、`watchlist.json`、`journal.json`、`budget.json`、`themes.json` 与 `memos/`（系统会在工具策略层硬拦截）。
 3. 回答中引用确定性数据与档案时，附上可点击证据标记 `[report:TICKER]`、`[xbrl:TICKER]`、`[dossier:TICKER]`。
 4. 先核对财务与护城河事实，再提出锋利的 5 年逆向事前验尸问题与费曼追问；严禁直接给出买卖指令。";
 
@@ -494,8 +503,10 @@ impl FileServer for M3WorkbenchFs {
 
 /// Synchronous policy hook enforcing Project-M3's ironclad red lines:
 /// unconditionally denies any tool invocation touching `human_judgment`,
-/// `computed/`, `raw/`, `journal.json`, or `watchlist.json`, as well as any
-/// arbitrary write tool outside `m3_update_draft`'s draft-only schema.
+/// `computed/`, `raw/`, `data/munger/`, `m3.duckdb`, `.duckdb`, `.parquet`,
+/// `parquet/`, `lake/`, `journal.json`, `watchlist.json`, `budget.json`,
+/// `themes.json`, or `memos/`, as well as any arbitrary write tool outside
+/// `m3_update_draft`'s draft-only schema and any Network/Unknown tool.
 #[derive(Debug, Default)]
 pub struct M3ToolPolicyHook;
 
@@ -527,8 +538,32 @@ impl M3ToolPolicyHook {
                     if matches!(lk.as_str(), "raw" | "raw_path" | "sec_raw") {
                         return Some("raw/");
                     }
-                    if matches!(lk.as_str(), "journal" | "journal_path" | "watchlist") {
+                    if matches!(lk.as_str(), "data_munger" | "munger_data") {
+                        return Some("data/munger/");
+                    }
+                    if matches!(lk.as_str(), "duckdb" | "duckdb_path" | "lake_db") {
+                        return Some("m3.duckdb");
+                    }
+                    if matches!(lk.as_str(), "parquet" | "parquet_path") {
+                        return Some("parquet/");
+                    }
+                    if matches!(lk.as_str(), "lake" | "lake_path" | "lake_dir") {
+                        return Some("lake/");
+                    }
+                    if matches!(lk.as_str(), "journal" | "journal_path") {
                         return Some("journal.json");
+                    }
+                    if matches!(lk.as_str(), "watchlist" | "watchlist_path") {
+                        return Some("watchlist.json");
+                    }
+                    if matches!(lk.as_str(), "budget" | "budget_path" | "budget_config") {
+                        return Some("budget.json");
+                    }
+                    if matches!(lk.as_str(), "themes" | "themes_path") {
+                        return Some("themes.json");
+                    }
+                    if matches!(lk.as_str(), "memo_path" | "memos_dir") {
+                        return Some("memos/");
                     }
                     if let Some(hit) = Self::inspect_value_for_redline(v) {
                         return Some(hit);
@@ -542,6 +577,13 @@ impl M3ToolPolicyHook {
         }
     }
 
+    fn matches_path_segment(lower: &str, seg: &str) -> bool {
+        lower == seg
+            || lower.starts_with(&format!("{seg}/"))
+            || lower.contains(&format!("/{seg}/"))
+            || lower.ends_with(&format!("/{seg}"))
+    }
+
     fn inspect_str_for_redline(s: &str) -> Option<&'static str> {
         let lower = s.trim().to_ascii_lowercase().replace('\\', "/");
         if lower.contains("human_judgment")
@@ -553,28 +595,40 @@ impl M3ToolPolicyHook {
         {
             return Some("human_judgment");
         }
-        if lower == "computed"
-            || lower.starts_with("computed/")
-            || lower.contains("/computed/")
-            || lower.ends_with("/computed")
-            || lower.contains("data/munger/computed")
+        if lower.contains("m3.duckdb") || lower.contains(".duckdb") {
+            return Some("m3.duckdb");
+        }
+        if lower.contains(".parquet") || Self::matches_path_segment(&lower, "parquet") {
+            return Some("parquet/");
+        }
+        if Self::matches_path_segment(&lower, "computed") || lower.contains("data/munger/computed")
         {
             return Some("computed/");
         }
-        if lower == "raw"
-            || lower.starts_with("raw/")
-            || lower.contains("/raw/")
-            || lower.ends_with("/raw")
-            || lower.contains("data/munger/raw")
-        {
+        if Self::matches_path_segment(&lower, "raw") || lower.contains("data/munger/raw") {
             return Some("raw/");
         }
-        if lower.contains("journal.json")
-            || lower == "journal"
-            || lower.ends_with("/journal")
-            || lower.contains("watchlist.json")
-        {
+        if Self::matches_path_segment(&lower, "lake") {
+            return Some("lake/");
+        }
+        if lower.contains("data/munger") {
+            return Some("data/munger/");
+        }
+        if lower.contains("journal.json") || lower == "journal" || lower.ends_with("/journal") {
             return Some("journal.json");
+        }
+        if lower.contains("watchlist.json") || lower == "watchlist" || lower.ends_with("/watchlist")
+        {
+            return Some("watchlist.json");
+        }
+        if lower.contains("budget.json") || lower == "budget" || lower.ends_with("/budget") {
+            return Some("budget.json");
+        }
+        if lower.contains("themes.json") || lower == "themes" || lower.ends_with("/themes") {
+            return Some("themes.json");
+        }
+        if Self::matches_path_segment(&lower, "memos") || lower.contains("workbench/memos") {
+            return Some("memos/");
         }
         None
     }
@@ -1013,6 +1067,581 @@ impl Tool for M3UpdateDraftTool {
     }
 }
 
+fn parse_opt_decimal_arg(val: Option<&Value>, field: &str) -> Result<Option<Decimal>> {
+    let Some(v) = val else {
+        return Ok(None);
+    };
+    match v {
+        Value::Null => Ok(None),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Decimal::from_str(trimmed)
+                    .map(Some)
+                    .with_context(|| format!("{field} 不是有效 Decimal: {trimmed}"))
+            }
+        }
+        Value::Number(n) => Decimal::from_str(&n.to_string())
+            .map(Some)
+            .with_context(|| format!("{field} 不是有效数值: {n}")),
+        other => anyhow::bail!("{field} 需要数字或字符串，实际为 {other}"),
+    }
+}
+
+fn lake_table_exists(db: &LakeDb, table_name: &str) -> Result<bool> {
+    let count: i64 = db.conn.query_row(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+        [table_name],
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let prefix: String = text.chars().take(max_chars).collect();
+    format!("{prefix}…")
+}
+
+struct M3UniverseQueryTool {
+    paths: WorkspacePaths,
+}
+
+impl Tool for M3UniverseQueryTool {
+    fn name(&self) -> &str {
+        "m3_universe_query"
+    }
+
+    fn description(&self) -> &str {
+        "只读查询全美股 DuckDB 确定性宽表 `universe_snapshot`（按 ROIC、SBC/OCF、股本稀释、击球距、行业过滤并排序，最多返回 50 条）。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "关键词（代码/名称/SIC 描述）" },
+                "min_roic_5y": { "type": ["number", "string"], "description": "5年 ROIC 均值下限（%）" },
+                "max_sbc_to_ocf": { "type": ["number", "string"], "description": "SBC/OCF 上限（%）" },
+                "max_share_change_3y": { "type": ["number", "string"], "description": "3年股本变化上限（%）" },
+                "max_net_debt_to_oe": { "type": ["number", "string"], "description": "净负债/严格股东盈余上限" },
+                "min_years_of_data": { "type": "integer", "minimum": 0 },
+                "exclude_financials": { "type": "boolean", "default": true },
+                "positive_strict_oe_only": { "type": "boolean", "default": false },
+                "in_price_pool_only": { "type": "boolean", "default": false },
+                "strike_zone_only": { "type": "boolean", "default": false },
+                "sort_by": { "type": "string", "description": "quality|roic|fcf_yield|distance|share_change|sbc_ocf|price|strike|warnings|ticker" },
+                "sort_asc": { "type": "boolean", "default": false },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, _ctx: &ToolContext) -> ToolResult {
+        let paths = self.paths.clone();
+        Box::pin(async move {
+            let Some(db) = LakeDb::open_read_only_if_exists(&paths)? else {
+                return Ok(json!({
+                    "ok": true,
+                    "lake_available": false,
+                    "count": 0,
+                    "rows": [],
+                }));
+            };
+
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map_or(20usize, |v| usize::try_from(v).unwrap_or(50))
+                .clamp(1, 50);
+
+            let sort_by = match arguments.get("sort_by").and_then(Value::as_str) {
+                Some(raw) if !raw.trim().is_empty() => UniverseSortBy::from_str(raw)?,
+                _ => UniverseSortBy::QualityScore,
+            };
+
+            let filter = UniverseFilter {
+                min_roic_5y: parse_opt_decimal_arg(arguments.get("min_roic_5y"), "min_roic_5y")?,
+                max_sbc_to_ocf: parse_opt_decimal_arg(
+                    arguments.get("max_sbc_to_ocf"),
+                    "max_sbc_to_ocf",
+                )?,
+                max_share_change_3y: parse_opt_decimal_arg(
+                    arguments.get("max_share_change_3y"),
+                    "max_share_change_3y",
+                )?,
+                max_net_debt_to_oe: parse_opt_decimal_arg(
+                    arguments.get("max_net_debt_to_oe"),
+                    "max_net_debt_to_oe",
+                )?,
+                min_years_of_data: arguments
+                    .get("min_years_of_data")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| usize::try_from(v).ok()),
+                exclude_financials: arguments
+                    .get("exclude_financials")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                positive_strict_oe_only: arguments
+                    .get("positive_strict_oe_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                in_price_pool_only: arguments
+                    .get("in_price_pool_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                strike_zone_only: arguments
+                    .get("strike_zone_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                query: arguments
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty()),
+                sort_by,
+                sort_asc: arguments
+                    .get("sort_asc")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                limit,
+            };
+
+            let rows = db.screen_universe(&filter)?;
+            Ok(json!({
+                "ok": true,
+                "lake_available": true,
+                "count": rows.len(),
+                "rows": rows,
+            }))
+        })
+    }
+}
+
+struct M3PeerPercentilesTool {
+    paths: WorkspacePaths,
+}
+
+impl Tool for M3PeerPercentilesTool {
+    fn name(&self) -> &str {
+        "m3_peer_percentiles"
+    }
+
+    fn description(&self) -> &str {
+        "只读查询指定公司在全美股同 SIC 行业组内的 ROIC、毛利率与严格 FCF 收益率分位数及头部同行（最多 20 家）。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "ticker": { "type": "string", "description": "股票代码，例如 ADSK" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }
+            },
+            "required": ["ticker"],
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, _ctx: &ToolContext) -> ToolResult {
+        let paths = self.paths.clone();
+        Box::pin(async move {
+            let ticker = arguments
+                .get("ticker")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .context("m3_peer_percentiles 缺少 ticker 参数")?
+                .to_ascii_uppercase();
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map_or(10usize, |v| usize::try_from(v).unwrap_or(20))
+                .clamp(1, 20);
+
+            let Some(db) = LakeDb::open_read_only_if_exists(&paths)? else {
+                return Ok(json!({
+                    "ok": true,
+                    "lake_available": false,
+                    "ticker": ticker,
+                    "comparison": Value::Null,
+                }));
+            };
+
+            match db.query_peers(&ticker, limit) {
+                Ok(comparison) => Ok(json!({
+                    "ok": true,
+                    "lake_available": true,
+                    "ticker": ticker,
+                    "comparison": comparison,
+                })),
+                Err(err) => Ok(json!({
+                    "ok": false,
+                    "lake_available": true,
+                    "ticker": ticker,
+                    "error": format!("{err:#}"),
+                })),
+            }
+        })
+    }
+}
+
+struct M3SemanticNeighborsTool {
+    paths: WorkspacePaths,
+}
+
+impl Tool for M3SemanticNeighborsTool {
+    fn name(&self) -> &str {
+        "m3_semantic_neighbors"
+    }
+
+    fn description(&self) -> &str {
+        "只读混合检索（SQL 财务硬过滤 × 10-K/8-K/新闻向量+BM25 相似度），返回相似商业原型公司及一手原文 SignalEvidence 引用。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "ticker": { "type": "string", "description": "以目标公司业务轮廓找相似公司（与 query 二选一）" },
+                "query": { "type": "string", "description": "商业模式或关键词描述（与 ticker 二选一）" },
+                "as_ticker": { "type": "boolean" },
+                "min_roic_5y": { "type": ["number", "string"] },
+                "max_sbc_to_ocf": { "type": ["number", "string"] },
+                "exclude_financials": { "type": "boolean", "default": true },
+                "positive_strict_oe_only": { "type": "boolean", "default": false },
+                "in_price_pool_only": { "type": "boolean", "default": false },
+                "min_score": { "type": "number", "default": 0.0 },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, _ctx: &ToolContext) -> ToolResult {
+        let paths = self.paths.clone();
+        Box::pin(async move {
+            let ticker_arg = arguments
+                .get("ticker")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_ascii_uppercase);
+            let query_arg = arguments
+                .get("query")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+
+            let (needle, as_ticker) = match (query_arg, ticker_arg) {
+                (Some(q), _) => {
+                    let flag = arguments
+                        .get("as_ticker")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    (q, flag)
+                }
+                (None, Some(t)) => {
+                    let flag = arguments
+                        .get("as_ticker")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    (t, flag)
+                }
+                (None, None) => anyhow::bail!("m3_semantic_neighbors 需要 query 或 ticker 参数"),
+            };
+
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map_or(10usize, |v| usize::try_from(v).unwrap_or(20))
+                .clamp(1, 20);
+
+            let filter = SimilarSearchFilter {
+                min_roic_5y: parse_opt_decimal_arg(arguments.get("min_roic_5y"), "min_roic_5y")?,
+                max_sbc_to_ocf: parse_opt_decimal_arg(
+                    arguments.get("max_sbc_to_ocf"),
+                    "max_sbc_to_ocf",
+                )?,
+                exclude_financials: arguments
+                    .get("exclude_financials")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                positive_strict_oe_only: arguments
+                    .get("positive_strict_oe_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                in_price_pool_only: arguments
+                    .get("in_price_pool_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                min_score: arguments
+                    .get("min_score")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0) as f32,
+                limit,
+            };
+
+            let Some(db) = LakeDb::open_read_only_if_exists(&paths)? else {
+                return Ok(json!({
+                    "ok": true,
+                    "lake_available": false,
+                    "count": 0,
+                    "hits": [],
+                }));
+            };
+
+            match db.search_similar(&needle, as_ticker, &filter) {
+                Ok(hits) => Ok(json!({
+                    "ok": true,
+                    "lake_available": true,
+                    "query": needle,
+                    "as_ticker": as_ticker,
+                    "count": hits.len(),
+                    "hits": hits,
+                })),
+                Err(err) => Ok(json!({
+                    "ok": false,
+                    "lake_available": true,
+                    "query": needle,
+                    "error": format!("{err:#}"),
+                })),
+            }
+        })
+    }
+}
+
+struct M3EventsForTickerTool {
+    paths: WorkspacePaths,
+}
+
+impl Tool for M3EventsForTickerTool {
+    fn name(&self) -> &str {
+        "m3_events_for_ticker"
+    }
+
+    fn description(&self) -> &str {
+        "只读查询指定公司最近的 SEC filings（10-K/10-Q/8-K/Form 4）、L1 事件流与有界一手财报文本切片摘要。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "ticker": { "type": "string", "description": "股票代码，例如 AAPL" },
+                "filings_limit": { "type": "integer", "minimum": 0, "maximum": 20, "default": 8 },
+                "events_limit": { "type": "integer", "minimum": 0, "maximum": 20, "default": 10 },
+                "chunks_limit": { "type": "integer", "minimum": 0, "maximum": 15, "default": 6 },
+                "max_chunk_chars": { "type": "integer", "minimum": 100, "maximum": 1500, "default": 600 }
+            },
+            "required": ["ticker"],
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, _ctx: &ToolContext) -> ToolResult {
+        let paths = self.paths.clone();
+        Box::pin(async move {
+            let ticker = arguments
+                .get("ticker")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .context("m3_events_for_ticker 缺少 ticker 参数")?
+                .to_ascii_uppercase();
+
+            let filings_limit = arguments
+                .get("filings_limit")
+                .and_then(Value::as_u64)
+                .map_or(8usize, |v| usize::try_from(v).unwrap_or(20))
+                .min(20);
+            let events_limit = arguments
+                .get("events_limit")
+                .and_then(Value::as_u64)
+                .map_or(10usize, |v| usize::try_from(v).unwrap_or(20))
+                .min(20);
+            let chunks_limit = arguments
+                .get("chunks_limit")
+                .and_then(Value::as_u64)
+                .map_or(6usize, |v| usize::try_from(v).unwrap_or(15))
+                .min(15);
+            let max_chunk_chars = arguments
+                .get("max_chunk_chars")
+                .and_then(Value::as_u64)
+                .map_or(600usize, |v| usize::try_from(v).unwrap_or(1500))
+                .clamp(100, 1500);
+
+            let Some(db) = LakeDb::open_read_only_if_exists(&paths)? else {
+                return Ok(json!({
+                    "ok": true,
+                    "lake_available": false,
+                    "ticker": ticker,
+                    "filings": [],
+                    "events": [],
+                    "doc_chunks": [],
+                }));
+            };
+
+            let mut filings = Vec::new();
+            if filings_limit > 0 && lake_table_exists(&db, "filings")? {
+                let cik_opt: Option<String> = if lake_table_exists(&db, "universe_snapshot")? {
+                    db.conn
+                        .query_row(
+                            "SELECT cik FROM universe_snapshot WHERE UPPER(ticker) = ? LIMIT 1",
+                            [&ticker],
+                            |r| r.get(0),
+                        )
+                        .ok()
+                } else {
+                    None
+                };
+
+                if let Some(cik) = cik_opt {
+                    filings = db.list_filings_for_cik(&cik, filings_limit)?;
+                } else {
+                    let sql_limit = i64::try_from(filings_limit).unwrap_or(20);
+                    let mut stmt = db.conn.prepare(
+                        "SELECT accession_no, cik, ticker, form, filing_date, report_date,
+                                primary_document, primary_doc_description, items_json,
+                                filing_url, ingested_at_ms
+                         FROM filings
+                         WHERE UPPER(ticker) = UPPER(?)
+                         ORDER BY filing_date DESC, accession_no DESC
+                         LIMIT ?",
+                    )?;
+                    let rows = stmt.query_map(params![ticker.as_str(), sql_limit], |r| {
+                        Ok(crate::lake_l1::LakeFilingRow {
+                            accession_no: r.get(0)?,
+                            cik: r.get(1)?,
+                            ticker: r.get(2)?,
+                            form: r.get(3)?,
+                            filing_date: r.get(4)?,
+                            report_date: r.get(5)?,
+                            primary_document: r.get(6)?,
+                            primary_doc_description: r.get(7)?,
+                            items_json: r.get(8)?,
+                            filing_url: r.get(9)?,
+                            ingested_at_ms: r.get(10)?,
+                        })
+                    })?;
+                    for r in rows {
+                        filings.push(r?);
+                    }
+                }
+            }
+
+            let events = db.list_events(Some(&ticker), None, false, events_limit)?;
+
+            let mut chunk_excerpts: Vec<Value> = Vec::new();
+            if chunks_limit > 0 && lake_table_exists(&db, "doc_chunks")? {
+                let sql_limit = i64::try_from(chunks_limit).unwrap_or(15);
+                let mut stmt = db.conn.prepare(
+                    "SELECT chunk_id, doc_type, source_id, period_end, filing_date,
+                            section, title, content, source_url
+                     FROM doc_chunks
+                     WHERE UPPER(ticker) = UPPER(?)
+                     ORDER BY
+                        CASE section
+                            WHEN 'item_1' THEN 0
+                            WHEN 'company_profile' THEN 1
+                            WHEN 'item_1a' THEN 2
+                            WHEN 'item_7' THEN 3
+                            WHEN 'item_8k' THEN 4
+                            ELSE 5
+                        END ASC,
+                        COALESCE(filing_date, '') DESC,
+                        chunk_id ASC
+                     LIMIT ?",
+                )?;
+                let rows = stmt.query_map(params![ticker.as_str(), sql_limit], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, String>(6)?,
+                        r.get::<_, String>(7)?,
+                        r.get::<_, String>(8)?,
+                    ))
+                })?;
+                for r in rows {
+                    let (
+                        chunk_id,
+                        doc_type,
+                        source_id,
+                        period_end,
+                        filing_date,
+                        section,
+                        title,
+                        content,
+                        source_url,
+                    ) = r?;
+                    chunk_excerpts.push(json!({
+                        "chunk_id": chunk_id,
+                        "doc_type": doc_type,
+                        "source_id": source_id,
+                        "period_end": period_end,
+                        "filing_date": filing_date,
+                        "section": section,
+                        "title": title,
+                        "excerpt": truncate_chars(&content, max_chunk_chars),
+                        "source_url": source_url,
+                    }));
+                }
+            }
+
+            Ok(json!({
+                "ok": true,
+                "lake_available": true,
+                "ticker": ticker,
+                "filings": filings,
+                "events": events,
+                "doc_chunks": chunk_excerpts,
+            }))
+        })
+    }
+}
+
 enum InterrogatorCommand {
     Submit {
         ticker: String,
@@ -1032,6 +1661,8 @@ pub struct M3InterrogatorHandle {
     fs: Arc<M3WorkbenchFs>,
     cmd_tx: tokio_mpsc::UnboundedSender<InterrogatorCommand>,
     events: Arc<StdMutex<Vec<InterrogatorEvent>>>,
+    #[allow(dead_code)]
+    usage: Arc<StdMutex<(u64, u64)>>,
 }
 
 impl M3InterrogatorHandle {
@@ -1043,8 +1674,10 @@ impl M3InterrogatorHandle {
         let fs = Arc::new(M3WorkbenchFs::new(paths.clone()));
         let (cmd_tx, mut cmd_rx) = tokio_mpsc::unbounded_channel::<InterrogatorCommand>();
         let events = Arc::new(StdMutex::new(Vec::new()));
+        let usage = Arc::new(StdMutex::new((0u64, 0u64)));
         let fs_worker = Arc::clone(&fs);
         let events_worker = Arc::clone(&events);
+        let usage_worker = Arc::clone(&usage);
 
         if let Err(err) = std::thread::Builder::new()
             .name("m3-alan-interrogator".to_string())
@@ -1208,9 +1841,14 @@ impl M3InterrogatorHandle {
                                                 error: error.map(|e| friendly_m3_credentials_error(&e)),
                                             });
                                         }
+                                        EmbedEvent::Usage { usage: snap, .. } => {
+                                            if let Ok(mut guard) = usage_worker.lock() {
+                                                guard.0 = guard.0.saturating_add(snap.input_tokens);
+                                                guard.1 = guard.1.saturating_add(snap.output_tokens);
+                                            }
+                                        }
                                         EmbedEvent::ThinkingDelta { .. }
-                                        | EmbedEvent::PendingRequest { .. }
-                                        | EmbedEvent::Usage { .. } => {}
+                                        | EmbedEvent::PendingRequest { .. } => {}
                                     }
                                     Err(err) => {
                                         push_event(&events_worker, InterrogatorEvent::Error {
@@ -1235,7 +1873,17 @@ impl M3InterrogatorHandle {
             );
         }
 
-        Self { fs, cmd_tx, events }
+        Self {
+            fs,
+            cmd_tx,
+            events,
+            usage,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn session_usage(&self) -> (u64, u64) {
+        self.usage.lock().map(|g| *g).unwrap_or((0, 0))
     }
 
     pub fn refresh_fs(&self) {
@@ -1319,9 +1967,19 @@ pub async fn boot_m3_embedded(
         paths: paths.clone(),
     });
     tools.register(M3UpdateDraftTool {
-        paths,
+        paths: paths.clone(),
         fs: Arc::clone(&fs),
     });
+    tools.register(M3UniverseQueryTool {
+        paths: paths.clone(),
+    });
+    tools.register(M3PeerPercentilesTool {
+        paths: paths.clone(),
+    });
+    tools.register(M3SemanticNeighborsTool {
+        paths: paths.clone(),
+    });
+    tools.register(M3EventsForTickerTool { paths });
 
     let process = AgentProcessConfig {
         trust_posture: TrustPosture::ConfinedTrusted,
@@ -1840,6 +2498,97 @@ mod tests {
             ),
             HookDecision::Allow
         ));
+
+        for forbidden_path in [
+            "data/munger/lake/m3.duckdb",
+            "lake/m3.duckdb",
+            "data/munger/lake/parquet/companies.parquet",
+            "parquet/facts_annual.parquet",
+            "workbench/watchlist.json",
+            "workbench/budget.json",
+            "workbench/themes.json",
+            "workbench/memos/AAPL.md",
+            "memos/ADSK.md",
+            "data/munger/something.json",
+        ] {
+            assert!(
+                matches!(
+                    hook.evaluate(
+                        "write_file",
+                        &json!({"path": forbidden_path, "content": "x"}),
+                        ToolCapability::Write
+                    ),
+                    HookDecision::Deny(_)
+                ),
+                "expected deny for {forbidden_path}"
+            );
+            assert!(
+                matches!(
+                    hook.evaluate(
+                        "read_file",
+                        &json!({"path": forbidden_path}),
+                        ToolCapability::Read
+                    ),
+                    HookDecision::Deny(_)
+                ),
+                "expected read-arg deny for {forbidden_path}"
+            );
+        }
+
+        assert!(matches!(
+            hook.evaluate(
+                "m3_update_draft",
+                &json!({"ticker": "AAPL", "extra_field": "bad"}),
+                ToolCapability::Write
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "web_fetch",
+                &json!({"url": "https://example.com"}),
+                ToolCapability::Network
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            hook.evaluate("mystery_tool", &json!({}), ToolCapability::Unknown),
+            HookDecision::Deny(_)
+        ));
+
+        // Normal read queries on Lakehouse tools should pass without false positives.
+        assert!(matches!(
+            hook.evaluate(
+                "m3_semantic_neighbors",
+                &json!({"query": "CAD software subscription business", "limit": 10}),
+                ToolCapability::Read
+            ),
+            HookDecision::Allow
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "m3_universe_query",
+                &json!({"min_roic_5y": 15, "exclude_financials": true, "limit": 20}),
+                ToolCapability::Read
+            ),
+            HookDecision::Allow
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "m3_peer_percentiles",
+                &json!({"ticker": "ADSK", "limit": 10}),
+                ToolCapability::Read
+            ),
+            HookDecision::Allow
+        ));
+        assert!(matches!(
+            hook.evaluate(
+                "m3_events_for_ticker",
+                &json!({"ticker": "ADSK"}),
+                ToolCapability::Read
+            ),
+            HookDecision::Allow
+        ));
     }
 
     #[test]
@@ -2073,5 +2822,325 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedded_m3_executes_lakehouse_readonly_tools_and_blocks_lake_and_budget_writes() {
+        let handle = std::thread::Builder::new()
+            .name("m3-test-lake-tools".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+        use crate::lake::{LakeCompanyRow, UniverseRow};
+        use crate::lake_l1::{DocChunkRow, LakeEventRow, LakeFilingRow};
+        use crate::latent::{
+            LOCAL_EMBEDDING_DIM, LOCAL_EMBEDDING_MODEL, encode_embedding_json, local_embed,
+            sha256_hex,
+        };
+
+        let (dir, paths) = temp_m3_workspace("lake_tools");
+        {
+            let mut db = LakeDb::open(&paths).unwrap();
+            let mk_row = |ticker: &str, cik: &str, name: &str, roic: i64| UniverseRow {
+                ticker: ticker.to_owned(),
+                cik: cik.to_owned(),
+                name: name.to_owned(),
+                exchange: "NASDAQ".to_owned(),
+                sic: Some(7372),
+                sic_description: Some("Prepackaged Software".to_owned()),
+                is_financial: false,
+                latest_filing_end: Some("2026-01-31".to_owned()),
+                years_of_data: 8,
+                quality_score: Decimal::from(90),
+                in_price_pool: true,
+                in_watchlist: ticker == "AAPL",
+                bucket_opt: (ticker == "AAPL").then_some(Bucket::Core),
+                latest_price: Some(Decimal::from(180)),
+                strike_price: Some(Decimal::from(200)),
+                distance_to_strike_pct: Some(Decimal::from(-10)),
+                strict_fcf_yield_pct: Some(Decimal::from(5)),
+                roic_5y_avg_pct: Some(Decimal::from(roic)),
+                roic_5y_stddev_pct: Some(Decimal::from(2)),
+                gross_margin_5y_avg_pct: Some(Decimal::from(75)),
+                gross_margin_5y_stddev_pct: Some(Decimal::from(1)),
+                share_change_3y_pct: Some(Decimal::from(-2)),
+                sbc_to_ocf_pct: Some(Decimal::from(8)),
+                net_debt_to_oe: Some(Decimal::ZERO),
+                strict_owner_earnings: Some(Decimal::from(2_000_000_000i64)),
+                warnings_count: 0,
+                warnings_json: "[]".to_owned(),
+                raw_sha256: Some("abc123".to_owned()),
+            };
+            let rows = vec![
+                mk_row("ADSK", "0000769397", "Autodesk Inc.", 42),
+                mk_row("PTC", "0000857005", "PTC Inc.", 21),
+                mk_row("CDNS", "0000813672", "Cadence Design", 36),
+                mk_row("SNPS", "0000883241", "Synopsys Inc.", 28),
+            ];
+            let companies: Vec<LakeCompanyRow> = rows
+                .iter()
+                .map(|r| LakeCompanyRow {
+                    cik: r.cik.clone(),
+                    ticker: r.ticker.clone(),
+                    name: r.name.clone(),
+                    exchange: r.exchange.clone(),
+                    sic: r.sic,
+                    sic_description: r.sic_description.clone(),
+                    is_financial: false,
+                    is_active: true,
+                })
+                .collect();
+            db.replace_sec_lake_data(&companies, &[], &[], &rows).unwrap();
+            db.upsert_filings(&[LakeFilingRow {
+                accession_no: "0000769397-26-000001".to_owned(),
+                cik: "0000769397".to_owned(),
+                ticker: "ADSK".to_owned(),
+                form: "10-K".to_owned(),
+                filing_date: "2026-03-15".to_owned(),
+                report_date: Some("2026-01-31".to_owned()),
+                primary_document: Some("adsk10k.htm".to_owned()),
+                primary_doc_description: Some("Form 10-K".to_owned()),
+                items_json: "[]".to_owned(),
+                filing_url: "https://www.sec.gov/Archives/edgar/data/769397/adsk10k.htm".to_owned(),
+                ingested_at_ms: 1_795_000_000_000,
+            }])
+            .unwrap();
+            db.upsert_events(&[LakeEventRow {
+                event_id: "ev-adsk-1".to_owned(),
+                source: "sec_edgar".to_owned(),
+                cik: Some("0000769397".to_owned()),
+                ticker: Some("ADSK".to_owned()),
+                event_type: "10-K".to_owned(),
+                occurred_at_ms: 1_795_000_000_000,
+                filing_date: Some("2026-03-15".to_owned()),
+                title: "ADSK Annual Report 10-K".to_owned(),
+                summary: "Subscription CAD and construction software".to_owned(),
+                url: "https://www.sec.gov/Archives/edgar/data/769397/adsk10k.htm".to_owned(),
+                metadata_json: "{}".to_owned(),
+                processed_mask: 0,
+            }])
+            .unwrap();
+
+            let mk_chunk = |id: &str, cik: &str, ticker: &str, text: &str| DocChunkRow {
+                chunk_id: id.to_owned(),
+                cik: cik.to_owned(),
+                ticker: ticker.to_owned(),
+                doc_type: "10-K".to_owned(),
+                source_id: "0000769397-26-000001".to_owned(),
+                period_end: Some("2026-01-31".to_owned()),
+                filing_date: Some("2026-03-15".to_owned()),
+                section: "item_1".to_owned(),
+                title: format!("{ticker} Business"),
+                content: text.to_owned(),
+                content_sha256: sha256_hex(text.as_bytes()),
+                source_url: format!("https://www.sec.gov/Archives/edgar/data/{cik}/{id}.htm"),
+                embedding_model: LOCAL_EMBEDDING_MODEL.to_owned(),
+                embedding_dim: LOCAL_EMBEDDING_DIM,
+                embedding_json: encode_embedding_json(&local_embed(text)),
+            };
+            db.upsert_doc_chunks(&[
+                mk_chunk(
+                    "chk-adsk-1",
+                    "0000769397",
+                    "ADSK",
+                    "Autodesk builds engineering CAD and BIM subscription software for architecture and manufacturing.",
+                ),
+                mk_chunk(
+                    "chk-ptc-1",
+                    "0000857005",
+                    "PTC",
+                    "PTC provides industrial CAD and PLM subscription software for discrete manufacturing.",
+                ),
+            ])
+            .unwrap();
+        }
+
+        let fs = Arc::new(M3WorkbenchFs::new(paths.clone()));
+        let provider = MockLlmProvider::new().with_responses(vec![
+            tool_call_response(
+                "call_uq",
+                "m3_universe_query",
+                json!({"min_roic_5y": 20, "exclude_financials": true, "limit": 10}),
+            ),
+            tool_call_response(
+                "call_pp",
+                "m3_peer_percentiles",
+                json!({"ticker": "ADSK", "limit": 5}),
+            ),
+            tool_call_response(
+                "call_sn",
+                "m3_semantic_neighbors",
+                json!({"ticker": "ADSK", "limit": 5}),
+            ),
+            tool_call_response(
+                "call_ev",
+                "m3_events_for_ticker",
+                json!({"ticker": "ADSK", "filings_limit": 5, "events_limit": 5, "chunks_limit": 5}),
+            ),
+            // Blocked writes against DuckDB, Parquet, watchlist.json, journal.json, budget.json, human_judgment
+            tool_call_response(
+                "call_bad_duck",
+                "write_forbidden",
+                json!({"path": "data/munger/lake/m3.duckdb", "sql": "DROP TABLE research_runs"}),
+            ),
+            tool_call_response(
+                "call_bad_parquet",
+                "write_forbidden",
+                json!({"path": "data/munger/lake/parquet/companies.parquet"}),
+            ),
+            tool_call_response(
+                "call_bad_watch",
+                "write_forbidden",
+                json!({"path": "workbench/watchlist.json"}),
+            ),
+            tool_call_response(
+                "call_bad_journal",
+                "write_forbidden",
+                json!({"path": "workbench/journal.json"}),
+            ),
+            tool_call_response(
+                "call_bad_budget",
+                "write_forbidden",
+                json!({"path": "workbench/budget.json"}),
+            ),
+            tool_call_response(
+                "call_bad_hj",
+                "m3_update_draft",
+                json!({"ticker": "AAPL", "human_judgment": {"my_stance": "BUY"}}),
+            ),
+            text_response("已通过只读湖仓工具完成 ADSK 同行与语义近邻检索，未触碰任何红线文件。"),
+        ]);
+
+        struct DummyForbiddenWriteTool(Arc<AtomicBool>);
+        impl Tool for DummyForbiddenWriteTool {
+            fn name(&self) -> &str {
+                "write_forbidden"
+            }
+            fn description(&self) -> &str {
+                "test-only forbidden write tool"
+            }
+            fn parameters_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn capability(&self, _arguments: &Value) -> ToolCapability {
+                ToolCapability::Write
+            }
+            fn execute(&self, _arguments: Value, _ctx: &ToolContext) -> ToolResult {
+                self.0.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok(json!({"hacked": true})) })
+            }
+        }
+
+        let forbidden_ran = Arc::new(AtomicBool::new(false));
+        let mut tools = ToolRegistry::new();
+        tools.register(M3StatusTool { paths: paths.clone() });
+        tools.register(M3ReportTool { paths: paths.clone() });
+        tools.register(M3DossierTool { paths: paths.clone() });
+        tools.register(M3UpdateDraftTool {
+            paths: paths.clone(),
+            fs: Arc::clone(&fs),
+        });
+        tools.register(M3UniverseQueryTool { paths: paths.clone() });
+        tools.register(M3PeerPercentilesTool { paths: paths.clone() });
+        tools.register(M3SemanticNeighborsTool { paths: paths.clone() });
+        tools.register(M3EventsForTickerTool { paths: paths.clone() });
+        tools.register(DummyForbiddenWriteTool(Arc::clone(&forbidden_ran)));
+
+        let app = EmbeddedAlan::boot(
+            EmbeddedConfig::ephemeral(LlmSource::Client(LlmClient::new(provider.clone())))
+                .with_process_config(AgentProcessConfig {
+                    trust_posture: TrustPosture::ConfinedTrusted,
+                    ..Default::default()
+                })
+                .with_mount("/mnt/m3", Arc::clone(&fs) as Arc<dyn FileServer>, Access::ReadOnly)
+                .with_tools(tools)
+                .with_tool_policy_hook(Arc::new(M3ToolPolicyHook))
+                .with_builtin_skills(false)
+                .with_system_prompt_mode(SystemPromptMode::Replace {
+                    prompt: M3_INTERROGATOR_SYSTEM_PROMPT.to_string(),
+                }),
+        )
+        .await
+        .expect("boot m3 embedded");
+
+        let client = app.root_agent();
+        let mut stream = client.event_stream().await.unwrap();
+        let sub_id = client
+            .submit_text("查询高 ROIC 公司并分析 ADSK 的同行与事件")
+            .await
+            .unwrap();
+
+        let mut finished_tools: Vec<(String, String, String)> = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let ev = tokio::time::timeout_at(deadline, stream.next_event())
+                .await
+                .expect("timed out waiting for turn finish")
+                .expect("event stream ok");
+            match ev {
+                EmbedEvent::ToolFinished {
+                    name,
+                    status,
+                    preview,
+                    ..
+                } => {
+                    finished_tools.push((name, status, preview.unwrap_or_default()));
+                }
+                EmbedEvent::TurnFinished {
+                    submission_id,
+                    status,
+                    ..
+                } if submission_id == sub_id => {
+                    assert_eq!(status, UiInputStatus::Completed);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        for tool_name in [
+            "m3_universe_query",
+            "m3_peer_percentiles",
+            "m3_semantic_neighbors",
+            "m3_events_for_ticker",
+        ] {
+            assert!(
+                finished_tools
+                    .iter()
+                    .any(|(n, st, _)| n == tool_name && st == "completed"),
+                "expected {tool_name} to complete cleanly, got {finished_tools:?}"
+            );
+        }
+
+        assert!(!forbidden_ran.load(Ordering::SeqCst));
+        let recorded = provider.recorded_requests();
+        for marker in [
+            "m3.duckdb",
+            "parquet/",
+            "watchlist.json",
+            "journal.json",
+            "budget.json",
+            "human_judgment",
+        ] {
+            assert!(
+                recorded.iter().any(|req| {
+                    req.messages
+                        .iter()
+                        .any(|m| m.content.contains("红线拦截") && m.content.contains(marker))
+                }),
+                "expected ToolPolicyHook denial feedback for {marker}"
+            );
+        }
+
+        let _ = app.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+                });
+            })
+            .expect("spawn test thread");
+        handle.join().expect("embedded lake tools test panicked");
     }
 }

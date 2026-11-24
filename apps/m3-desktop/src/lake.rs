@@ -1151,6 +1151,7 @@ impl LakeDb {
         self.reconcile_prices_daily_trade_dates()?;
         self.refresh_parquet_views(paths)?;
         self.ensure_l1_schema(paths)?;
+        self.ensure_l2_schema()?;
         Ok(())
     }
 

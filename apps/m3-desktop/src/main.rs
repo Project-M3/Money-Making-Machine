@@ -1,14 +1,17 @@
 mod alan_interrogator;
 mod app_config;
+mod budget;
 mod calculator;
 mod cli;
 mod edgar;
 mod events;
 mod lake;
 mod lake_l1;
+mod lake_l2;
 mod latent;
 mod market;
 mod model;
+mod research;
 mod store;
 mod ui;
 mod universe;
@@ -168,9 +171,9 @@ fn main() -> Result<()> {
                 MenuItem::action("简报收件箱", ViewInbox),
                 MenuItem::action("全市场雷达", ViewUniverse),
                 MenuItem::action("篮子总览", ViewBaskets),
-                MenuItem::action("财报与 K 线", ViewDossier),
-                MenuItem::action("Alan 审讯台", ViewAgent),
-                MenuItem::action("决策账本", ViewJournal),
+                MenuItem::action("财报与活研报", ViewDossier),
+                MenuItem::action("Research Desk · Alan", ViewAgent),
+                MenuItem::action("主题与账本", ViewJournal),
                 MenuItem::action("返回篮子总览", BackToBaskets),
                 MenuItem::separator(),
                 MenuItem::action("同步财报与价格", SyncData),
