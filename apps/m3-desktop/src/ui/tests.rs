@@ -1191,3 +1191,14 @@ fn sidebar_dock_notice_prioritizes_errors_then_active_tasks_then_info() {
     assert_eq!(err_notice.dot_color, CORAL_FG);
     assert!(err_notice.dismissible);
 }
+
+#[test]
+fn compact_sidebar_version_label_shortens_rolling_beta_without_truncating_stable() {
+    use super::shell::compact_sidebar_version_label;
+
+    assert_eq!(
+        compact_sidebar_version_label("0.3.1-beta.20261124.6"),
+        "v0.3.1-beta.6"
+    );
+    assert_eq!(compact_sidebar_version_label("0.3.0"), "v0.3.0");
+}

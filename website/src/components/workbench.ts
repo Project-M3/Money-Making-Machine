@@ -419,8 +419,8 @@ export function mountWorkbench(container: HTMLElement): void {
             <span class="mono" style="color: var(--emerald)">\$0.42 / \$10.00</span>
           </div>
           <div class="m3-dock-tray-row" style="color: var(--ink-muted)">
-            <span class="mono">v0.3.0 · stable</span>
-            <span class="mono">PAPER ONLY</span>
+            <span class="mono">v0.3.0</span>
+            <span class="mono">stable</span>
           </div>
         </div>
       </div>
@@ -471,8 +471,7 @@ export function mountWorkbench(container: HTMLElement): void {
           <div class="m3-kpi"><span>Unread</span><strong style="color: var(--emerald)" class="tabular">${unreadCount}</strong></div>
         </div>
         <div class="m3-kpi-badges">
-          <span class="status-pill pill-emerald">AI Budget \$0.42 / \$10.00</span>
-          <span class="status-pill pill-emerald">L0/L1 · 0 Flagship Token</span>
+          <button type="button" class="action-btn action-btn--primary" data-trigger-sync>Catch-up</button>
         </div>
       </div>
 
@@ -1085,14 +1084,16 @@ export function mountWorkbench(container: HTMLElement): void {
       render();
     });
 
-    container.querySelector('[data-trigger-sync]')?.addEventListener('click', () => {
-      state.dockNotice = {
-        tag: 'SYNCED',
-        message: 'SEC XBRL facts & Tier-1 quotes verified across 5,142 US issuers. 0 LLM tokens spent.',
-        tone: 'emerald',
-        dismissible: true,
-      };
-      render();
+    container.querySelectorAll<HTMLElement>('[data-trigger-sync]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.dockNotice = {
+          tag: 'SYNCED',
+          message: 'SEC XBRL facts & Tier-1 quotes verified across 5,142 US issuers. 0 LLM tokens spent.',
+          tone: 'emerald',
+          dismissible: true,
+        };
+        render();
+      });
     });
 
     container.querySelector('[data-dismiss-dock]')?.addEventListener('click', () => {

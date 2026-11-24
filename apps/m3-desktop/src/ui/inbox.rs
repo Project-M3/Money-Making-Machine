@@ -672,7 +672,6 @@ impl MungerWorkbench {
         let u_sum = self.universe_summary.clone().unwrap_or_default();
         let l1_sum = self.inbox_summary.clone().unwrap_or_default();
         let last_catchup = fmt_time_cn(l1_sum.last_catchup_ms);
-        let (budget_label, budget_col) = budget_watermark_summary(self.budget_report.as_ref());
 
         div()
             .h(px(44.))
@@ -687,10 +686,12 @@ impl MungerWorkbench {
             .gap_3()
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap_3()
-                    .min_w_0()
                     .child(journal_stat(
                         "全美股池",
                         format!("{} 家", u_sum.total_companies),
@@ -727,85 +728,39 @@ impl MungerWorkbench {
                     )),
             )
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(badge(
-                        budget_label,
-                        budget_col,
-                        if budget_col == CORAL_FG {
-                            CORAL_BG
-                        } else if budget_col == GOLD_FG {
-                            GOLD_BG
+                div().flex_shrink_0().flex().items_center().gap_2().child(
+                    div()
+                        .id("inbox-catchup-btn")
+                        .px_3()
+                        .py_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .border_1()
+                        .when(self.inbox_catching_up, |d| {
+                            d.bg(rgb(BG_WELL))
+                                .border_color(rgb(BORDER_SUBTLE))
+                                .text_color(rgb(INK_MUTED))
+                        })
+                        .when(!self.inbox_catching_up, |d| {
+                            d.bg(rgb(CTA_BG))
+                                .border_color(rgb(CTA_BG))
+                                .hover(|s| s.bg(rgb(CTA_BG_HOVER)))
+                                .active(|s| s.bg(rgb(CTA_BG_ACTIVE)))
+                                .text_color(rgb(CTA_INK))
+                        })
+                        .font_family(self.fonts.ui.clone())
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .whitespace_nowrap()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.start_l1_catchup(false, cx);
+                        }))
+                        .child(if self.inbox_catching_up {
+                            "追平中…"
                         } else {
-                            EMERALD_BG
-                        },
-                        if budget_col == CORAL_FG {
-                            CORAL_BORDER
-                        } else if budget_col == GOLD_FG {
-                            GOLD_BORDER
-                        } else {
-                            EMERALD_BORDER
-                        },
-                        &self.fonts,
-                    ))
-                    .child(badge(
-                        "L0/L1 · 0 Flagship Token".into(),
-                        EMERALD_FG,
-                        EMERALD_BG,
-                        EMERALD_BORDER,
-                        &self.fonts,
-                    ))
-                    .when_some(self.inbox_catchup_progress.clone(), |d, msg| {
-                        d.child(
-                            div()
-                                .max_w(px(220.))
-                                .px_2()
-                                .py_0p5()
-                                .rounded_xs()
-                                .bg(rgba(SKY_BG))
-                                .border_1()
-                                .border_color(rgba(SKY_BORDER))
-                                .font_family(self.fonts.mono_term.clone())
-                                .text_size(px(10.))
-                                .text_color(rgb(SKY_FG))
-                                .truncate()
-                                .child(msg),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id("inbox-catchup-btn")
-                            .px_3()
-                            .py_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .border_1()
-                            .when(self.inbox_catching_up, |d| {
-                                d.bg(rgb(BG_WELL))
-                                    .border_color(rgb(BORDER_SUBTLE))
-                                    .text_color(rgb(INK_MUTED))
-                            })
-                            .when(!self.inbox_catching_up, |d| {
-                                d.bg(rgb(CTA_BG))
-                                    .border_color(rgb(CTA_BG))
-                                    .hover(|s| s.bg(rgb(CTA_BG_HOVER)))
-                                    .active(|s| s.bg(rgb(CTA_BG_ACTIVE)))
-                                    .text_color(rgb(CTA_INK))
-                            })
-                            .font_family(self.fonts.ui.clone())
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.start_l1_catchup(false, cx);
-                            }))
-                            .child(if self.inbox_catching_up {
-                                "追平中…"
-                            } else {
-                                "追平事件流"
-                            }),
-                    ),
+                            "追平事件流"
+                        }),
+                ),
             )
     }
 

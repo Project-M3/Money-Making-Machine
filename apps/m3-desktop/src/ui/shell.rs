@@ -7,6 +7,19 @@ use gpui::{
     Context, MouseButton, MouseDownEvent, WindowControlArea, div, prelude::*, px, rgb, rgba,
 };
 
+/// Compresses rolling beta tags like `0.3.1-beta.20261124.6` into `v0.3.1-beta.6`
+/// so version badges never clip inside the 224px sidebar dock.
+pub(super) fn compact_sidebar_version_label(raw: &str) -> String {
+    let trimmed = raw.trim().trim_start_matches('v');
+    if let Some((base, rest)) = trimmed.split_once("-beta.")
+        && let Some((_, build)) = rest.rsplit_once('.')
+        && !build.is_empty()
+    {
+        return format!("v{base}-beta.{build}");
+    }
+    format!("v{trimmed}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarDockNotice {
     pub tag: &'static str,
@@ -579,8 +592,12 @@ impl MungerWorkbench {
         }
 
         let version_badge = if let Some(ver) = &self.update_applied_version {
+            let short_ver = compact_sidebar_version_label(ver);
             div()
                 .id("sidebar-update-restart")
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
                 .px_1p5()
                 .py_0p5()
                 .rounded_xs()
@@ -591,14 +608,18 @@ impl MungerWorkbench {
                 .font_family(self.fonts.mono_num.clone())
                 .text_size(px(10.))
                 .text_color(rgb(EMERALD_FG))
+                .truncate()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.restart_after_update(cx);
                 }))
-                .child(format!("重启 v{ver}"))
+                .child(format!("重启 {short_ver}"))
         } else if let Some(notice) = &self.update_notice {
-            let latest = notice.latest_version.clone();
+            let short_ver = compact_sidebar_version_label(&notice.latest_version);
             div()
                 .id("sidebar-update-apply")
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
                 .px_1p5()
                 .py_0p5()
                 .rounded_xs()
@@ -609,14 +630,18 @@ impl MungerWorkbench {
                 .font_family(self.fonts.mono_num.clone())
                 .text_size(px(10.))
                 .text_color(rgb(SKY_FG))
+                .truncate()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.start_update_apply(cx);
                 }))
-                .child(format!("↑ v{latest}"))
+                .child(format!("↑ {short_ver}"))
         } else {
+            let short_ver = compact_sidebar_version_label(update::current_binary_version());
             div()
                 .id("sidebar-update-check")
-                .px_1()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
                 .py_0p5()
                 .rounded_xs()
                 .cursor_pointer()
@@ -624,15 +649,14 @@ impl MungerWorkbench {
                 .font_family(self.fonts.mono_num.clone())
                 .text_size(px(10.))
                 .text_color(rgb(INK_MUTED))
+                .truncate()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.start_update_check(true, cx);
                 }))
-                .child(format!(
-                    "v{} · {}",
-                    update::current_binary_version(),
-                    self.update_channel.as_str()
-                ))
+                .child(short_ver)
         };
+
+        let channel_label = self.update_channel.as_str().to_owned();
 
         dock.child(
             div()
@@ -648,26 +672,31 @@ impl MungerWorkbench {
                         .gap_2()
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
                                 .flex()
                                 .items_center()
                                 .gap_1p5()
-                                .child(div().w(px(5.)).h(px(5.)).rounded_full().bg(rgb(
-                                    if total_companies > 0 {
+                                .child(div().w(px(5.)).h(px(5.)).flex_shrink_0().rounded_full().bg(
+                                    rgb(if total_companies > 0 {
                                         EMERALD_FG
                                     } else {
                                         INK_MUTED
-                                    },
-                                )))
+                                    }),
+                                ))
                                 .child(
                                     div()
                                         .font_family(self.fonts.mono_num.clone())
                                         .text_size(px(10.))
                                         .text_color(rgb(INK_SECONDARY))
+                                        .truncate()
                                         .child(lake_label),
                                 ),
                         )
                         .child(
                             div()
+                                .flex_shrink_0()
                                 .font_family(self.fonts.mono_num.clone())
                                 .text_size(px(10.))
                                 .text_color(rgb(budget_col))
@@ -683,10 +712,11 @@ impl MungerWorkbench {
                         .child(version_badge)
                         .child(
                             div()
+                                .flex_shrink_0()
                                 .font_family(self.fonts.mono_term.clone())
                                 .text_size(px(10.))
                                 .text_color(rgb(INK_MUTED))
-                                .child("PAPER ONLY"),
+                                .child(channel_label),
                         ),
                 ),
         )
@@ -1002,12 +1032,23 @@ impl MungerWorkbench {
             .bg(rgb(BG_STATUSLINE))
             .border_t_1()
             .border_color(rgb(BORDER_HAIRLINE))
+            .gap_4()
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().w(px(5.)).h(px(5.)).rounded_full().bg(rgb(dot_col)))
+                    .child(
+                        div()
+                            .w(px(5.))
+                            .h(px(5.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(rgb(dot_col)),
+                    )
                     .child(
                         div()
                             .font_family(self.fonts.mono_term.clone())
@@ -1019,6 +1060,7 @@ impl MungerWorkbench {
             )
             .child(
                 div()
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
                     .gap_3()
