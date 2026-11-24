@@ -23,15 +23,15 @@ open artifacts/M3.app
 - **桌面端交互**：启动时低频静默检查更新（`beta` TTL 1h / `stable` TTL 6h）；右上角可点击更新药丸一键下载校验并重启应用，底部状态栏 `vX.Y.Z · channel` 与命令面板 `⌘K` 也提供检查更新与切换通道入口。
 - **CLI 命令**：`m3 -V`、`m3 --version`、`m3 version`、`m3 workspace [show|set <PATH>]`、`m3 update [--check] [--channel stable|beta] [--version VER] [--force]`、`m3 update channel [stable|beta]`。
 
-CLI 包装脚本 `./m3`（仓库根目录运行 `apps/m3-desktop/m3`，或安装后的 `m3`）提供面向 Alan 与自动化的结构化 JSON 接口（含 `m3 universe status|sync|screen|peers` 全美股湖仓子命令），详见 [Agent 接口](../../docs/agent-interface.md)。
+CLI 包装脚本 `./m3`（仓库根目录运行 `apps/m3-desktop/m3`，或安装后的 `m3`）提供面向 Alan 与自动化的结构化 JSON 接口（含 `m3 universe status|sync|screen|peers|similar`、`m3 events catchup|list` 与 `m3 inbox list|triage`），详见 [Agent 接口](../../docs/agent-interface.md)。
 
 ## 核心工作区视图
 
-1. **篮子总览（`⌘1`）**：核心（`IN`）、待审讯（`WATCH`）、否决（`OUT`）与能力圈外 / **Too Hard 博物馆**（`TOO HARD`，支持按 `4` 快速聚焦拒绝标的及警示原因）四篮子矩阵与看板视图，展示现价、击球价、距击球价安全边际 %、5 年 ROIC 均值、严苛 FCF 收益率、3 年股本变化与自动预警状态。点击任意公司直接进入体检卡。
-2. **财报与 K 线 / 公司体检卡（`⌘2`）**：按 FY / TTM 口径切换展示 4 个芒格核心支柱卡片、现金流/CapEx/SBC 比例图、交互式“查理计算器沙盒”（调节倍数/目标回报/预期增速并保存击球假设）以及多年财务与 SHA-256 溯源表。
-3. **Alan 审讯台（`⌘3`）**：进程内 `EmbeddedAlan` 跨学科审讯工作台，实时展示 Turing Tape 与可跳转的 Acme 一手财报/XBRL 证据标签，保留 AI 草稿与人类主权 `human_judgment` 严格分离。
+1. **简报收件箱（`⌘1`，默认启动视图）**：L1 事件驱动研报分拣台（`0 Flagship Token`），展示全美股覆盖、语义索引片段数、未读信号与「追平事件流」后台任务；支持按「未读 / 全部 / 新浮现 / 隐空间传导 / 击球与红灯 / 已归档」过滤，右侧呈现**一手原文出处证据卡片**与 Linear 风格快捷键分拣（`j`/`k` 移动、`↵` 打开档案、`w` 入观察池、`x` Too Hard、`e` 归档、`u` 标为未读、`d` 交由 Alan 审讯、`r` 追平事件流）。
+2. **全市场雷达（`⌘2` / `u`）**：基于嵌入式 DuckDB + ZSTD Parquet（`data/munger/lake/`）的 L0/L1 全美股筛选台，支持 SEC `companyfacts.zip` 批量解析、SIC 6000–6799 金融业过滤、价格方案 1（Top 400 质量候选池 + 观察池日级报价）、**ROIC × 严苛 FCF 收益率**二维散点图、**混合语义相似搜索（Lookalike）** 与详情抽屉「找相似公司」按钮、5 年下钻与同行分位数对照，以及一键加入观察池（`WATCH`）。
+3. **篮子总览（`⌘3`）**：核心（`IN`）、待审讯（`WATCH`）、否决（`OUT`）与能力圈外 / **Too Hard 博物馆**（`TOO HARD`，支持按 `4` 快速聚焦拒绝标的及警示原因）四篮子矩阵与看板视图，展示现价、击球价、距击球价安全边际 %、5 年 ROIC 均值、严苛 FCF 收益率、3 年股本变化与自动预警状态。点击任意公司直接进入体检卡。
 4. **决策账本（`⌘4`）**：事前冻结记录 `TOO_HARD`、`WAIT`、`PAPER_BUY`、`PAPER_SELL` 决策，长期对照 `100% 现金` 与 `标普 500 (^GSPC)` 机会成本（纯研究模拟夹具，无任何实盘连接）。
-5. **全市场雷达（`⌘5` / `u`）**：基于嵌入式 DuckDB + ZSTD Parquet（`data/munger/lake/`）的 L0 全美股筛选台，支持 SEC `companyfacts.zip` 批量解析、SIC 6000–6799 金融业过滤、价格方案 1（Top 400 质量候选池 + 观察池日级报价）、**ROIC × 严苛 FCF 收益率**二维散点图、5 年下钻与同行分位数对照，以及一键加入观察池（`WATCH`）。
+5. **公司体检卡 & Alan 审讯台（点击标的 / `⌘K`）**：按 FY / TTM 口径切换展示 4 个芒格核心支柱卡片、现金流/CapEx/SBC 比例图、交互式“查理计算器沙盒”、多年财务与 SHA-256 溯源表，以及进程内 `EmbeddedAlan` 跨学科审讯工作台（保留 AI 草稿与人类主权 `human_judgment` 严格分离）。
 
 ## 数据与验证
 

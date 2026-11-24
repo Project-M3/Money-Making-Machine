@@ -3,7 +3,10 @@ mod app_config;
 mod calculator;
 mod cli;
 mod edgar;
+mod events;
 mod lake;
+mod lake_l1;
+mod latent;
 mod market;
 mod model;
 mod store;
@@ -25,6 +28,8 @@ actions!(
     [
         Quit,
         OpenPalette,
+        ViewInbox,
+        ViewUniverse,
         ViewBaskets,
         ViewDossier,
         ViewAgent,
@@ -148,9 +153,9 @@ fn main() -> Result<()> {
         cx.bind_keys([
             gpui::KeyBinding::new("cmd-q", Quit, None),
             gpui::KeyBinding::new("cmd-k", OpenPalette, None),
-            gpui::KeyBinding::new("cmd-1", ViewBaskets, None),
-            gpui::KeyBinding::new("cmd-2", ViewDossier, None),
-            gpui::KeyBinding::new("cmd-3", ViewAgent, None),
+            gpui::KeyBinding::new("cmd-1", ViewInbox, None),
+            gpui::KeyBinding::new("cmd-2", ViewUniverse, None),
+            gpui::KeyBinding::new("cmd-3", ViewBaskets, None),
             gpui::KeyBinding::new("cmd-4", ViewJournal, None),
             gpui::KeyBinding::new("cmd-[", BackToBaskets, None),
             gpui::KeyBinding::new("cmd-r", SyncData, None),
@@ -160,6 +165,8 @@ fn main() -> Result<()> {
             items: vec![
                 MenuItem::action("命令面板", OpenPalette),
                 MenuItem::separator(),
+                MenuItem::action("简报收件箱", ViewInbox),
+                MenuItem::action("全市场雷达", ViewUniverse),
                 MenuItem::action("篮子总览", ViewBaskets),
                 MenuItem::action("财报与 K 线", ViewDossier),
                 MenuItem::action("Alan 审讯台", ViewAgent),
@@ -229,6 +236,20 @@ fn main() -> Result<()> {
                 cx.on_action(move |_: &OpenPalette, cx| {
                     let _ = wp.update(cx, |v, window, cx| {
                         v.toggle_palette(window);
+                        cx.notify();
+                    });
+                });
+                let wi = window;
+                cx.on_action(move |_: &ViewInbox, cx| {
+                    let _ = wi.update(cx, |v, _, cx| {
+                        v.switch_view(NavView::Inbox);
+                        cx.notify();
+                    });
+                });
+                let wu_view = window;
+                cx.on_action(move |_: &ViewUniverse, cx| {
+                    let _ = wu_view.update(cx, |v, _, cx| {
+                        v.switch_view(NavView::Universe);
                         cx.notify();
                     });
                 });

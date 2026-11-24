@@ -4,6 +4,7 @@ use crate::{
         LakeAnnualRow, LakeDb, UniverseDrawerDetails, UniverseFilter, UniverseRow, UniverseSortBy,
         UniverseSummary,
     },
+    lake_l1::{SimilarCompanyHit, SimilarSearchFilter},
     model::{Bucket, WarningFlag, WarningSeverity},
     store::{self, WorkspacePaths},
     universe::{self, UniverseSyncOptions, UniverseSyncReport},
@@ -12,6 +13,24 @@ use gpui::{Context, bounds, canvas, div, fill, point, prelude::*, px, rgb, rgba,
 use rust_decimal::Decimal;
 use std::collections::HashSet;
 use std::sync::mpsc;
+use std::time::Instant;
+
+/// Search mode in the Universe Radar control strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UniverseSearchMode {
+    #[default]
+    Keyword,
+    Similar,
+}
+
+impl UniverseSearchMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Keyword => "关键词",
+            Self::Similar => "相似 Lookalike",
+        }
+    }
+}
 
 /// Named Munger screening presets in the Universe Radar control strip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +74,8 @@ pub struct UniverseViewState {
     pub max_share_change_3y: Option<Decimal>,
     pub max_net_debt_to_oe: Option<Decimal>,
     pub strike_zone_only: bool,
+    pub search_mode: UniverseSearchMode,
+    pub similar_as_ticker: bool,
     pub query: String,
     pub search_focused: bool,
     pub sort_by: UniverseSortBy,
@@ -76,6 +97,8 @@ impl Default for UniverseViewState {
             max_share_change_3y: None,
             max_net_debt_to_oe: None,
             strike_zone_only: false,
+            search_mode: UniverseSearchMode::Keyword,
+            similar_as_ticker: false,
             query: String::new(),
             search_focused: false,
             sort_by: UniverseSortBy::QualityScore,
@@ -190,9 +213,40 @@ impl UniverseViewState {
             && self.max_share_change_3y.is_none()
             && self.max_net_debt_to_oe.is_none()
             && !self.strike_zone_only
+            && self.search_mode == UniverseSearchMode::Keyword
+            && !self.similar_as_ticker
             && self.query.trim().is_empty()
             && self.sort_by == UniverseSortBy::QualityScore
             && !self.sort_asc
+    }
+
+    pub fn set_search_mode(&mut self, mode: UniverseSearchMode) {
+        self.search_mode = mode;
+        if mode == UniverseSearchMode::Keyword {
+            self.similar_as_ticker = false;
+        }
+        self.cursor_index = 0;
+    }
+
+    pub fn start_similar_for_ticker(&mut self, ticker: &str) {
+        self.search_mode = UniverseSearchMode::Similar;
+        self.similar_as_ticker = true;
+        self.query = ticker.trim().to_ascii_uppercase();
+        self.search_focused = false;
+        self.cursor_index = 0;
+    }
+
+    /// Converts UI state into a `LakeDb::search_similar` filter.
+    pub fn to_similar_filter(&self) -> SimilarSearchFilter {
+        SimilarSearchFilter {
+            min_roic_5y: self.min_roic_5y,
+            max_sbc_to_ocf: self.max_sbc_to_ocf,
+            exclude_financials: self.exclude_financials,
+            positive_strict_oe_only: self.positive_strict_oe_only,
+            in_price_pool_only: self.in_price_pool_only,
+            min_score: 0.0,
+            limit: self.limit.clamp(1, 50),
+        }
     }
 
     /// Converts UI state into a `LakeDb::screen_universe` query filter.
@@ -515,6 +569,8 @@ impl MungerWorkbench {
                 self.universe_lake_present = false;
                 self.universe_summary = None;
                 self.universe_rows.clear();
+                self.universe_similar_hits.clear();
+                self.universe_similar_query_ms = None;
                 self.universe_strike_zone_ciks.clear();
                 self.universe_selected_cik = None;
                 self.universe_selected_row = None;
@@ -523,6 +579,48 @@ impl MungerWorkbench {
             }
             Ok(Some(db)) => {
                 self.universe_lake_present = true;
+                let trimmed_query = self.universe_state.query.trim().to_owned();
+                if self.universe_state.search_mode == UniverseSearchMode::Similar
+                    && !trimmed_query.is_empty()
+                {
+                    match db.universe_summary() {
+                        Ok(summary) => self.universe_summary = Some(summary),
+                        Err(err) => {
+                            self.clear_universe_drawer_details();
+                            self.universe_error = Some(format!("读取全市场湖仓摘要失败: {err:#}"));
+                            return;
+                        }
+                    }
+                    let started = Instant::now();
+                    let sim_filter = self.universe_state.to_similar_filter();
+                    match db.search_similar(
+                        &trimmed_query,
+                        self.universe_state.similar_as_ticker,
+                        &sim_filter,
+                    ) {
+                        Ok(hits) => {
+                            let elapsed_ms =
+                                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            self.universe_similar_query_ms = Some(elapsed_ms);
+                            self.universe_rows = hits.iter().map(|h| h.company.clone()).collect();
+                            self.universe_similar_hits = hits;
+                            self.universe_error = None;
+                            self.sync_universe_drawer_selection(&db, None);
+                        }
+                        Err(err) => {
+                            self.universe_similar_hits.clear();
+                            self.universe_similar_query_ms = None;
+                            self.universe_rows.clear();
+                            self.clear_universe_drawer_details();
+                            self.universe_error = Some(format!("混合语义相似搜索失败: {err:#}"));
+                        }
+                    }
+                    return;
+                }
+
+                self.universe_similar_hits.clear();
+                self.universe_similar_query_ms = None;
+
                 match db.load_universe_snapshot(
                     &self.universe_state.to_lake_filter(),
                     self.universe_selected_cik.as_deref(),
@@ -536,44 +634,7 @@ impl MungerWorkbench {
                             self.universe_state.require_5y_history,
                         );
                         self.universe_error = None;
-
-                        let target_idx = self
-                            .universe_selected_cik
-                            .as_ref()
-                            .and_then(|sel| self.universe_rows.iter().position(|r| r.cik == *sel))
-                            .or_else(|| (!self.universe_rows.is_empty()).then_some(0));
-
-                        if let Some(idx) = target_idx {
-                            self.universe_state.cursor_index = idx;
-                            let target_row = self.universe_rows[idx].clone();
-                            let target_cik = target_row.cik.clone();
-                            self.universe_selected_cik = Some(target_cik.clone());
-                            self.universe_selected_row = Some(target_row);
-                            if let Some(details) = snapshot
-                                .selected_details
-                                .filter(|d| d.row.cik == target_cik)
-                            {
-                                self.apply_universe_drawer_details(details);
-                            } else {
-                                self.clear_universe_drawer_details();
-                                match db.load_drawer_details_by_cik(&target_cik, 5) {
-                                    Ok(Some(details)) => {
-                                        self.apply_universe_drawer_details(details)
-                                    }
-                                    Ok(None) => self.clear_universe_drawer_details(),
-                                    Err(err) => {
-                                        self.clear_universe_drawer_details();
-                                        self.universe_error =
-                                            Some(format!("读取全市场湖仓详情失败: {err:#}"));
-                                    }
-                                }
-                            }
-                        } else {
-                            self.universe_state.cursor_index = 0;
-                            self.universe_selected_cik = None;
-                            self.universe_selected_row = None;
-                            self.clear_universe_drawer_details();
-                        }
+                        self.sync_universe_drawer_selection(&db, snapshot.selected_details);
                     }
                     Err(err) => {
                         self.clear_universe_drawer_details();
@@ -587,6 +648,52 @@ impl MungerWorkbench {
                 self.universe_error = Some(format!("打开 m3.duckdb 失败: {err:#}"));
             }
         }
+    }
+
+    fn sync_universe_drawer_selection(
+        &mut self,
+        db: &LakeDb,
+        snapshot_details: Option<UniverseDrawerDetails>,
+    ) {
+        let target_idx = self
+            .universe_selected_cik
+            .as_ref()
+            .and_then(|sel| self.universe_rows.iter().position(|r| r.cik == *sel))
+            .or_else(|| (!self.universe_rows.is_empty()).then_some(0));
+
+        if let Some(idx) = target_idx {
+            self.universe_state.cursor_index = idx;
+            let target_row = self.universe_rows[idx].clone();
+            let target_cik = target_row.cik.clone();
+            self.universe_selected_cik = Some(target_cik.clone());
+            self.universe_selected_row = Some(target_row);
+            if let Some(details) = snapshot_details.filter(|d| d.row.cik == target_cik) {
+                self.apply_universe_drawer_details(details);
+            } else {
+                self.clear_universe_drawer_details();
+                match db.load_drawer_details_by_cik(&target_cik, 5) {
+                    Ok(Some(details)) => self.apply_universe_drawer_details(details),
+                    Ok(None) => self.clear_universe_drawer_details(),
+                    Err(err) => {
+                        self.clear_universe_drawer_details();
+                        self.universe_error = Some(format!("读取全市场湖仓详情失败: {err:#}"));
+                    }
+                }
+            }
+        } else {
+            self.universe_state.cursor_index = 0;
+            self.universe_selected_cik = None;
+            self.universe_selected_row = None;
+            self.clear_universe_drawer_details();
+        }
+    }
+
+    pub(super) fn find_similar_for_company(&mut self, ticker: &str, cx: &mut Context<Self>) {
+        self.universe_state.start_similar_for_ticker(ticker);
+        self.universe_selected_cik = None;
+        self.universe_selected_row = None;
+        self.reload_universe_from_lake();
+        cx.notify();
     }
 
     /// Selects a universe row by canonical CIK and loads its summary, annuals, and peers
@@ -858,7 +965,17 @@ impl MungerWorkbench {
             .flex_col()
             .gap_3();
 
-        if self.universe_rows.is_empty() {
+        if self.universe_state.search_mode == UniverseSearchMode::Similar {
+            if self.universe_state.query.trim().is_empty() {
+                left_pane = left_pane.child(self.render_universe_similar_prompt());
+            } else if self.universe_similar_hits.is_empty() {
+                left_pane = left_pane.child(self.render_universe_similar_empty(cx));
+            } else {
+                left_pane = left_pane.child(
+                    self.render_universe_similar_results(selected_row.map(|r| r.cik.as_str()), cx),
+                );
+            }
+        } else if self.universe_rows.is_empty() {
             left_pane = left_pane.child(self.render_universe_no_matches(cx));
         } else {
             left_pane = left_pane
@@ -1027,11 +1144,15 @@ impl MungerWorkbench {
         } else {
             rgb(BORDER_PILL)
         };
+        let search_placeholder = match self.universe_state.search_mode {
+            UniverseSearchMode::Keyword => "/ 搜索 Ticker / 公司名 / SIC…",
+            UniverseSearchMode::Similar => "/ 输入业务描述或 Ticker 找相似…",
+        };
         let search_text = if self.universe_state.query.is_empty() {
             if self.universe_state.search_focused {
                 "_".to_owned()
             } else {
-                "/ 搜索 Ticker / 公司名 / SIC…".to_owned()
+                search_placeholder.to_owned()
             }
         } else if self.universe_state.search_focused {
             format!("{}_", self.universe_state.query)
@@ -1135,9 +1256,42 @@ impl MungerWorkbench {
                     .items_center()
                     .gap_2()
                     .child(
+                        seg_group()
+                            .child(seg_tab(
+                                "univ-mode-keyword",
+                                UniverseSearchMode::Keyword.label(),
+                                self.universe_state.search_mode == UniverseSearchMode::Keyword,
+                                Some((SKY_FG, SKY_BG)),
+                                false,
+                                &self.fonts,
+                                cx.listener(|this, _, _, cx| {
+                                    this.universe_state
+                                        .set_search_mode(UniverseSearchMode::Keyword);
+                                    this.reload_universe_from_lake();
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(seg_tab(
+                                "univ-mode-similar",
+                                UniverseSearchMode::Similar.label(),
+                                self.universe_state.search_mode == UniverseSearchMode::Similar,
+                                Some((VIOLET_FG, VIOLET_BG)),
+                                false,
+                                &self.fonts,
+                                cx.listener(|this, _, _, cx| {
+                                    this.universe_state
+                                        .set_search_mode(UniverseSearchMode::Similar);
+                                    this.universe_state.similar_as_ticker = false;
+                                    this.universe_state.search_focused = true;
+                                    this.reload_universe_from_lake();
+                                    cx.notify();
+                                }),
+                            )),
+                    )
+                    .child(
                         div()
                             .id("univ-search-input")
-                            .w(px(210.))
+                            .w(px(230.))
                             .px_2p5()
                             .py_1()
                             .rounded_sm()
@@ -2097,6 +2251,7 @@ impl MungerWorkbench {
         let live_bkt = self.live_watchlist_bucket(row);
         let ticker_dossier = row.ticker.clone();
         let ticker_alan = row.ticker.clone();
+        let ticker_similar = row.ticker.clone();
         let row_for_add = row.clone();
         let warnings = row.parsed_warnings();
 
@@ -2278,6 +2433,31 @@ impl MungerWorkbench {
                         .child("加入观察池 (WATCH)"),
                 )
             })
+            .child(
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "univ-find-similar-{}",
+                        row.cik
+                    )))
+                    .w_full()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(rgba(VIOLET_BG))
+                    .border_1()
+                    .border_color(rgba(VIOLET_BORDER))
+                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                    .active(|s| s.bg(rgb(BG_ACTIVE)))
+                    .cursor_pointer()
+                    .text_center()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgb(VIOLET_FG))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.find_similar_for_company(&ticker_similar, cx);
+                    }))
+                    .child("找相似公司 · Lookalike"),
+            )
             .child(
                 prop_section("5Y DETERMINISTIC SNAPSHOT", &self.fonts)
                     .child(kv_line(
@@ -2634,5 +2814,325 @@ impl MungerWorkbench {
 
         sec = sec.child(rows_box);
         sec
+    }
+
+    fn render_universe_similar_prompt(&self) -> gpui::Div {
+        card_shell()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(section_header(
+                "混合语义相似搜索 · Lookalike Discovery",
+                "L1 SQL HARD FILTER × LATENT COSINE × BM25".into(),
+                &self.fonts,
+            ))
+            .child(
+                div()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .line_height(px(20.))
+                    .text_color(rgb(INK_SECONDARY))
+                    .child("在右上角搜索框输入商业模式关键词（例如 \"recurring industrial CAD subscription\"）或直接输入美股 Ticker（如 ADSK），也可在右侧详情抽屉点击「找相似公司 · Lookalike」。前置叠加当前左侧芒格财务硬过滤条件（剔除金融 / 报价池 / ROIC / SBC），零大模型 Token 毫秒级返回可溯源相似标的。"),
+            )
+    }
+
+    fn render_universe_similar_empty(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l1_chunks = self
+            .inbox_summary
+            .as_ref()
+            .map(|s| s.doc_chunks_count)
+            .unwrap_or(0);
+        let hint = if l1_chunks == 0 {
+            "本地 L1 语义索引片段尚为空（doc_chunks=0）。请先到「简报收件箱」点击「追平事件流」或运行 `m3 events catchup --bootstrap` 构建文本索引。"
+        } else {
+            "当前相似搜索或财务硬过滤条件无匹配公司，可放宽过滤条件或更换关键词。"
+        };
+        card_shell()
+            .p_5()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .child(
+                div()
+                    .font_family(self.fonts.ui.clone())
+                    .text_xs()
+                    .text_color(rgb(INK_SECONDARY))
+                    .child(hint),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .when(l1_chunks == 0, |d| {
+                        d.child(
+                            div()
+                                .id("univ-similar-go-catchup")
+                                .px_3()
+                                .py_1p5()
+                                .rounded_sm()
+                                .bg(rgb(CTA_BG))
+                                .hover(|s| s.bg(rgb(CTA_BG_HOVER)))
+                                .cursor_pointer()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(CTA_INK))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.switch_view(NavView::Inbox);
+                                    this.start_l1_catchup(true, cx);
+                                }))
+                                .child("追平 L1 文本索引"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("univ-similar-back-kw")
+                            .px_3()
+                            .py_1p5()
+                            .rounded_sm()
+                            .bg(rgb(BG_WELL))
+                            .border_1()
+                            .border_color(rgb(BORDER_PILL))
+                            .hover(|s| s.bg(rgb(BG_HOVER)))
+                            .cursor_pointer()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .text_color(rgb(INK_HERO))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.universe_state
+                                    .set_search_mode(UniverseSearchMode::Keyword);
+                                this.reload_universe_from_lake();
+                                cx.notify();
+                            }))
+                            .child("返回关键词筛选"),
+                    ),
+            )
+    }
+
+    fn render_universe_similar_results(
+        &self,
+        selected_cik: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let elapsed = self
+            .universe_similar_query_ms
+            .map(|ms| format!("{ms}ms"))
+            .unwrap_or_else(|| "—".into());
+        let subtitle = format!(
+            "命中 {} 家 · 查询 {} · 0 Flagship Token",
+            self.universe_similar_hits.len(),
+            elapsed
+        );
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(card_shell().p_4().child(section_header(
+                &format!("Lookalike 相似公司 · {}", self.universe_state.query.trim()),
+                subtitle,
+                &self.fonts,
+            )))
+            .children(
+                self.universe_similar_hits
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, hit)| {
+                        self.render_universe_similar_card(hit, idx, selected_cik, cx)
+                    }),
+            )
+    }
+
+    fn render_universe_similar_card(
+        &self,
+        hit: &SimilarCompanyHit,
+        idx: usize,
+        selected_cik: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let row = &hit.company;
+        let is_selected = selected_cik == Some(row.cik.as_str());
+        let row_click = row.clone();
+        let row_watch = row.clone();
+        let ticker_dossier = row.ticker.clone();
+        let live_bkt = self.live_watchlist_bucket(row);
+        let (roic_s, _) = fmt_pct_clean(row.roic_5y_avg_pct, false);
+        let (fcf_s, _) = fmt_pct_clean(row.strict_fcf_yield_pct, false);
+        let (sbc_s, _) = fmt_pct_clean(row.sbc_to_ocf_pct, false);
+
+        div()
+            .id(gpui::SharedString::from(format!(
+                "univ-sim-hit-{}",
+                row.cik
+            )))
+            .rounded_lg()
+            .bg(rgb(if is_selected {
+                BG_SELECTED_ROW
+            } else {
+                BG_SURFACE
+            }))
+            .border_1()
+            .border_color(if is_selected {
+                rgba(VIOLET_BORDER)
+            } else {
+                rgb(BORDER_SUBTLE)
+            })
+            .hover(|s| s.bg(rgb(BG_HOVER)))
+            .cursor_pointer()
+            .p_4()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.select_universe_row(&row_click);
+                cx.notify();
+            }))
+            .flex()
+            .flex_col()
+            .gap_2p5()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .font_family(self.fonts.mono_num.clone())
+                                    .text_xs()
+                                    .text_color(rgb(INK_MUTED))
+                                    .child(format!("#{}", idx + 1)),
+                            )
+                            .child(
+                                div()
+                                    .font_family(self.fonts.mono_num.clone())
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(rgb(INK_HERO))
+                                    .child(row.ticker.clone()),
+                            )
+                            .child(
+                                div()
+                                    .font_family(self.fonts.ui.clone())
+                                    .text_xs()
+                                    .text_color(rgb(INK_PRIMARY))
+                                    .truncate()
+                                    .child(row.name.clone()),
+                            )
+                            .when_some(live_bkt, |d, bkt| {
+                                let (fg, bg, br) = bucket_colors(bkt);
+                                d.child(badge(bkt.code().to_owned(), fg, bg, br, &self.fonts))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(badge(
+                                format!("综合 {:.0}%", hit.score * 100.0),
+                                VIOLET_FG,
+                                VIOLET_BG,
+                                VIOLET_BORDER,
+                                &self.fonts,
+                            ))
+                            .child(
+                                div()
+                                    .font_family(self.fonts.mono_num.clone())
+                                    .text_size(px(10.))
+                                    .text_color(rgb(INK_MUTED))
+                                    .child(format!(
+                                        "语义 {:.0}% · BM25 {:.2} · {} 片段",
+                                        hit.semantic_score * 100.0,
+                                        hit.lexical_score,
+                                        hit.matched_chunk_count
+                                    )),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .font_family(self.fonts.mono_num.clone())
+                            .text_size(px(11.))
+                            .child(
+                                div()
+                                    .text_color(rgb(INK_SECONDARY))
+                                    .child(format!("ROIC {roic_s}")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(INK_SECONDARY))
+                                    .child(format!("FCF% {fcf_s}")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(INK_SECONDARY))
+                                    .child(format!("SBC/OCF {sbc_s}")),
+                            )
+                            .child(div().text_color(rgb(INK_MUTED)).child(format_sic_line(row))),
+                    )
+                    .child(if live_bkt.is_some() {
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "univ-sim-open-{}",
+                                row.cik
+                            )))
+                            .px_2p5()
+                            .py_1()
+                            .rounded_xs()
+                            .bg(rgb(BG_WELL))
+                            .border_1()
+                            .border_color(rgb(BORDER_PILL))
+                            .hover(|s| s.bg(rgb(BG_ACTIVE)))
+                            .font_family(self.fonts.ui.clone())
+                            .text_size(px(11.))
+                            .text_color(rgb(INK_HERO))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_company(&ticker_dossier, Some(NavView::Dossier));
+                                cx.stop_propagation();
+                                cx.notify();
+                            }))
+                            .child("打开 Dossier →")
+                    } else {
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "univ-sim-watch-{}",
+                                row.cik
+                            )))
+                            .px_2p5()
+                            .py_1()
+                            .rounded_xs()
+                            .bg(rgba(EMERALD_BG))
+                            .border_1()
+                            .border_color(rgba(EMERALD_BORDER))
+                            .hover(|s| s.bg(rgb(BG_HOVER)))
+                            .font_family(self.fonts.ui.clone())
+                            .text_size(px(11.))
+                            .text_color(rgb(EMERALD_FG))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.add_universe_company_to_watch(&row_watch, cx);
+                                cx.stop_propagation();
+                            }))
+                            .child("+ 入观察池")
+                    }),
+            )
+            .children(hit.evidence.iter().take(2).enumerate().map(|(e_idx, ev)| {
+                self.render_evidence_card(ev, &format!("sim-{}", row.cik), e_idx, cx)
+            }))
     }
 }

@@ -1,6 +1,6 @@
 use super::{
     BasketsViewMode, DossierTab, MungerWorkbench, NavView, PaletteAction, PaletteItem,
-    components::*, format::*, theme::*,
+    components::*, format::*, theme::*, universe::UniverseSearchMode,
 };
 use crate::model::{Bucket, primary_circle_tag};
 use crate::update::{self, ReleaseChannel};
@@ -43,9 +43,25 @@ impl MungerWorkbench {
         }
         items.push(PaletteItem {
             group: "VIEW".into(),
-            title: "总览 (IN / WATCH / OUT / TOO HARD)".into(),
-            subtitle: "今日信号与芒格三篮子筛选".into(),
+            title: "简报收件箱 · Event-Driven Inbox".into(),
+            subtitle: "新浮现、隐空间传导与击球红灯待审讯信号（0 Flagship Token）".into(),
             shortcut: Some("⌘1"),
+            dot_color: EMERALD_FG,
+            action: PaletteAction::SwitchView(NavView::Inbox),
+        });
+        items.push(PaletteItem {
+            group: "VIEW".into(),
+            title: "全市场雷达 · US Lakehouse L0/L1".into(),
+            subtitle: "DuckDB 全美股筛选、Lookalike 相似搜索与一键入观察池".into(),
+            shortcut: Some("⌘2"),
+            dot_color: SKY_FG,
+            action: PaletteAction::SwitchView(NavView::Universe),
+        });
+        items.push(PaletteItem {
+            group: "VIEW".into(),
+            title: "篮子总览 (IN / WATCH / OUT / TOO HARD)".into(),
+            subtitle: "今日信号与芒格四篮子筛选".into(),
+            shortcut: Some("⌘3"),
             dot_color: INK_PRIMARY,
             action: PaletteAction::FocusBasket(None),
         });
@@ -65,7 +81,7 @@ impl MungerWorkbench {
             group: "VIEW".into(),
             title: format!("财报与 K 线 · {}", self.selected_ticker),
             subtitle: "值锚定 K 线、查理沙盒、ROIC 与人类判词".into(),
-            shortcut: Some("⌘2"),
+            shortcut: None,
             dot_color: EMERALD_FG,
             action: PaletteAction::SwitchView(NavView::Dossier),
         });
@@ -73,7 +89,7 @@ impl MungerWorkbench {
             group: "VIEW".into(),
             title: format!("Alan 审讯台 · {}", self.selected_ticker),
             subtitle: "独立 AI 幕僚审讯与 Prompt/CLI 协同".into(),
-            shortcut: Some("⌘3"),
+            shortcut: None,
             dot_color: VIOLET_FG,
             action: PaletteAction::SwitchView(NavView::Agent),
         });
@@ -94,12 +110,12 @@ impl MungerWorkbench {
             action: PaletteAction::SwitchView(NavView::Journal),
         });
         items.push(PaletteItem {
-            group: "VIEW".into(),
-            title: "全市场雷达 · US Lakehouse L0".into(),
-            subtitle: "DuckDB 全美股筛选、ROIC × FCF 散点图与一键入观察池".into(),
-            shortcut: Some("⌘5"),
-            dot_color: SKY_FG,
-            action: PaletteAction::SwitchView(NavView::Universe),
+            group: "SEARCH".into(),
+            title: "混合语义相似搜索 · Lookalike Discovery".into(),
+            subtitle: "按商业模式描述或 Ticker 在全美股 L0/L1 中检索相似公司与出处".into(),
+            shortcut: None,
+            dot_color: VIOLET_FG,
+            action: PaletteAction::FocusSimilarSearch,
         });
         for b in Bucket::display_order() {
             let (fg, _, _) = bucket_colors(b);
@@ -199,6 +215,15 @@ impl MungerWorkbench {
             shortcut: Some("⌘R"),
             dot_color: EMERALD_FG,
             action: PaletteAction::SyncNow,
+        });
+        items.push(PaletteItem {
+            group: "DATA".into(),
+            title: "追平事件流 · L1 SEC Filings / News / 语义索引".into(),
+            subtitle: "增量拉取 SEC 公告与新闻，生成新浮现/传导/击球信号（0 Flagship Token）"
+                .into(),
+            shortcut: Some("r"),
+            dot_color: EMERALD_FG,
+            action: PaletteAction::CatchupEvents,
         });
         items.push(PaletteItem {
             group: "DATA".into(),
@@ -321,6 +346,18 @@ impl MungerWorkbench {
                 self.switch_view(NavView::Universe);
                 self.start_universe_sync(false, cx);
                 return;
+            }
+            PaletteAction::CatchupEvents => {
+                self.switch_view(NavView::Inbox);
+                self.start_l1_catchup(false, cx);
+                return;
+            }
+            PaletteAction::FocusSimilarSearch => {
+                self.universe_state
+                    .set_search_mode(UniverseSearchMode::Similar);
+                self.universe_state.similar_as_ticker = false;
+                self.universe_state.search_focused = true;
+                self.switch_view(NavView::Universe);
             }
             PaletteAction::CheckUpdate => {
                 self.start_update_check(true, cx);

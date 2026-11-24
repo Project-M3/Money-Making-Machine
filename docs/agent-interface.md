@@ -40,12 +40,20 @@ apps/m3-desktop/m3 journal record --ticker GOOGL --action wait --note "Q3 2026 C
 # 7. 启动 GPUI 桌面工作台
 apps/m3-desktop/m3 start
 
-# 8. L0 全美股湖仓（DuckDB + Parquet）筛选与同行对照
+# 8. L0 全美股湖仓（DuckDB + Parquet）筛选、同行对照与混合语义相似搜索
 apps/m3-desktop/m3 universe status
 apps/m3-desktop/m3 universe sync --full --prices-top 400
 apps/m3-desktop/m3 universe screen --min-roic 15 --max-sbc-ocf 25 --exclude-financials --limit 50
 apps/m3-desktop/m3 universe screen --strike-only --sort fcf_yield --limit 20
 apps/m3-desktop/m3 universe peers ADSK --limit 15
+apps/m3-desktop/m3 universe similar ADSK --ticker --limit 10
+apps/m3-desktop/m3 universe similar "enterprise engineering software subscription" --min-roic 15 --limit 10
+
+# 9. L1 事件流追平与简报收件箱（0 Flagship Token，本地确定性语义索引 + 原文溯源）
+apps/m3-desktop/m3 events catchup --bootstrap --max-ciks 25 --max-docs 12 --max-news-tickers 20
+apps/m3-desktop/m3 events list --ticker PTC --type sec_8k --limit 20
+apps/m3-desktop/m3 inbox list --status unread --limit 20
+apps/m3-desktop/m3 inbox triage <SIGNAL_ID> --status watch --promote-watch
 ```
 
 #### `m3 universe` 子命令契约
@@ -57,6 +65,14 @@ apps/m3-desktop/m3 universe peers ADSK --limit 15
   - 开关过滤：`--exclude-financials`（默认启用，剔除 `SIC 6000–6799`）、`--include-financials`、`--positive-oe-only`、`--price-pool-only`、`--strike-only`
   - 搜索与排序：`--query TEXT`、`--sort quality|roic|fcf_yield|distance|share_change|sbc_ocf|price|strike|warnings|ticker|name|sic|oe`、`--asc` / `--desc`、`--limit N`（默认 `200`，有效范围 `1..=5000`）
 - `m3 universe peers <TICKER> [--limit N]`：输出目标公司在同 SIC 组内的 `roic_percentile`、`gross_margin_percentile`、`strict_fcf_yield_percentile` 及头部同行列表（`PeerComparison`；`--limit` 默认 `15`，有效范围 `1..=200`）。
+- `m3 universe similar <TICKER_OR_QUERY> [--ticker] [--min-roic N] [--max-sbc-ocf N] [--exclude-financials|--include-financials] [--positive-oe-only] [--price-pool-only] [--limit N]`：在本地 DuckDB 先执行确定性财务硬过滤，再对 `doc_chunks` 进行余弦相似度 + BM25 混合检索，返回 `{ "query_ms", "query", "as_ticker", "count", "filter", "hits" }`，每条命中附带综合得分、语义/词法子分与一手原文出处 `evidence`（`--limit` 默认 `20`，有效范围 `1..=200`）。
+
+#### `m3 events` 与 `m3 inbox` 子命令契约
+
+- `m3 events catchup [--bootstrap] [--skip-sec] [--skip-news] [--skip-docs] [--max-ciks N] [--max-docs N] [--max-news-tickers N]`：增量拉取 SEC EDGAR `submissions`（首次 `--bootstrap` 可利用本地 `submissions.zip` 缓存与官方 Fair-Access 请求头）、10-K/10-Q/8-K 原文片段与候选公司新闻 RSS，构建本地 256 维嵌入索引 `doc_chunks` 并自动生成 `discovery` / `ripple` / `strike` / `red_flag` 信号写入 `signal_inbox`。全程 `flagship_tokens_used == 0`，进度写往 `stderr`，`stdout` 输出 `EventCatchupReport` JSON。
+- `m3 events list [--ticker SYM] [--type TYPE] [--unprocessed-only] [--limit N]`：查询本地 DuckDB `events` 表，返回 `{ "count", "events" }`（未同步湖仓时返回 `count: 0`）。
+- `m3 inbox list [--status unread|all|watch|too_hard|researching|archived] [--kind discovery|ripple|strike|red_flag] [--limit N]`：返回 `{ "status_filter", "kind_filter", "summary", "count", "signals" }`，每条 `SignalInboxRow` 包含可溯源 `evidence` 卡片（`doc_type`、`section`、`filing_date`、`quote`、`source_url`、`similarity`）。
+- `m3 inbox triage <SIGNAL_ID> --status unread|researching|watch|too_hard|archived [--promote-watch]`：更新信号分拣状态；传入 `--promote-watch` 时同步将 `primary_ticker` 加入 `workbench/watchlist.json`（`WATCH` 篮子）并刷新 DuckDB `in_watchlist` 标记。不会触碰任何 `human_judgment` 栏位。
 
 ---
 

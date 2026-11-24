@@ -4,6 +4,7 @@ mod chart;
 mod company;
 mod components;
 mod format;
+mod inbox;
 mod journal;
 mod palette;
 mod shell;
@@ -13,10 +14,13 @@ mod theme;
 mod universe;
 
 use format::{build_alan_interrogation_prompt, filter_palette_items, filter_reports_for_basket};
+use inbox::{InboxFilter, InboxViewState};
 
 use crate::{
     alan_interrogator::{AcmeEvidenceToken, M3InterrogatorHandle, TuringTapeEntry},
+    events::EventCatchupReport,
     lake::{LakeAnnualRow, PeerComparison, UniverseRow, UniverseSummary},
+    lake_l1::{L1Summary, SignalInboxRow, SignalStatus, SimilarCompanyHit},
     model::{
         Bucket, DecisionJournal, Dossier, MungerReport, PriceHistorySnapshot, PriceSnapshot,
         SyncStatusFile, ValuationAssumptions,
@@ -30,7 +34,7 @@ use gpui::{
     rgb, rgba,
 };
 use rust_decimal::Decimal;
-use std::{collections::HashSet, sync::mpsc};
+use std::{collections::HashSet, sync::mpsc, time::Instant};
 use theme::*;
 use universe::UniverseViewState;
 
@@ -43,6 +47,7 @@ pub struct FontRoles {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavView {
+    Inbox,
     Baskets,
     Dossier,
     Agent,
@@ -146,6 +151,8 @@ pub enum PaletteAction {
     CopyCli(String, String),
     SyncNow,
     SyncUniverseNow,
+    CatchupEvents,
+    FocusSimilarSearch,
     CheckUpdate,
     ApplyUpdate,
     SwitchUpdateChannel(ReleaseChannel),
@@ -211,6 +218,8 @@ pub struct MungerWorkbench {
     universe_lake_present: bool,
     universe_summary: Option<UniverseSummary>,
     universe_rows: Vec<UniverseRow>,
+    universe_similar_hits: Vec<SimilarCompanyHit>,
+    universe_similar_query_ms: Option<u64>,
     universe_strike_zone_ciks: HashSet<String>,
     universe_selected_cik: Option<String>,
     universe_selected_row: Option<UniverseRow>,
@@ -221,6 +230,15 @@ pub struct MungerWorkbench {
     universe_sync_progress: Option<String>,
     universe_sync_rx: Option<mpsc::Receiver<Result<UniverseSyncReport, String>>>,
     universe_progress_rx: Option<mpsc::Receiver<String>>,
+    inbox_state: InboxViewState,
+    inbox_summary: Option<L1Summary>,
+    inbox_signals: Vec<SignalInboxRow>,
+    inbox_error: Option<String>,
+    inbox_catching_up: bool,
+    inbox_catchup_progress: Option<String>,
+    inbox_catchup_rx: Option<mpsc::Receiver<Result<EventCatchupReport, String>>>,
+    inbox_progress_rx: Option<mpsc::Receiver<String>>,
+    inbox_last_auto_catchup_at: Option<Instant>,
     update_channel: ReleaseChannel,
     update_notice: Option<PassiveUpdateNotice>,
     update_checking: bool,
@@ -273,7 +291,7 @@ impl MungerWorkbench {
             benchmark: None,
             sync_status: None,
             benchmark_symbol: "^GSPC".into(),
-            active_view: NavView::Baskets,
+            active_view: NavView::Inbox,
             dossier_tab: DossierTab::Overview,
             baskets_view_mode: BasketsViewMode::List,
             chart_timeframe: ChartTimeframe::FiveYearWeekly,
@@ -313,6 +331,8 @@ impl MungerWorkbench {
             universe_lake_present: false,
             universe_summary: None,
             universe_rows: Vec::new(),
+            universe_similar_hits: Vec::new(),
+            universe_similar_query_ms: None,
             universe_strike_zone_ciks: HashSet::new(),
             universe_selected_cik: None,
             universe_selected_row: None,
@@ -323,6 +343,15 @@ impl MungerWorkbench {
             universe_sync_progress: None,
             universe_sync_rx: None,
             universe_progress_rx: None,
+            inbox_state: InboxViewState::default(),
+            inbox_summary: None,
+            inbox_signals: Vec::new(),
+            inbox_error: None,
+            inbox_catching_up: false,
+            inbox_catchup_progress: None,
+            inbox_catchup_rx: None,
+            inbox_progress_rx: None,
+            inbox_last_auto_catchup_at: None,
             update_channel: effective_ch,
             update_notice: initial_notice,
             update_checking: false,
@@ -335,6 +364,8 @@ impl MungerWorkbench {
         };
         wb.reload_from_disk();
         wb.reload_universe_from_lake();
+        wb.reload_inbox_from_lake();
+        wb.maybe_start_startup_catchup();
         wb
     }
 
@@ -443,6 +474,9 @@ impl MungerWorkbench {
         } else {
             self.reload_universe_from_lake();
         }
+        if view == NavView::Inbox {
+            self.reload_inbox_from_lake();
+        }
         self.active_view = view;
     }
 
@@ -531,6 +565,9 @@ impl MungerWorkbench {
 
     pub fn poll_background_sync(&mut self) -> bool {
         let mut dirty = self.poll_universe_sync();
+        if self.poll_l1_catchup() {
+            dirty = true;
+        }
         if self.poll_background_update() {
             dirty = true;
         }
@@ -903,14 +940,6 @@ impl MungerWorkbench {
         let key = ev.keystroke.key.as_str();
         let mods = &ev.keystroke.modifiers;
 
-        if mods.platform && !mods.control && !mods.alt && !mods.shift && key == "5" {
-            self.palette_open = false;
-            self.switch_view(NavView::Universe);
-            cx.stop_propagation();
-            cx.notify();
-            return;
-        }
-
         if mods.platform {
             return;
         }
@@ -1026,6 +1055,7 @@ impl MungerWorkbench {
                 }
                 "backspace" => {
                     self.universe_state.query.pop();
+                    self.universe_state.similar_as_ticker = false;
                     self.apply_universe_query_change();
                     cx.stop_propagation();
                     cx.notify();
@@ -1042,6 +1072,7 @@ impl MungerWorkbench {
                         && !ch.chars().any(char::is_control)
                     {
                         self.universe_state.query.push_str(ch);
+                        self.universe_state.similar_as_ticker = false;
                         self.apply_universe_query_change();
                         cx.stop_propagation();
                         cx.notify();
@@ -1062,7 +1093,7 @@ impl MungerWorkbench {
             return;
         }
 
-        if key == "u" && !mods.shift {
+        if key == "u" && !mods.shift && self.active_view != NavView::Inbox {
             self.switch_view(NavView::Universe);
             cx.stop_propagation();
             cx.notify();
@@ -1070,6 +1101,94 @@ impl MungerWorkbench {
         }
 
         match self.active_view {
+            NavView::Inbox => match key {
+                "j" | "down" => {
+                    self.step_inbox_cursor(1);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "k" | "up" => {
+                    self.step_inbox_cursor(-1);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "r" => {
+                    self.start_l1_catchup(false, cx);
+                    cx.stop_propagation();
+                }
+                "enter" => {
+                    if let Some(sig) = self.active_inbox_signal().cloned() {
+                        self.open_inbox_signal_target(&sig.primary_ticker, cx);
+                        cx.stop_propagation();
+                    }
+                }
+                "w" => {
+                    if let Some(sig) = self.active_inbox_signal().cloned() {
+                        self.triage_inbox_signal(
+                            &sig.signal_id,
+                            SignalStatus::Watch,
+                            true,
+                            false,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }
+                }
+                "x" => {
+                    if let Some(sig) = self.active_inbox_signal().cloned() {
+                        self.triage_inbox_signal(
+                            &sig.signal_id,
+                            SignalStatus::TooHard,
+                            false,
+                            false,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }
+                }
+                "e" => {
+                    if let Some(sig) = self.active_inbox_signal().cloned() {
+                        self.triage_inbox_signal(
+                            &sig.signal_id,
+                            SignalStatus::Archived,
+                            false,
+                            false,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }
+                }
+                "u" => {
+                    if let Some(sig) = self.active_inbox_signal().cloned() {
+                        self.triage_inbox_signal(
+                            &sig.signal_id,
+                            SignalStatus::Unread,
+                            false,
+                            false,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }
+                }
+                "d" => {
+                    if let Some(sig) = self.active_inbox_signal().cloned() {
+                        self.triage_inbox_signal(
+                            &sig.signal_id,
+                            SignalStatus::Researching,
+                            false,
+                            true,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }
+                }
+                "escape" if self.inbox_state.filter != InboxFilter::Unread => {
+                    self.set_inbox_filter(InboxFilter::Unread);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                _ => {}
+            },
             NavView::Baskets => {
                 let mut handled = true;
                 match key {
@@ -1374,24 +1493,37 @@ impl Render for MungerWorkbench {
                                 )
                             })
                             .when(in_company, |d| d.child(self.render_company_shell(cx)))
+                            .when(self.active_view == NavView::Inbox, |d| {
+                                d.child(self.render_inbox_view(cx))
+                            })
                             .when(self.active_view == NavView::Universe, |d| {
                                 d.child(self.render_universe_view(cx))
                             })
-                            .when(!in_company && self.active_view != NavView::Universe, |d| {
-                                let content = match self.active_view {
-                                    NavView::Baskets => self.render_baskets_view(cx),
-                                    NavView::Journal => self.render_journal_view(cx),
-                                    NavView::Dossier | NavView::Agent | NavView::Universe => div(),
-                                };
-                                d.child(
-                                    div()
-                                        .id("main-scroll")
-                                        .flex_1()
-                                        .min_h_0()
-                                        .overflow_y_scroll()
-                                        .child(content),
-                                )
-                            })
+                            .when(
+                                !in_company
+                                    && !matches!(
+                                        self.active_view,
+                                        NavView::Inbox | NavView::Universe
+                                    ),
+                                |d| {
+                                    let content = match self.active_view {
+                                        NavView::Baskets => self.render_baskets_view(cx),
+                                        NavView::Journal => self.render_journal_view(cx),
+                                        NavView::Inbox
+                                        | NavView::Dossier
+                                        | NavView::Agent
+                                        | NavView::Universe => div(),
+                                    };
+                                    d.child(
+                                        div()
+                                            .id("main-scroll")
+                                            .flex_1()
+                                            .min_h_0()
+                                            .overflow_y_scroll()
+                                            .child(content),
+                                    )
+                                },
+                            )
                             .child(self.render_statusline(cx)),
                     ),
             )

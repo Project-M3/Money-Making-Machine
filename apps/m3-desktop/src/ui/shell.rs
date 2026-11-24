@@ -7,20 +7,32 @@ use gpui::{
 
 impl MungerWorkbench {
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let unread_count = self
+            .inbox_summary
+            .as_ref()
+            .map(|s| s.unread_signals)
+            .unwrap_or(0);
         let nav_items = [
             (
-                NavView::Baskets,
-                "总览",
+                NavView::Inbox,
+                "简报收件箱",
                 "⌘1",
-                self.active_view == NavView::Baskets && self.basket_filter.is_none(),
-                INK_HERO,
+                self.active_view == NavView::Inbox,
+                EMERALD_FG,
             ),
             (
                 NavView::Universe,
                 "全市场雷达",
-                "⌘5",
+                "⌘2",
                 self.active_view == NavView::Universe,
                 SKY_FG,
+            ),
+            (
+                NavView::Baskets,
+                "篮子总览",
+                "⌘3",
+                self.active_view == NavView::Baskets && self.basket_filter.is_none(),
+                INK_HERO,
             ),
             (
                 NavView::Journal,
@@ -158,7 +170,29 @@ impl MungerWorkbench {
                                                 .child(title),
                                         ),
                                 )
-                                .child(kbd(key, &self.fonts))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .when(view == NavView::Inbox && unread_count > 0, |d| {
+                                            d.child(
+                                                div()
+                                                    .px_1p5()
+                                                    .py_0p5()
+                                                    .rounded_full()
+                                                    .bg(rgba(EMERALD_BG))
+                                                    .border_1()
+                                                    .border_color(rgba(EMERALD_BORDER))
+                                                    .font_family(self.fonts.mono_num.clone())
+                                                    .text_size(px(10.))
+                                                    .font_weight(gpui::FontWeight::BOLD)
+                                                    .text_color(rgb(EMERALD_FG))
+                                                    .child(format!("{unread_count}")),
+                                            )
+                                        })
+                                        .child(kbd(key, &self.fonts)),
+                                )
                         },
                     )),
             )
@@ -348,19 +382,20 @@ impl MungerWorkbench {
             .unwrap_or_default();
 
         let breadcrumb = match self.active_view {
+            NavView::Inbox => "简报收件箱 · Event-Driven L1".to_owned(),
             NavView::Baskets => match (self.basket_filter, &self.circle_filter) {
                 (Some(b), Some(tag)) => {
-                    format!("总览 / {} ({}) / #{tag}", b.code(), b.short_label())
+                    format!("篮子总览 / {} ({}) / #{tag}", b.code(), b.short_label())
                 }
-                (Some(b), None) => format!("总览 / {} ({})", b.code(), b.short_label()),
-                (None, Some(tag)) => format!("总览 / #{tag}"),
-                (None, None) => "总览".to_owned(),
+                (Some(b), None) => format!("篮子总览 / {} ({})", b.code(), b.short_label()),
+                (None, Some(tag)) => format!("篮子总览 / #{tag}"),
+                (None, None) => "篮子总览".to_owned(),
             },
             NavView::Dossier | NavView::Agent => {
                 format!("{} · {}", self.selected_ticker, selected_name)
             }
             NavView::Journal => "决策账本".to_owned(),
-            NavView::Universe => "全市场雷达 · US Lakehouse L0".to_owned(),
+            NavView::Universe => "全市场雷达 · US Lakehouse L0/L1".to_owned(),
         };
 
         div()
@@ -600,6 +635,10 @@ impl MungerWorkbench {
             (SKY_FG, "↑/↓ 选择 · ↵ 执行 · esc 关闭命令面板")
         } else {
             match self.active_view {
+                NavView::Inbox => (
+                    EMERALD_FG,
+                    "j/k 移动 · ↵ 打开 · w 观察 · x TooHard · e 归档 · u 未读 · d Alan · r 追平 · ⌘K 命令",
+                ),
                 NavView::Baskets => (
                     EMERALD_FG,
                     "v 列表/看板 · 1-4 切篮子 · 0 全部 · j/k 移动 · ↵ 打开 · ⌘K 命令",
@@ -618,7 +657,7 @@ impl MungerWorkbench {
                 ),
                 NavView::Universe => (
                     SKY_FG,
-                    "/ 搜索 · j/k 选择 · ↵ 打开已入池研报 · r 刷新 · ⌘K 命令 · esc 返回总览",
+                    "/ 搜索 · j/k 选择 · ↵ 打开已入池研报 · r 刷新 · ⌘K 命令 · esc 返回",
                 ),
             }
         };
@@ -683,8 +722,9 @@ impl MungerWorkbench {
                             .text_size(px(10.))
                             .text_color(rgb(INK_MUTED))
                             .child(match self.active_view {
+                                NavView::Inbox => "L0/L1 · 0 FLAGSHIP TOKEN",
                                 NavView::Agent => "EMBEDDED ALAN · PAPER ONLY",
-                                NavView::Universe => "DUCKDB L0 · ZERO-LLM",
+                                NavView::Universe => "DUCKDB L0/L1 · ZERO-LLM",
                                 _ => "ZERO-LLM · PAPER ONLY",
                             }),
                     ),

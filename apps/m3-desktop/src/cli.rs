@@ -1,6 +1,8 @@
 use crate::{
     app_config,
+    events::{self, EventCatchupOptions},
     lake::{LakeDb, UniverseFilter, UniverseSortBy, UniverseSummary},
+    lake_l1::{L1Summary, SignalKind, SignalStatus, SimilarSearchFilter},
     model::{Bucket, JournalAction, SyncStatusFile, parse_decimal_token},
     store::{self, WorkspacePaths},
     universe::{self, UniverseSyncOptions},
@@ -38,9 +40,11 @@ pub fn run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
         "add" => cmd_add(paths, rest),
         "journal" => cmd_journal(paths, rest),
         "universe" => cmd_universe(paths, rest),
+        "events" => cmd_events(paths, rest),
+        "inbox" => cmd_inbox(paths, rest),
         "start" => cmd_start(paths),
         _ => anyhow::bail!(
-            "usage: m3 status | sync [--ticker SYM] [--prices-only] | report <SYM> | dossier <SYM> | add <SYM> ... | journal [list|record ...] | universe [status|sync|screen|peers ...] | version | workspace [show|set <PATH>] | update [--check] [--channel stable|beta] [channel [stable|beta]] | start"
+            "usage: m3 status | sync [--ticker SYM] [--prices-only] | report <SYM> | dossier <SYM> | add <SYM> ... | journal [list|record ...] | universe [status|sync|screen|peers|similar ...] | events [catchup|list ...] | inbox [list|triage ...] | version | workspace [show|set <PATH>] | update [--check] [--channel stable|beta] [channel [stable|beta]] | start"
         ),
     }
 }
@@ -317,6 +321,8 @@ fn cmd_journal(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Va
 const MAX_PRICES_TOP: usize = 1_000;
 const MAX_SCREEN_LIMIT: usize = 5_000;
 const MAX_PEERS_LIMIT: usize = 200;
+const MAX_SIMILAR_LIMIT: usize = 200;
+const MAX_L1_LIST_LIMIT: usize = 5_000;
 const MAX_MIN_YEARS: usize = 20;
 const MIN_FILTER_METRIC: i64 = -10_000;
 const MAX_FILTER_METRIC: i64 = 100_000;
@@ -367,8 +373,9 @@ fn cmd_universe(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::V
         "sync" => cmd_universe_sync(paths, rest),
         "screen" => cmd_universe_screen(paths, rest),
         "peers" => cmd_universe_peers(paths, rest),
+        "similar" => cmd_universe_similar(paths, rest),
         _ => anyhow::bail!(
-            "usage: m3 universe <status|sync [--full] [--prices-top N] [--skip-prices]|screen [--min-roic N] [--max-sbc-ocf N] [--max-share-change-3y N] [--max-net-debt-to-oe N] [--min-years N] [--exclude-financials|--include-financials] [--positive-oe-only] [--price-pool-only] [--strike-only] [--query TEXT] [--sort COL] [--asc|--desc] [--limit N]|peers <TICKER> [--limit N]>"
+            "usage: m3 universe <status|sync [--full] [--prices-top N] [--skip-prices]|screen [--min-roic N] [--max-sbc-ocf N] [--max-share-change-3y N] [--max-net-debt-to-oe N] [--min-years N] [--exclude-financials|--include-financials] [--positive-oe-only] [--price-pool-only] [--strike-only] [--query TEXT] [--sort COL] [--asc|--desc] [--limit N]|peers <TICKER> [--limit N]|similar <TICKER_OR_QUERY> [--ticker] [--min-roic N] [--max-sbc-ocf N] [--exclude-financials|--include-financials] [--limit N]>"
         ),
     }
 }
@@ -521,6 +528,332 @@ fn cmd_universe_peers(paths: &WorkspacePaths, args: &[String]) -> Result<serde_j
         "schema_version": 1,
         "ok": true,
         "data": peers
+    }))
+}
+
+fn cmd_universe_similar(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut query_or_ticker: Option<String> = None;
+    let mut as_ticker = false;
+    let mut filter = SimilarSearchFilter::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--ticker" => as_ticker = true,
+            "--min-roic" => {
+                filter.min_roic_5y = Some(parse_decimal_flag(args, &mut i, "--min-roic")?);
+            }
+            "--max-sbc-ocf" => {
+                filter.max_sbc_to_ocf = Some(parse_decimal_flag(args, &mut i, "--max-sbc-ocf")?);
+            }
+            "--exclude-financials" => filter.exclude_financials = true,
+            "--include-financials" => filter.exclude_financials = false,
+            "--positive-oe-only" => filter.positive_strict_oe_only = true,
+            "--price-pool-only" => filter.in_price_pool_only = true,
+            "--limit" => {
+                filter.limit = parse_usize_flag(args, &mut i, "--limit", 1, MAX_SIMILAR_LIMIT)?;
+            }
+            other if other.starts_with('-') => {
+                anyhow::bail!("unknown universe similar flag: {other}");
+            }
+            text => {
+                ensure!(
+                    query_or_ticker.is_none(),
+                    "unexpected extra argument for universe similar: {text}"
+                );
+                query_or_ticker = Some(text.trim().to_owned());
+            }
+        }
+        i += 1;
+    }
+
+    let query_or_ticker = query_or_ticker
+        .filter(|q| !q.is_empty())
+        .context("usage: m3 universe similar <TICKER_OR_QUERY> [--ticker] [--min-roic N] [--max-sbc-ocf N] [--exclude-financials|--include-financials] [--limit N]")?;
+    let db = LakeDb::open_read_only_if_exists(paths)?
+        .context("universe lake has not been synced yet; run `m3 universe sync` first")?;
+    let started = Instant::now();
+    let hits = db.search_similar(&query_or_ticker, as_ticker, &filter)?;
+    let query_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "query_ms": query_ms,
+            "query": query_or_ticker,
+            "as_ticker": as_ticker,
+            "count": hits.len(),
+            "filter": filter,
+            "hits": hits,
+        }
+    }))
+}
+
+fn cmd_events(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("list");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "catchup" => cmd_events_catchup(paths, rest),
+        "list" => cmd_events_list(paths, rest),
+        _ => anyhow::bail!(
+            "usage: m3 events <catchup [--bootstrap] [--skip-sec] [--skip-news] [--skip-docs] [--max-ciks N] [--max-docs N] [--max-news-tickers N]|list [--ticker SYM] [--type TYPE] [--limit N]>"
+        ),
+    }
+}
+
+fn cmd_events_catchup(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut opts = EventCatchupOptions::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--bootstrap" => opts.bootstrap = true,
+            "--skip-sec" => opts.skip_sec = true,
+            "--skip-news" => opts.skip_news = true,
+            "--skip-docs" => opts.skip_docs = true,
+            "--max-ciks" => {
+                opts.max_ciks = parse_usize_flag(args, &mut i, "--max-ciks", 1, 5_000)?;
+            }
+            "--max-docs" => {
+                opts.max_docs = parse_usize_flag(args, &mut i, "--max-docs", 1, 1_000)?;
+            }
+            "--max-news-tickers" => {
+                opts.max_news_tickers =
+                    parse_usize_flag(args, &mut i, "--max-news-tickers", 1, 1_000)?;
+            }
+            other => anyhow::bail!("unknown events catchup flag: {other}"),
+        }
+        i += 1;
+    }
+
+    let report = events::catchup_events_with_progress(paths, &opts, |msg| {
+        eprintln!("[m3 events catchup] {msg}");
+    })?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": report
+    }))
+}
+
+fn cmd_events_list(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut ticker: Option<String> = None;
+    let mut event_type: Option<String> = None;
+    let mut unprocessed_only = false;
+    let mut limit: usize = 50;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--ticker" => {
+                i += 1;
+                let raw = args.get(i).context("--ticker requires symbol")?.trim();
+                ensure!(!raw.is_empty(), "--ticker cannot be empty");
+                ticker = Some(raw.to_ascii_uppercase());
+            }
+            "--type" => {
+                i += 1;
+                let raw = args.get(i).context("--type requires event type")?.trim();
+                ensure!(!raw.is_empty(), "--type cannot be empty");
+                event_type = Some(raw.to_owned());
+            }
+            "--unprocessed-only" => unprocessed_only = true,
+            "--limit" => {
+                limit = parse_usize_flag(args, &mut i, "--limit", 1, MAX_L1_LIST_LIMIT)?;
+            }
+            other => anyhow::bail!("unknown events list flag: {other}"),
+        }
+        i += 1;
+    }
+
+    let events = match LakeDb::open_read_only_if_exists(paths)? {
+        Some(db) => db.list_events(
+            ticker.as_deref(),
+            event_type.as_deref(),
+            unprocessed_only,
+            limit,
+        )?,
+        None => Vec::new(),
+    };
+
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "count": events.len(),
+            "events": events,
+        }
+    }))
+}
+
+fn cmd_inbox(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("list");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "list" => cmd_inbox_list(paths, rest),
+        "triage" => cmd_inbox_triage(paths, rest),
+        _ => anyhow::bail!(
+            "usage: m3 inbox <list [--status unread|all|watch|too_hard|researching|archived] [--kind discovery|ripple|strike|red_flag] [--limit N]|triage <SIGNAL_ID> --status unread|researching|watch|too_hard|archived [--promote-watch]>"
+        ),
+    }
+}
+
+fn cmd_inbox_list(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut status_raw = "all".to_owned();
+    let mut status: Option<SignalStatus> = None;
+    let mut kind: Option<SignalKind> = None;
+    let mut limit: usize = 50;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--status" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .context("--status requires unread|all|watch|too_hard|researching|archived")?;
+                let lower = raw.trim().to_ascii_lowercase();
+                if lower == "all" {
+                    status = None;
+                    status_raw = "all".to_owned();
+                } else {
+                    let parsed = SignalStatus::from_str(&lower)?;
+                    status = Some(parsed);
+                    status_raw = parsed.as_str().to_owned();
+                }
+            }
+            "--kind" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .context("--kind requires discovery|ripple|strike|red_flag")?;
+                kind = Some(SignalKind::from_str(raw)?);
+            }
+            "--limit" => {
+                limit = parse_usize_flag(args, &mut i, "--limit", 1, MAX_L1_LIST_LIMIT)?;
+            }
+            other => anyhow::bail!("unknown inbox list flag: {other}"),
+        }
+        i += 1;
+    }
+
+    let (summary, signals) = match LakeDb::open_read_only_if_exists(paths)? {
+        Some(db) => (
+            db.l1_summary()?,
+            db.list_inbox_signals(status, kind, limit)?,
+        ),
+        None => (L1Summary::default(), Vec::new()),
+    };
+
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "status_filter": status_raw,
+            "kind_filter": kind.map(|k| k.as_str()),
+            "summary": summary,
+            "count": signals.len(),
+            "signals": signals,
+        }
+    }))
+}
+
+fn cmd_inbox_triage(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut signal_id: Option<String> = None;
+    let mut status: Option<SignalStatus> = None;
+    let mut promote_watch = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--status" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .context("--status requires unread|researching|watch|too_hard|archived")?;
+                status = Some(SignalStatus::from_str(raw)?);
+            }
+            "--promote-watch" => promote_watch = true,
+            other if other.starts_with('-') => {
+                anyhow::bail!("unknown inbox triage flag: {other}");
+            }
+            sid => {
+                ensure!(
+                    signal_id.is_none(),
+                    "unexpected extra argument for inbox triage: {sid}"
+                );
+                signal_id = Some(sid.trim().to_owned());
+            }
+        }
+        i += 1;
+    }
+
+    let signal_id = signal_id
+        .filter(|s| !s.is_empty())
+        .context("usage: m3 inbox triage <SIGNAL_ID> --status unread|researching|watch|too_hard|archived [--promote-watch]")?;
+    let target_status = status.context("--status is required for inbox triage")?;
+
+    ensure!(
+        LakeDb::open_read_only_if_exists(paths)?.is_some(),
+        "universe lake has not been synced yet; run `m3 universe sync` first"
+    );
+    let db = LakeDb::open(paths)?;
+    let now_ms = store::now_ms();
+    let updated = db.triage_signal(&signal_id, target_status, now_ms)?;
+    ensure!(updated, "signal '{signal_id}' not found in signal_inbox");
+
+    let signal = db
+        .list_inbox_signals(None, None, 10_000)?
+        .into_iter()
+        .find(|s| s.signal_id == signal_id)
+        .context("triaged signal disappeared from signal_inbox")?;
+
+    let promoted = if promote_watch {
+        let ticker = signal.primary_ticker.trim().to_ascii_uppercase();
+        let u_row = db
+            .screen_universe(&UniverseFilter {
+                exclude_financials: false,
+                query: Some(ticker.clone()),
+                limit: 20,
+                ..Default::default()
+            })
+            .ok()
+            .and_then(|rows| {
+                rows.into_iter()
+                    .find(|r| r.ticker.eq_ignore_ascii_case(&ticker))
+            });
+        let (name_opt, cik_opt, circle_opt) = if let Some(row) = &u_row {
+            let circle = match (row.sic, row.sic_description.as_deref()) {
+                (Some(sic), Some(desc)) if !desc.trim().is_empty() => {
+                    Some(format!("{} / SIC {sic}", desc.trim()))
+                }
+                (None, Some(desc)) if !desc.trim().is_empty() => Some(desc.trim().to_owned()),
+                (Some(sic), _) => Some(format!("SIC {sic}")),
+                _ => None,
+            };
+            let cik = (!row.cik.trim().is_empty()).then_some(row.cik.as_str());
+            (Some(row.name.as_str()), cik, circle)
+        } else {
+            (None, None, None)
+        };
+        let entry = store::add_or_update_company_with_cik(
+            paths,
+            &ticker,
+            Bucket::Watch,
+            name_opt,
+            cik_opt,
+            circle_opt.as_deref(),
+            None,
+        )?;
+        db.refresh_watchlist_flags(paths)?;
+        Some(entry)
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "signal": signal,
+            "promoted_to_watch": promoted,
+        }
     }))
 }
 
@@ -1570,6 +1903,454 @@ mod tests {
             sbcww_rep["data"]["fy_valuation"]["strike_price"],
             serde_json::Value::Null
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_l1_events_inbox_and_universe_similar_validation_and_queries() {
+        use crate::{
+            lake_l1::{DocChunkRow, LakeEventRow, SignalEvidence, SignalInboxRow},
+            latent::{
+                LOCAL_EMBEDDING_DIM, LOCAL_EMBEDDING_MODEL, encode_embedding_json, local_embed,
+                sha256_hex,
+            },
+        };
+
+        let dir = std::env::temp_dir().join(format!(
+            "m3-cli-l1-suite-{}-{}",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workbench/dossiers")).unwrap();
+        let paths = WorkspacePaths::from_root(dir.clone());
+
+        store::save_watchlist(
+            &paths,
+            &WatchlistFile {
+                schema_version: 1,
+                benchmark_symbol: "^GSPC".into(),
+                default_target_return_pct: Decimal::from(10),
+                companies: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        // Empty-lake defaults for events list & inbox list; unsynced error for similar & triage.
+        let empty_ev = run(&paths, &["events".into(), "list".into()]).unwrap();
+        assert_eq!(empty_ev["ok"], true);
+        assert_eq!(empty_ev["data"]["count"], 0);
+
+        let empty_inbox = run(&paths, &["inbox".into(), "list".into()]).unwrap();
+        assert_eq!(empty_inbox["ok"], true);
+        assert_eq!(empty_inbox["data"]["count"], 0);
+
+        let sim_unsynced = run(
+            &paths,
+            &["universe".into(), "similar".into(), "ADSK".into()],
+        )
+        .unwrap_err();
+        assert!(sim_unsynced.to_string().contains("m3 universe sync"));
+
+        let triage_unsynced = run(
+            &paths,
+            &[
+                "inbox".into(),
+                "triage".into(),
+                "sig-1".into(),
+                "--status".into(),
+                "watch".into(),
+            ],
+        )
+        .unwrap_err();
+        assert!(triage_unsynced.to_string().contains("m3 universe sync"));
+
+        // Flag validation checks.
+        assert!(
+            run(
+                &paths,
+                &[
+                    "events".into(),
+                    "catchup".into(),
+                    "--max-ciks".into(),
+                    "0".into()
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                &paths,
+                &[
+                    "inbox".into(),
+                    "list".into(),
+                    "--status".into(),
+                    "bogus".into()
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                &paths,
+                &[
+                    "inbox".into(),
+                    "list".into(),
+                    "--kind".into(),
+                    "bogus".into()
+                ]
+            )
+            .is_err()
+        );
+        assert!(run(&paths, &["inbox".into(), "triage".into(), "sig-1".into()]).is_err());
+        assert!(
+            run(
+                &paths,
+                &[
+                    "universe".into(),
+                    "similar".into(),
+                    "--limit".into(),
+                    "201".into(),
+                    "ADSK".into()
+                ]
+            )
+            .is_err()
+        );
+
+        let snapshot = vec![
+            synthetic_universe_row(SyntheticRowSpec {
+                ticker: "ADSK",
+                cik: "0000769397",
+                sic: Some(7372),
+                sic_desc: Some("Prepackaged Software"),
+                is_financial: false,
+                roic_5y: Some(28),
+                gm_5y: Some(91),
+                sbc_ocf: Some(42),
+                share_3y: Some(-2),
+                dist: Some(12),
+                fcf_yield: Some(4),
+                quality: 82,
+            }),
+            synthetic_universe_row(SyntheticRowSpec {
+                ticker: "PTC",
+                cik: "0000857005",
+                sic: Some(7372),
+                sic_desc: Some("Prepackaged Software"),
+                is_financial: false,
+                roic_5y: Some(22),
+                gm_5y: Some(80),
+                sbc_ocf: Some(18),
+                share_3y: Some(1),
+                dist: Some(-5),
+                fcf_yield: Some(5),
+                quality: 86,
+            }),
+            synthetic_universe_row(SyntheticRowSpec {
+                ticker: "BAC",
+                cik: "0000070858",
+                sic: Some(6021),
+                sic_desc: Some("National Commercial Banks"),
+                is_financial: true,
+                roic_5y: Some(40),
+                gm_5y: Some(95),
+                sbc_ocf: Some(5),
+                share_3y: Some(-3),
+                dist: Some(-10),
+                fcf_yield: Some(8),
+                quality: 0,
+            }),
+        ];
+
+        {
+            let db = LakeDb::open(&paths).unwrap();
+            let mut db_mut = db;
+            db_mut
+                .replace_sec_lake_data(&[], &[], &[], &snapshot)
+                .unwrap();
+            db_mut.ensure_l1_schema(&paths).unwrap();
+
+            let adsk_text = "Autodesk builds enterprise engineering CAD design and subscription construction software.";
+            let ptc_text = "PTC provides industrial engineering CAD and PLM subscription software for manufacturing.";
+            let bac_text =
+                "Bank of America provides commercial banking deposits and consumer credit loans.";
+            let chunks = vec![
+                DocChunkRow {
+                    chunk_id: "chunk-adsk-1".into(),
+                    cik: "0000769397".into(),
+                    ticker: "ADSK".into(),
+                    doc_type: "10-K".into(),
+                    source_id: "acc-adsk-1".into(),
+                    period_end: Some("2026-01-31".into()),
+                    filing_date: Some("2026-03-10".into()),
+                    section: "item_1".into(),
+                    title: "Business".into(),
+                    content: adsk_text.into(),
+                    content_sha256: sha256_hex(adsk_text.as_bytes()),
+                    source_url: "https://www.sec.gov/Archives/edgar/data/769397/adsk.htm".into(),
+                    embedding_model: LOCAL_EMBEDDING_MODEL.into(),
+                    embedding_dim: LOCAL_EMBEDDING_DIM,
+                    embedding_json: encode_embedding_json(&local_embed(adsk_text)),
+                },
+                DocChunkRow {
+                    chunk_id: "chunk-ptc-1".into(),
+                    cik: "0000857005".into(),
+                    ticker: "PTC".into(),
+                    doc_type: "10-K".into(),
+                    source_id: "acc-ptc-1".into(),
+                    period_end: Some("2025-09-30".into()),
+                    filing_date: Some("2025-11-15".into()),
+                    section: "item_1".into(),
+                    title: "Business".into(),
+                    content: ptc_text.into(),
+                    content_sha256: sha256_hex(ptc_text.as_bytes()),
+                    source_url: "https://www.sec.gov/Archives/edgar/data/857005/ptc.htm".into(),
+                    embedding_model: LOCAL_EMBEDDING_MODEL.into(),
+                    embedding_dim: LOCAL_EMBEDDING_DIM,
+                    embedding_json: encode_embedding_json(&local_embed(ptc_text)),
+                },
+                DocChunkRow {
+                    chunk_id: "chunk-bac-1".into(),
+                    cik: "0000070858".into(),
+                    ticker: "BAC".into(),
+                    doc_type: "10-K".into(),
+                    source_id: "acc-bac-1".into(),
+                    period_end: Some("2025-12-31".into()),
+                    filing_date: Some("2026-02-20".into()),
+                    section: "item_1".into(),
+                    title: "Business".into(),
+                    content: bac_text.into(),
+                    content_sha256: sha256_hex(bac_text.as_bytes()),
+                    source_url: "https://www.sec.gov/Archives/edgar/data/70858/bac.htm".into(),
+                    embedding_model: LOCAL_EMBEDDING_MODEL.into(),
+                    embedding_dim: LOCAL_EMBEDDING_DIM,
+                    embedding_json: encode_embedding_json(&local_embed(bac_text)),
+                },
+            ];
+            db_mut.upsert_doc_chunks(&chunks).unwrap();
+
+            db_mut
+                .upsert_events(&[LakeEventRow {
+                    event_id: "ev-ptc-8k".into(),
+                    source: "sec_edgar".into(),
+                    cik: Some("0000857005".into()),
+                    ticker: Some("PTC".into()),
+                    event_type: "sec_8k".into(),
+                    occurred_at_ms: 1_795_450_000_000,
+                    filing_date: Some("2026-11-20".into()),
+                    title: "PTC Form 8-K Item 2.02".into(),
+                    summary: "Strong recurring ARR growth".into(),
+                    url: "https://www.sec.gov/Archives/edgar/data/857005/8k.htm".into(),
+                    metadata_json: "{}".into(),
+                    processed_mask: 0,
+                }])
+                .unwrap();
+
+            db_mut
+                .upsert_signals(&[
+                    SignalInboxRow {
+                        signal_id: "sig-ptc-disc".into(),
+                        kind: SignalKind::Discovery,
+                        score: 0.91,
+                        primary_ticker: "PTC".into(),
+                        tickers: vec!["PTC".into()],
+                        title: "PTC 新浮现高质量击球候选".into(),
+                        summary: "5Y ROIC 22%, 位于击球区".into(),
+                        evidence: vec![SignalEvidence {
+                            chunk_id: Some("chunk-ptc-1".into()),
+                            ticker: "PTC".into(),
+                            doc_type: "10-K".into(),
+                            section: "item_1".into(),
+                            filing_date: Some("2025-11-15".into()),
+                            title: "Business".into(),
+                            quote: ptc_text.into(),
+                            source_url: "https://www.sec.gov/Archives/edgar/data/857005/ptc.htm"
+                                .into(),
+                            similarity: 0.91,
+                        }],
+                        status: SignalStatus::Unread,
+                        event_id: Some("ev-ptc-8k".into()),
+                        created_at_ms: 1_795_450_000_000,
+                        updated_at_ms: 1_795_450_000_000,
+                    },
+                    SignalInboxRow {
+                        signal_id: "sig-adsk-ripple".into(),
+                        kind: SignalKind::Ripple,
+                        score: 0.77,
+                        primary_ticker: "ADSK".into(),
+                        tickers: vec!["ADSK".into(), "PTC".into()],
+                        title: "PTC 8-K 隐空间传导至 ADSK".into(),
+                        summary: "工业 CAD 订阅景气度共振".into(),
+                        evidence: Vec::new(),
+                        status: SignalStatus::Unread,
+                        event_id: Some("ev-ptc-8k".into()),
+                        created_at_ms: 1_795_450_000_000,
+                        updated_at_ms: 1_795_450_000_000,
+                    },
+                ])
+                .unwrap();
+        }
+
+        // `m3 events catchup --skip-sec --skip-news --skip-docs` offline check.
+        let catchup = run(
+            &paths,
+            &[
+                "events".into(),
+                "catchup".into(),
+                "--skip-sec".into(),
+                "--skip-news".into(),
+                "--skip-docs".into(),
+                "--max-ciks".into(),
+                "5".into(),
+                "--max-docs".into(),
+                "2".into(),
+                "--max-news-tickers".into(),
+                "2".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(catchup["ok"], true);
+        assert_eq!(catchup["data"]["flagship_tokens_used"], 0);
+
+        // `m3 events list`
+        let ev_list = run(
+            &paths,
+            &[
+                "events".into(),
+                "list".into(),
+                "--ticker".into(),
+                "ptc".into(),
+                "--type".into(),
+                "sec_8k".into(),
+                "--limit".into(),
+                "10".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(ev_list["ok"], true);
+        assert_eq!(ev_list["data"]["count"], 1);
+        assert_eq!(ev_list["data"]["events"][0]["event_id"], "ev-ptc-8k");
+
+        // `m3 inbox list`
+        let inbox_disc = run(
+            &paths,
+            &[
+                "inbox".into(),
+                "list".into(),
+                "--status".into(),
+                "unread".into(),
+                "--kind".into(),
+                "discovery".into(),
+                "--limit".into(),
+                "10".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(inbox_disc["ok"], true);
+        let disc_signals = inbox_disc["data"]["signals"].as_array().unwrap();
+        let ptc_disc = disc_signals
+            .iter()
+            .find(|s| s["signal_id"] == "sig-ptc-disc")
+            .expect("sig-ptc-disc should appear in unread discovery signals");
+        assert_eq!(ptc_disc["evidence"][0]["doc_type"], "10-K");
+
+        // `m3 inbox triage ... --promote-watch`
+        let triaged = run(
+            &paths,
+            &[
+                "inbox".into(),
+                "triage".into(),
+                "sig-ptc-disc".into(),
+                "--status".into(),
+                "watch".into(),
+                "--promote-watch".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(triaged["ok"], true);
+        assert_eq!(triaged["data"]["signal"]["status"], "watch");
+        assert_eq!(triaged["data"]["promoted_to_watch"]["ticker"], "PTC");
+        assert_eq!(triaged["data"]["promoted_to_watch"]["bucket"], "watch");
+
+        let unread_after = run(
+            &paths,
+            &[
+                "inbox".into(),
+                "list".into(),
+                "--status".into(),
+                "unread".into(),
+            ],
+        )
+        .unwrap();
+        let unread_signals = unread_after["data"]["signals"].as_array().unwrap();
+        assert!(
+            unread_signals
+                .iter()
+                .all(|s| s["signal_id"] != "sig-ptc-disc")
+        );
+        assert!(
+            unread_signals
+                .iter()
+                .any(|s| s["signal_id"] == "sig-adsk-ripple")
+        );
+
+        // `m3 universe similar` (by ticker and by text + financial hard filter)
+        let sim_ticker = run(
+            &paths,
+            &[
+                "universe".into(),
+                "similar".into(),
+                "ADSK".into(),
+                "--ticker".into(),
+                "--limit".into(),
+                "5".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(sim_ticker["ok"], true);
+        assert_eq!(sim_ticker["data"]["as_ticker"], true);
+        assert_eq!(sim_ticker["data"]["count"], 1);
+        assert_eq!(sim_ticker["data"]["hits"][0]["company"]["ticker"], "PTC");
+        assert_eq!(
+            sim_ticker["data"]["hits"][0]["company"]["in_watchlist"],
+            true
+        );
+
+        let sim_query = run(
+            &paths,
+            &[
+                "universe".into(),
+                "similar".into(),
+                "enterprise engineering CAD subscription software".into(),
+                "--min-roic".into(),
+                "20".into(),
+                "--max-sbc-ocf".into(),
+                "25".into(),
+                "--exclude-financials".into(),
+                "--limit".into(),
+                "5".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(sim_query["ok"], true);
+        assert_eq!(sim_query["data"]["count"], 1);
+        assert_eq!(sim_query["data"]["hits"][0]["company"]["ticker"], "PTC");
+
+        let sim_with_fin = run(
+            &paths,
+            &[
+                "universe".into(),
+                "similar".into(),
+                "banking deposits credit".into(),
+                "--include-financials".into(),
+                "--limit".into(),
+                "5".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(sim_with_fin["ok"], true);
+        assert_eq!(sim_with_fin["data"]["hits"][0]["company"]["ticker"], "BAC");
 
         let _ = fs::remove_dir_all(&dir);
     }

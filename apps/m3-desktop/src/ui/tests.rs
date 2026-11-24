@@ -1,14 +1,20 @@
 use super::agent::{AgentPanelSlice, apply_interrogator_event};
 use super::company::roic_unavailable_label;
 use super::format::*;
+use super::inbox::{
+    InboxFilter, InboxViewState, count_inbox_filter, filter_inbox_signals,
+    resolve_active_inbox_signal, should_skip_auto_catchup, should_skip_auto_catchup_with,
+    signal_kind_badge, signal_status_badge, step_inbox_selection,
+};
 use super::theme::*;
 use super::universe::{
-    UniversePreset, UniverseViewState, apply_ui_row_guards, build_scatter_model,
-    format_watch_promote_banner, is_lake_empty, resolve_active_universe_row,
+    UniversePreset, UniverseSearchMode, UniverseViewState, apply_ui_row_guards,
+    build_scatter_model, format_watch_promote_banner, is_lake_empty, resolve_active_universe_row,
 };
 use super::*;
 use crate::alan_interrogator::{InterrogatorEvent, TuringTapeKind};
 use crate::lake::{UniverseRow, UniverseSortBy, UniverseSummary};
+use crate::lake_l1::{SignalEvidence, SignalInboxRow, SignalKind, SignalStatus};
 use crate::model::{
     DataSource, OhlcBar, StrikeZoneStatus, ValuationAssumptions, ValuationSnapshot,
 };
@@ -703,4 +709,174 @@ fn format_watch_promote_banner_surfaces_duckdb_and_reload_errors() {
     );
     assert!(disk_err.1);
     assert!(disk_err.0.contains("report corrupt"));
+}
+
+fn make_inbox_signal(
+    id: &str,
+    kind: SignalKind,
+    status: SignalStatus,
+    ticker: &str,
+    score: f64,
+) -> SignalInboxRow {
+    SignalInboxRow {
+        signal_id: id.into(),
+        kind,
+        score,
+        primary_ticker: ticker.into(),
+        tickers: vec![ticker.into()],
+        title: format!("{ticker} signal {id}"),
+        summary: format!("Summary for {ticker}"),
+        evidence: vec![SignalEvidence {
+            chunk_id: Some(format!("c-{id}")),
+            ticker: ticker.into(),
+            doc_type: "10-K".into(),
+            section: "item_1".into(),
+            filing_date: Some("2026-03-01".into()),
+            title: "Business".into(),
+            quote: "Recurring CAD software subscription revenue.".into(),
+            source_url: "https://www.sec.gov/example".into(),
+            similarity: 0.88,
+        }],
+        status,
+        event_id: None,
+        created_at_ms: 1_795_400_000_000,
+        updated_at_ms: 1_795_400_000_000,
+    }
+}
+
+#[test]
+fn inbox_filters_navigation_and_auto_catchup_guards_work() {
+    let s1 = make_inbox_signal(
+        "s1",
+        SignalKind::Discovery,
+        SignalStatus::Unread,
+        "PTC",
+        0.92,
+    );
+    let s2 = make_inbox_signal("s2", SignalKind::Ripple, SignalStatus::Unread, "ADSK", 0.85);
+    let s3 = make_inbox_signal("s3", SignalKind::Strike, SignalStatus::Watch, "CDNS", 0.80);
+    let s4 = make_inbox_signal(
+        "s4",
+        SignalKind::RedFlag,
+        SignalStatus::Unread,
+        "INTC",
+        0.78,
+    );
+    let s5 = make_inbox_signal(
+        "s5",
+        SignalKind::Discovery,
+        SignalStatus::Archived,
+        "IBM",
+        0.50,
+    );
+    let signals = vec![s1, s2, s3, s4, s5];
+
+    assert_eq!(count_inbox_filter(&signals, InboxFilter::Unread), 3);
+    assert_eq!(count_inbox_filter(&signals, InboxFilter::All), 5);
+    assert_eq!(count_inbox_filter(&signals, InboxFilter::Discovery), 1);
+    assert_eq!(count_inbox_filter(&signals, InboxFilter::Ripple), 1);
+    assert_eq!(
+        count_inbox_filter(&signals, InboxFilter::StrikeAndRedFlag),
+        2
+    );
+    assert_eq!(count_inbox_filter(&signals, InboxFilter::Archived), 1);
+
+    let unread = filter_inbox_signals(&signals, InboxFilter::Unread);
+    let (idx0, active0) = resolve_active_inbox_signal(&unread, None, 0).unwrap();
+    assert_eq!(idx0, 0);
+    assert_eq!(active0.signal_id, "s1");
+
+    let (idx1, id1) = step_inbox_selection(&unread, Some(&active0.signal_id), idx0, 1).unwrap();
+    assert_eq!(idx1, 1);
+    assert_eq!(id1, "s2");
+
+    let (idx2, id2) = step_inbox_selection(&unread, Some(&id1), idx1, 5).unwrap();
+    assert_eq!(idx2, 2);
+    assert_eq!(id2, "s4");
+
+    let (idx_back, id_back) = step_inbox_selection(&unread, Some(&id2), idx2, -10).unwrap();
+    assert_eq!(idx_back, 0);
+    assert_eq!(id_back, "s1");
+
+    assert_eq!(signal_kind_badge(SignalKind::Ripple).0, "隐空间传导");
+    assert_eq!(
+        signal_status_badge(SignalStatus::Researching).0,
+        "Alan 研判"
+    );
+
+    let state = InboxViewState::default();
+    assert_eq!(state.filter, InboxFilter::Unread);
+
+    assert!(should_skip_auto_catchup(true));
+    assert!(should_skip_auto_catchup_with(true, None, true));
+    assert!(should_skip_auto_catchup_with(false, None, false));
+    assert!(should_skip_auto_catchup_with(false, Some("1"), true));
+    assert!(should_skip_auto_catchup_with(false, Some("true"), true));
+    assert!(!should_skip_auto_catchup_with(false, Some("0"), true));
+    assert!(!should_skip_auto_catchup_with(false, None, true));
+}
+
+#[test]
+fn universe_similar_search_state_and_palette_actions_wire_cleanly() {
+    let mut state = UniverseViewState::default();
+    assert_eq!(state.search_mode, UniverseSearchMode::Keyword);
+    assert!(!state.similar_as_ticker);
+
+    state.apply_preset(UniversePreset::LowSbcCashCows);
+    state.start_similar_for_ticker("adsk");
+    assert_eq!(state.search_mode, UniverseSearchMode::Similar);
+    assert!(state.similar_as_ticker);
+    assert_eq!(state.query, "ADSK");
+    assert!(!state.is_default());
+
+    let sim_filter = state.to_similar_filter();
+    assert_eq!(sim_filter.min_roic_5y, Some(Decimal::from(15)));
+    assert_eq!(sim_filter.max_sbc_to_ocf, Some(Decimal::from(10)));
+    assert!(sim_filter.exclude_financials);
+    assert!(sim_filter.positive_strict_oe_only);
+    assert_eq!(sim_filter.limit, 50);
+
+    state.set_search_mode(UniverseSearchMode::Keyword);
+    assert_eq!(state.search_mode, UniverseSearchMode::Keyword);
+    assert!(!state.similar_as_ticker);
+
+    let items = vec![
+        PaletteItem {
+            group: "VIEW".into(),
+            title: "简报收件箱 · Event-Driven Inbox".into(),
+            subtitle: "新浮现、隐空间传导与击球红灯待审讯信号".into(),
+            shortcut: Some("⌘1"),
+            dot_color: EMERALD_FG,
+            action: PaletteAction::SwitchView(NavView::Inbox),
+        },
+        PaletteItem {
+            group: "DATA".into(),
+            title: "追平事件流 · L1 SEC Filings / News / 语义索引".into(),
+            subtitle: "0 Flagship Token".into(),
+            shortcut: Some("r"),
+            dot_color: EMERALD_FG,
+            action: PaletteAction::CatchupEvents,
+        },
+        PaletteItem {
+            group: "SEARCH".into(),
+            title: "混合语义相似搜索 · Lookalike Discovery".into(),
+            subtitle: "按商业模式描述或 Ticker 检索".into(),
+            shortcut: None,
+            dot_color: VIOLET_FG,
+            action: PaletteAction::FocusSimilarSearch,
+        },
+    ];
+
+    assert_eq!(
+        filter_palette_items(&items, "inbox")[0].action,
+        PaletteAction::SwitchView(NavView::Inbox)
+    );
+    assert_eq!(
+        filter_palette_items(&items, "追平")[0].action,
+        PaletteAction::CatchupEvents
+    );
+    assert_eq!(
+        filter_palette_items(&items, "lookalike")[0].action,
+        PaletteAction::FocusSimilarSearch
+    );
 }

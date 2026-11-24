@@ -835,12 +835,12 @@ fn strike_zone_fresh_sql_predicate() -> &'static str {
      )"
 }
 
-struct ReadSnapshotTx<'a> {
+pub(crate) struct ReadSnapshotTx<'a> {
     conn: &'a Connection,
 }
 
 impl<'a> ReadSnapshotTx<'a> {
-    fn begin(conn: &'a Connection) -> Result<Self> {
+    pub(crate) fn begin(conn: &'a Connection) -> Result<Self> {
         conn.execute_batch("BEGIN TRANSACTION;")?;
         Ok(Self { conn })
     }
@@ -853,10 +853,10 @@ impl Drop for ReadSnapshotTx<'_> {
 }
 
 pub struct LakeDb {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
-const UNIVERSE_SELECT_COLS: &str = "
+pub(crate) const UNIVERSE_SELECT_COLS: &str = "
     ticker, cik, name, exchange, sic, sic_description, is_financial,
     latest_filing_end, years_of_data, quality_score, in_price_pool, in_watchlist,
     bucket_opt, latest_price, strike_price, distance_to_strike_pct,
@@ -1150,6 +1150,7 @@ impl LakeDb {
         self.migrate_nullable_columns()?;
         self.reconcile_prices_daily_trade_dates()?;
         self.refresh_parquet_views(paths)?;
+        self.ensure_l1_schema(paths)?;
         Ok(())
     }
 
@@ -5334,7 +5335,7 @@ fn serialize_universe_exact(u: &UniverseRow, quote_market_time_ms: Option<u64>) 
     Ok(encode_universe_exact(&exact))
 }
 
-fn read_universe_row(row: &duckdb::Row<'_>) -> duckdb::Result<UniverseRow> {
+pub(crate) fn read_universe_row(row: &duckdb::Row<'_>) -> duckdb::Result<UniverseRow> {
     let sic_opt: Option<i32> = row.get(4)?;
     let years_i32: i32 = row.get(8)?;
     let bucket_opt = match row.get_ref(12)? {
@@ -5565,7 +5566,7 @@ fn str_to_bucket(s: &str) -> Option<Bucket> {
     }
 }
 
-fn escape_sql_literal(s: &str) -> String {
+pub(crate) fn escape_sql_literal(s: &str) -> String {
     s.replace('\'', "''")
 }
 
@@ -5639,7 +5640,7 @@ fn duckdb_dec(d: Decimal, scale: u32, max_int_digits: u32) -> Option<Decimal> {
     Some(rounded)
 }
 
-fn round_for_sql(d: Decimal, scale: u32) -> Decimal {
+pub(crate) fn round_for_sql(d: Decimal, scale: u32) -> Decimal {
     d.round_dp(scale)
 }
 
