@@ -1,12 +1,13 @@
 import {
   COMPANIES,
   INBOX_EVENTS,
+  INDUSTRIES,
   JOURNAL_ENTRIES,
-  THEMES,
   type CompanyRecord,
   type CompanySubTab,
   type InboxEvent,
   type InboxFilter,
+  type IndustryPerspectiveKey,
   type PerspectiveKey,
   type UniverseFilter,
   type UniverseSearchMode,
@@ -31,6 +32,11 @@ interface WorkbenchState {
   universeSearchMode: UniverseSearchMode;
   selectedTicker: string;
   perspective: PerspectiveKey;
+  selectedIndustrySlug: string;
+  industryPerspective: IndustryPerspectiveKey;
+  feynmanChecked: Record<string, boolean>;
+  settingsLang: 'en' | 'zh';
+  settingsChannel: 'stable' | 'beta';
   openProvenanceId: string | null;
   paletteOpen: boolean;
   paletteQuery: string;
@@ -44,16 +50,25 @@ const PERSPECTIVE_LABELS: Array<{ key: PerspectiveKey; label: string }> = [
   { key: 'premortem', label: 'Pre-Mortem' },
 ];
 
+const IND_PERSPECTIVE_LABELS: Array<{ key: IndustryPerspectiveKey; label: string }> = [
+  { key: 'value_chain', label: 'Value Chain' },
+  { key: 'moat', label: 'Moats' },
+  { key: 'failure_modes', label: 'Failure Modes' },
+  { key: 'valuation_kpis', label: 'Anchor & KPIs' },
+];
+
 const NAV_ITEMS: Array<{
   tab: WorkbenchTab;
   label: string;
+  zhLabel: string;
   shortcut: string;
   dotColor: string;
 }> = [
-  { tab: 'inbox', label: 'Briefing Inbox', shortcut: '⌘1', dotColor: 'var(--emerald)' },
-  { tab: 'universe', label: 'Universe Radar', shortcut: '⌘2', dotColor: 'var(--sky)' },
-  { tab: 'baskets', label: 'Circle', shortcut: '⌘3', dotColor: 'var(--ink-hero)' },
-  { tab: 'themes', label: 'Themes & Journal', shortcut: '⌘4', dotColor: 'var(--gold)' },
+  { tab: 'inbox', label: 'Briefing Inbox', zhLabel: '简报收件箱', shortcut: '⌘1', dotColor: 'var(--emerald)' },
+  { tab: 'universe', label: 'Universe Radar', zhLabel: '全市场雷达', shortcut: '⌘2', dotColor: 'var(--sky)' },
+  { tab: 'industry', label: 'Industry Research', zhLabel: '行业研究', shortcut: '⌘3', dotColor: 'var(--violet)' },
+  { tab: 'baskets', label: 'Circle', zhLabel: '能力圈总览', shortcut: '⌘4', dotColor: 'var(--ink-hero)' },
+  { tab: 'journal', label: 'Decision Journal', zhLabel: '决策账本', shortcut: '⌘5', dotColor: 'var(--gold)' },
 ];
 
 function escapeHtml(raw: string): string {
@@ -93,12 +108,21 @@ export function mountWorkbench(container: HTMLElement): void {
     universeSearchMode: 'keyword',
     selectedTicker: 'SNPS',
     perspective: 'premortem',
+    selectedIndustrySlug: INDUSTRIES[0].slug,
+    industryPerspective: 'value_chain',
+    feynmanChecked: Object.fromEntries(
+      INDUSTRIES.flatMap((ind) =>
+        ind.feynmanChecklist.map((q, idx) => [`${ind.slug}:${idx}`, q.checked]),
+      ),
+    ),
+    settingsLang: 'en',
+    settingsChannel: 'stable',
     openProvenanceId: 'snps-oe',
     paletteOpen: false,
     paletteQuery: '',
     dockNotice: {
       tag: 'CATCH-UP',
-      message: 'SEC 10-K & Tier-1 quotes synced. 3 unread briefings await triage.',
+      message: 'Circle-gated Strike Zone active. 3 unread briefings await triage.',
       tone: 'emerald',
       dismissible: true,
     },
@@ -106,19 +130,27 @@ export function mountWorkbench(container: HTMLElement): void {
 
   function getBreadcrumb(): string {
     const company = COMPANIES.find((c) => c.ticker === state.selectedTicker) || COMPANIES[0];
+    const ind = INDUSTRIES.find((i) => i.slug === state.selectedIndustrySlug) || INDUSTRIES[0];
+    const zh = state.settingsLang === 'zh';
     switch (state.tab) {
       case 'inbox':
-        return 'Briefing Inbox · Event-Driven L1';
+        return zh ? '简报收件箱 · Event-Driven L1' : 'Briefing Inbox · Event-Driven L1';
       case 'universe':
-        return 'Universe Radar · Full-US Ledger (5,142)';
+        return zh ? '全市场雷达 · US Lakehouse (5,142)' : 'Universe Radar · Full-US Ledger (5,142)';
+      case 'industry':
+        return `${zh ? '行业研究' : 'Industry Studio'} · ${ind.title} (${ind.statusLabel})`;
       case 'baskets':
         return state.basketFilter === 'All'
-          ? 'Circle · Overview'
+          ? zh
+            ? '能力圈总览 · Circle Overview'
+            : 'Circle · Overview'
           : `Circle / ${state.basketFilter}`;
       case 'research':
         return `${company.ticker} · ${company.name} · Research Desk`;
-      case 'themes':
-        return 'Themes & Journal · Cross-Company Archetypes';
+      case 'journal':
+        return zh ? '决策账本 · Decision Journal' : 'Decision Journal · Append-Only Ledger';
+      case 'settings':
+        return zh ? '设置 · Preferences & Guardrails' : 'Settings · Preferences & Guardrails';
     }
   }
 
@@ -134,14 +166,20 @@ export function mountWorkbench(container: HTMLElement): void {
       case 'inbox':
         return {
           dot: 'var(--emerald)',
-          legend: 'w watch · x too hard · e archive · r catch-up · ⌘K commands',
-          mode: 'L0/L1 · 0 FLAGSHIP TOKEN',
+          legend: 'w watch · x too hard · e archive · research industry · ⌘K commands',
+          mode: 'CIRCLE-GATED L1 · 0 TOKEN',
         };
       case 'universe':
         return {
           dot: 'var(--sky)',
-          legend: 'presets · lookalike toggle · ↵ inspect dossier · ⌘K commands',
+          legend: 'presets · lookalike toggle · research industry · ↵ inspect · ⌘K commands',
           mode: 'DUCKDB L0/L1 · ZERO-LLM',
+        };
+      case 'industry':
+        return {
+          dot: 'var(--violet)',
+          legend: '4-lens Alan study · SEC 10-K vs Web · Feynman check · human valuation anchor',
+          mode: 'EMBEDDED ALAN + WEB · PAPER ONLY',
         };
       case 'baskets':
         return {
@@ -155,11 +193,17 @@ export function mountWorkbench(container: HTMLElement): void {
           legend: '1 Memo · 2 Deep Research & Alan · 3 XBRL · esc back to Circle',
           mode: state.companySubTab === 'alan' ? 'EMBEDDED ALAN · PAPER ONLY' : 'ZERO-LLM ARITHMETIC',
         };
-      case 'themes':
+      case 'journal':
         return {
           dot: 'var(--gold)',
-          legend: 'cluster archetypes · append-only decision journal · ⌘K commands',
+          legend: 'append-only pre-committed decision journal vs S&P 500 · ⌘K commands',
           mode: 'ZERO-LLM · PAPER ONLY',
+        };
+      case 'settings':
+        return {
+          dot: 'var(--sky)',
+          legend: 'live Zh/En bilingual switch · release channel · L2 budget guardrails',
+          mode: 'SETTINGS · LOCAL-FIRST',
         };
     }
   }
@@ -206,11 +250,15 @@ export function mountWorkbench(container: HTMLElement): void {
                   ? renderInboxView()
                   : state.tab === 'universe'
                     ? renderUniverseView()
-                    : state.tab === 'baskets'
-                      ? renderBasketsView()
-                      : state.tab === 'research'
-                        ? renderResearchView()
-                        : renderThemesView()
+                    : state.tab === 'industry'
+                      ? renderIndustryView()
+                      : state.tab === 'baskets'
+                        ? renderBasketsView()
+                        : state.tab === 'research'
+                          ? renderResearchView()
+                          : state.tab === 'settings'
+                            ? renderSettingsView()
+                            : renderJournalView()
               }
             </div>
 
@@ -280,10 +328,11 @@ export function mountWorkbench(container: HTMLElement): void {
         </div>
 
         <div class="m3-sidebar-nav" role="tablist" aria-label="Workspace Sections">
-          <div class="m3-rail-heading">WORKBENCH</div>
+          <div class="m3-rail-heading">${state.settingsLang === 'zh' ? '工作台' : 'WORKBENCH'}</div>
           ${NAV_ITEMS.map((item) => {
             const active =
               state.tab === item.tab && (item.tab !== 'baskets' || state.basketFilter === 'All');
+            const label = state.settingsLang === 'zh' ? item.zhLabel : item.label;
             return `
               <button
                 type="button"
@@ -294,7 +343,7 @@ export function mountWorkbench(container: HTMLElement): void {
               >
                 <span class="m3-nav-left">
                   <span class="mini-dot" style="background: ${active ? item.dotColor : 'var(--border-strong)'}"></span>
-                  <span>${escapeHtml(item.label)}</span>
+                  <span>${escapeHtml(label)}</span>
                 </span>
                 <span class="m3-nav-right">
                   ${
@@ -310,7 +359,7 @@ export function mountWorkbench(container: HTMLElement): void {
         </div>
 
         <div class="m3-sidebar-baskets">
-          <div class="m3-rail-heading">CIRCLE</div>
+          <div class="m3-rail-heading">${state.settingsLang === 'zh' ? '能力圈' : 'CIRCLE'}</div>
           ${buckets
             .map((b) => {
               const members = COMPANIES.filter((c) => c.bucket === b.key);
@@ -409,6 +458,20 @@ export function mountWorkbench(container: HTMLElement): void {
             : ''
         }
 
+        <div style="margin-bottom: 0.4rem;">
+          <button
+            type="button"
+            class="m3-nav-item ${state.tab === 'settings' ? 'is-selected' : ''}"
+            data-nav-tab="settings"
+          >
+            <span class="m3-nav-left">
+              <span class="mini-dot" style="background: ${state.tab === 'settings' ? 'var(--sky)' : 'var(--border-strong)'}"></span>
+              <span>${state.settingsLang === 'zh' ? '设置' : 'Settings'}</span>
+            </span>
+            <span class="m3-kbd">⌘,</span>
+          </button>
+        </div>
+
         <div class="m3-dock-tray">
           <div class="m3-dock-tray-row">
             <span class="m3-nav-left">
@@ -418,8 +481,8 @@ export function mountWorkbench(container: HTMLElement): void {
             <span class="mono" style="color: var(--emerald)">\$0.42 / \$10.00</span>
           </div>
           <div class="m3-dock-tray-row" style="color: var(--ink-muted)">
-            <span class="mono">v0.3.0</span>
-            <span class="mono">stable</span>
+            <span class="mono">v0.3.1</span>
+            <span class="mono">${escapeHtml(state.settingsChannel)}</span>
           </div>
         </div>
       </div>
@@ -535,10 +598,19 @@ export function mountWorkbench(container: HTMLElement): void {
                 <span class="ticker-code">${escapeHtml(selected.ticker)}</span>
                 <span style="color: var(--ink-secondary); font-size: 0.84rem;">${escapeHtml(selected.company)}</span>
                 <span class="status-pill ${toneClass(selected.severity)}">${escapeHtml(selected.kindLabel)}</span>
+                <span class="status-pill ${toneClass(selected.circleStatusTone)}">${escapeHtml(selected.circleStatusLabel)}</span>
               </div>
               <h3 class="inspector-title">${escapeHtml(selected.headline)}</h3>
             </div>
             <span class="event-time">${escapeHtml(selected.timestamp)}</span>
+          </div>
+
+          <div class="evidence-box">
+            <div class="evidence-top">
+              <span class="kv-label">SEC 10-K Company Profile &amp; Circle Context (0 LLM)</span>
+              <span class="mono" style="font-size: 0.68rem; color: var(--sky);">Item 1 / Item 1A</span>
+            </div>
+            <div class="evidence-quote">${escapeHtml(selected.businessProfile10k)}</div>
           </div>
 
           <div class="kv-grid">
@@ -567,10 +639,13 @@ export function mountWorkbench(container: HTMLElement): void {
 
           <div class="inspector-actions">
             <button type="button" class="action-btn action-btn--primary" data-open-desk="${selected.ticker}">
-              Inspect ${escapeHtml(selected.ticker)} in Research Desk →
+              Inspect ${escapeHtml(selected.ticker)} →
+            </button>
+            <button type="button" class="action-btn" style="border-color: var(--sky-border); color: var(--sky);" data-open-industry="${escapeHtml(selected.industrySlug || INDUSTRIES[0].slug)}">
+              Research Industry (⌘3)
             </button>
             <button type="button" class="action-btn" data-triage-event="${selected.id}" data-triage-action="watch">
-              ${selectedSt === 'watch' ? '✓ In Watch' : 'w Watch'}
+              ${selectedSt === 'watch' ? '✓ Watch' : 'w Watch'}
             </button>
             <button type="button" class="action-btn" data-triage-event="${selected.id}" data-triage-action="too_hard">
               ${selectedSt === 'too_hard' ? '✓ Too Hard' : 'x Too Hard'}
@@ -681,9 +756,14 @@ export function mountWorkbench(container: HTMLElement): void {
             ${escapeHtml(selected.lookalikeNote)} · ${escapeHtml(selected.lastFiling)}
           </span>
         </div>
-        <button type="button" class="action-btn action-btn--primary" data-open-desk="${selected.ticker}">
-          Open Research Desk →
-        </button>
+        <div class="chip-group">
+          <button type="button" class="action-btn" style="border-color: var(--sky-border); color: var(--sky);" data-open-industry="${escapeHtml(INDUSTRIES[0].slug)}">
+            Research Industry (⌘3)
+          </button>
+          <button type="button" class="action-btn action-btn--primary" data-open-desk="${selected.ticker}">
+            Open Research Desk →
+          </button>
+        </div>
       </div>
     `;
   }
@@ -928,71 +1008,231 @@ export function mountWorkbench(container: HTMLElement): void {
     `;
   }
 
-  function renderThemesView(): string {
+  function renderIndustryView(): string {
+    const ind = INDUSTRIES.find((i) => i.slug === state.selectedIndustrySlug) || INDUSTRIES[0];
+    const lens = ind.perspectives[state.industryPerspective];
+    const stPill =
+      ind.status === 'inside_circle'
+        ? 'pill-emerald'
+        : ind.status === 'too_hard'
+          ? 'pill-coral'
+          : 'pill-sky';
+
     return `
       <div class="view-toolbar">
-        <div class="view-summary">
-          Cross-Company Business Archetypes + Append-Only Decision Journal
+        <div class="chip-group" role="tablist" aria-label="Industry Studies">
+          ${INDUSTRIES.map(
+            (item) => `
+            <button
+              type="button"
+              class="filter-chip ${item.slug === ind.slug ? 'is-active' : ''}"
+              data-select-industry="${escapeHtml(item.slug)}"
+            >
+              ${escapeHtml(item.title)} (${escapeHtml(item.statusLabel)})
+            </button>
+          `,
+          ).join('')}
         </div>
-        <div class="view-summary tabular">
-          ${THEMES.length} clusters · ${JOURNAL_ENTRIES.length} entries
-        </div>
+        <div class="view-summary">Alan 4-Lens Study · 10-K + Web · Feynman Graduation</div>
       </div>
 
-      <div class="themes-grid">
-        <div class="theme-list">
-          ${THEMES.map(
-            (t) => `
-            <div class="theme-card">
-              <div class="theme-card-top">
-                <span class="theme-name">${escapeHtml(t.name)}</span>
-                <span class="status-pill pill-violet">${escapeHtml(t.signal)}</span>
-              </div>
-              <p style="margin: 0 0 0.65rem; font-size: 0.84rem; color: var(--ink-secondary);">
-                ${escapeHtml(t.summary)}
-              </p>
-              <div class="chip-group">
-                ${t.tickers
-                  .map(
-                    (tk) => `
-                  <button type="button" class="filter-chip" data-open-desk="${tk}">
-                    Open ${escapeHtml(tk)} →
-                  </button>
-                `,
-                  )
-                  .join('')}
-              </div>
+      <div class="pane-right" style="padding: 1rem 1.15rem; gap: 0.85rem; overflow-y: auto; flex: 1;">
+        <div class="inspector-head">
+          <div>
+            <div class="event-title-line">
+              <span class="status-pill ${stPill}">${escapeHtml(ind.statusLabel)}</span>
+              <span class="ticker-code" style="font-size: 0.96rem;">${escapeHtml(ind.title)}</span>
+              <span class="event-kind">${escapeHtml(ind.sicLabel)}</span>
             </div>
+            <div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--ink-secondary);">
+              Human Valuation Anchor: <strong class="mono" style="color: var(--emerald);">${escapeHtml(ind.anchorLabel)}</strong>
+              · Bound Peers: <span class="mono">${escapeHtml(ind.boundTickers.join(', '))}</span>
+            </div>
+          </div>
+          <span class="status-pill pill-violet">Embedded Alan 4-Lens Ready</span>
+        </div>
+
+        <div class="perspective-tabs" role="tablist" aria-label="Industry 4 Perspectives">
+          ${IND_PERSPECTIVE_LABELS.map(
+            (p) => `
+            <button
+              type="button"
+              role="tab"
+              aria-selected="${state.industryPerspective === p.key ? 'true' : 'false'}"
+              class="perspective-btn ${state.industryPerspective === p.key ? 'is-active' : ''}"
+              data-ind-perspective="${p.key}"
+            >
+              ${escapeHtml(p.label)}
+            </button>
           `,
           ).join('')}
         </div>
 
-        <div class="journal-list">
-          <span class="kv-label">Decision Journal (Append-Only Ledger)</span>
-          ${JOURNAL_ENTRIES.map(
-            (j) => `
-            <div class="journal-card">
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem;">
-                <span class="m3-nav-left">
-                  <span class="mini-dot" style="background: ${
-                    j.tone === 'strike'
-                      ? 'var(--emerald)'
-                      : j.tone === 'toohard'
-                        ? 'var(--coral)'
-                        : 'var(--sky)'
-                  }"></span>
-                  <span class="ticker-code">${escapeHtml(j.ticker)}</span>
-                  <span class="event-kind">${escapeHtml(j.action)}</span>
-                </span>
-                <span class="mono" style="font-size: 0.7rem; color: var(--ink-muted);">${escapeHtml(j.date)}</span>
-              </div>
-              <p style="margin: 0; font-size: 0.85rem; color: var(--ink-primary); line-height: 1.5;">${escapeHtml(j.note)}</p>
+        <div class="evidence-box">
+          <div class="evidence-top">
+            <strong style="color: var(--ink-hero); font-size: 0.86rem;">${escapeHtml(lens.title)}</strong>
+            <span class="status-pill pill-sky">SEC 10-K vs Web Separated</span>
+          </div>
+          <p style="margin: 0; font-size: 0.82rem; color: var(--ink-secondary);">${escapeHtml(lens.summary)}</p>
+          <ul class="pipeline-bullets">
+            ${lens.points.map((pt) => `<li>${escapeHtml(pt)}</li>`).join('')}
+          </ul>
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55rem; margin-top: 0.25rem;">
+            <div class="kv-card">
+              <span class="kv-label" style="color: var(--emerald);">Primary SEC 10-K Citations</span>
+              ${ind.secCitations.map((c) => `<div class="kv-sub">${escapeHtml(c)}</div>`).join('')}
             </div>
-          `,
-          ).join('')}
+            <div class="kv-card">
+              <span class="kv-label" style="color: var(--sky);">External Web Search Citations</span>
+              ${ind.webCitations
+                .map((w) => `<div class="kv-sub">[Web] ${escapeHtml(w.title)}</div>`)
+                .join('')}
+            </div>
+          </div>
+        </div>
+
+        <div class="table-wrap" style="border: 1px solid var(--border-hairline); border-radius: var(--radius-sm);">
+          <table class="m3-table">
+            <thead>
+              <tr>
+                <th>Peer</th>
+                <th>5Y ROIC</th>
+                <th>5Y GM</th>
+                <th>FCF%</th>
+                <th>SBC/OCF</th>
+                <th>Spot</th>
+                <th>Industry Anchor Ref</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${ind.peers
+                .map(
+                  (peer) => `
+                <tr>
+                  <td><span class="ticker-code">${escapeHtml(peer.ticker)}</span> <span style="color: var(--ink-muted); font-size: 0.74rem;">${escapeHtml(peer.name)}</span></td>
+                  <td class="mono tabular" style="color: var(--emerald);">${escapeHtml(peer.roic5y)}</td>
+                  <td class="mono tabular">${escapeHtml(peer.gm5y)}</td>
+                  <td class="mono tabular">${escapeHtml(peer.fcfYield)}</td>
+                  <td class="mono tabular">${escapeHtml(peer.sbcOcf)}</td>
+                  <td class="mono tabular">${escapeHtml(peer.price)}</td>
+                  <td class="mono tabular" style="color: var(--sky);">${escapeHtml(peer.refStrike)}</td>
+                </tr>
+              `,
+                )
+                .join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="sovereignty-box">
+          <div class="sovereignty-header">
+            <span>Feynman Mastery Check &amp; Human Notes</span>
+            <span>workbench/industries/${escapeHtml(ind.slug)}.md</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.5rem;">
+            ${ind.feynmanChecklist
+              .map((q, idx) => {
+                const key = `${ind.slug}:${idx}`;
+                const checked = state.feynmanChecked[key] ?? q.checked;
+                return `
+                  <button
+                    type="button"
+                    style="text-align: left; display: flex; gap: 0.45rem; font-size: 0.78rem; color: var(--ink-primary);"
+                    data-toggle-feynman="${escapeHtml(key)}"
+                  >
+                    <span class="mono" style="color: ${checked ? 'var(--emerald)' : 'var(--ink-muted)'};">${checked ? '[✓]' : '[ ]'}</span>
+                    <span>${escapeHtml(q.text)}</span>
+                  </button>
+                `;
+              })
+              .join('')}
+          </div>
+          <p class="sovereignty-body">${escapeHtml(ind.humanNotes)}</p>
         </div>
       </div>
     `;
+  }
+
+  function renderJournalView(): string {
+    return `
+      <div class="view-toolbar">
+        <div class="view-summary">
+          Append-Only Pre-Committed Decision Journal (vs 100% Paper Cash &amp; S&amp;P 500)
+        </div>
+        <div class="view-summary tabular">${JOURNAL_ENTRIES.length} entries</div>
+      </div>
+
+      <div class="journal-list" style="flex: 1; overflow-y: auto;">
+        ${JOURNAL_ENTRIES.map(
+          (j) => `
+          <div class="journal-card">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem;">
+              <span class="m3-nav-left">
+                <span class="mini-dot" style="background: ${
+                  j.tone === 'strike'
+                    ? 'var(--emerald)'
+                    : j.tone === 'toohard'
+                      ? 'var(--coral)'
+                      : 'var(--sky)'
+                }"></span>
+                <span class="ticker-code">${escapeHtml(j.ticker)}</span>
+                <span class="event-kind">${escapeHtml(j.action)}</span>
+              </span>
+              <span class="mono" style="font-size: 0.7rem; color: var(--ink-muted);">${escapeHtml(j.date)}</span>
+            </div>
+            <p style="margin: 0; font-size: 0.85rem; color: var(--ink-primary); line-height: 1.5;">${escapeHtml(j.note)}</p>
+          </div>
+        `,
+        ).join('')}
+      </div>
+    `;
+  }
+
+  function renderSettingsView(): string {
+    const zh = state.settingsLang === 'zh';
+    return `
+      <div class="view-toolbar">
+        <div class="view-summary">${zh ? '应用偏好、更新通道与安全护栏' : 'Interface Preferences, Release Channel & Guardrails'}</div>
+        <div class="view-summary mono">workbench/app_config.json + budget.json</div>
+      </div>
+      <div class="pane-right" style="padding: 1.25rem; gap: 0.9rem; overflow-y: auto; flex: 1;">
+        <div class="evidence-box">
+          <div class="evidence-top">
+            <strong style="color: var(--ink-hero); font-size: 0.88rem;">${zh ? '界面与语言' : 'Interface & Language'}</strong>
+            <span class="mono" style="font-size: 0.68rem; color: var(--ink-muted);">INTERFACE · I18N</span>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
+            <span style="font-size: 0.8rem; color: var(--ink-secondary);">${zh ? '实时切换桌面端、菜单栏与命令面板语言' : 'Instant Zh/En switch across workbench, macOS menus & palette'}</span>
+            <div class="seg-group">
+              <button type="button" class="seg-tab ${state.settingsLang === 'zh' ? 'is-active' : ''}" data-set-lang="zh">中文</button>
+              <button type="button" class="seg-tab ${state.settingsLang === 'en' ? 'is-active' : ''}" data-set-lang="en">English</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="evidence-box">
+          <div class="evidence-top">
+            <strong style="color: var(--ink-hero); font-size: 0.88rem;">${zh ? '自动更新通道' : 'Software Updates'}</strong>
+            <span class="mono" style="font-size: 0.68rem; color: var(--ink-muted);">GITHUB RELEASES · SHA-256</span>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
+            <span style="font-size: 0.8rem; color: var(--ink-secondary);">${zh ? '选择稳定版 (stable) 或测试版 (beta) 更新通道' : 'Choose signed stable or rolling beta release track'}</span>
+            <div class="seg-group">
+              <button type="button" class="seg-tab ${state.settingsChannel === 'stable' ? 'is-active' : ''}" data-set-channel="stable">stable</button>
+              <button type="button" class="seg-tab ${state.settingsChannel === 'beta' ? 'is-active' : ''}" data-set-channel="beta">beta</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sovereignty-box">
+          <div class="sovereignty-header">
+            <span>${zh ? 'L2 AI 研究预算护栏' : 'L2 AI Research Budget Ceiling'}</span>
+            <span>\$10.00 / MO HARD CAP</span>
+          </div>
+          <p class="sovereignty-body">${zh ? 'L0/L1 全市场筛选与 10-K 原文同步完全 0 Token；仅在手动启动 Alan 深研与行业研究时计费，超限自动硬拦截。' : 'L0/L1 full-US screening and 10-K retrieval spend 0 LLM tokens. Embedded Alan deep & industry research stay hard-capped at your monthly ceiling.'}</p>
+        </div>
+      </div>
+    `.replaceAll('\\$', '$');
   }
 
   function renderPaletteOverlay(): string {
@@ -1000,8 +1240,10 @@ export function mountWorkbench(container: HTMLElement): void {
     const actions: Array<{ label: string; group: string; key: string; cmd: string }> = [
       { label: 'Briefing Inbox (Event-Driven L1)', group: 'VIEW', key: '⌘1', cmd: 'view:inbox' },
       { label: 'Universe Radar (5,142 US Issuers)', group: 'VIEW', key: '⌘2', cmd: 'view:universe' },
-      { label: 'Circle Overview', group: 'VIEW', key: '⌘3', cmd: 'view:baskets' },
-      { label: 'Themes & Decision Journal', group: 'VIEW', key: '⌘4', cmd: 'view:themes' },
+      { label: 'Industry Research Studio (Alan + Web)', group: 'VIEW', key: '⌘3', cmd: 'view:industry' },
+      { label: 'Circle Overview', group: 'VIEW', key: '⌘4', cmd: 'view:baskets' },
+      { label: 'Decision Journal', group: 'VIEW', key: '⌘5', cmd: 'view:journal' },
+      { label: 'Settings (Bilingual Zh/En & Updates)', group: 'VIEW', key: '⌘,', cmd: 'view:settings' },
       { label: 'Trigger L1 / Core Sync', group: 'ACTION', key: '⌘R', cmd: 'action:sync' },
       ...COMPANIES.map((c) => ({
         label: `Open ${c.ticker} · ${c.name} (${c.bucket})`,
@@ -1199,6 +1441,65 @@ export function mountWorkbench(container: HTMLElement): void {
       });
     });
 
+    container.querySelectorAll<HTMLElement>('[data-open-industry]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const slug = btn.dataset.openIndustry;
+        if (slug) state.selectedIndustrySlug = slug;
+        state.tab = 'industry';
+        render();
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-select-industry]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const slug = btn.dataset.selectIndustry;
+        if (slug) {
+          state.selectedIndustrySlug = slug;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-ind-perspective]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.indPerspective as IndustryPerspectiveKey | undefined;
+        if (key) {
+          state.industryPerspective = key;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-toggle-feynman]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.toggleFeynman;
+        if (key) {
+          state.feynmanChecked[key] = !state.feynmanChecked[key];
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-set-lang]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const lang = btn.dataset.setLang as 'en' | 'zh' | undefined;
+        if (lang) {
+          state.settingsLang = lang;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-set-channel]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const ch = btn.dataset.setChannel as 'stable' | 'beta' | undefined;
+        if (ch) {
+          state.settingsChannel = ch;
+          render();
+        }
+      });
+    });
+
     container.querySelector('[data-open-palette]')?.addEventListener('click', () => {
       state.paletteOpen = true;
       state.paletteQuery = '';
@@ -1276,8 +1577,10 @@ export function mountWorkbench(container: HTMLElement): void {
     const map: Record<string, WorkbenchTab> = {
       '1': 'inbox',
       '2': 'universe',
-      '3': 'baskets',
-      '4': 'themes',
+      '3': 'industry',
+      '4': 'baskets',
+      '5': 'journal',
+      ',': 'settings',
     };
     const next = map[ev.key];
     if (next && state.tab !== next) {

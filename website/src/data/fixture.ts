@@ -1,9 +1,43 @@
-export type WorkbenchTab = 'inbox' | 'universe' | 'baskets' | 'research' | 'themes';
+export type WorkbenchTab =
+  | 'inbox'
+  | 'universe'
+  | 'industry'
+  | 'baskets'
+  | 'journal'
+  | 'research'
+  | 'settings';
 export type CompanySubTab = 'memo' | 'alan' | 'xbrl';
 export type InboxFilter = 'unread' | 'all' | 'discovery' | 'ripple' | 'strike' | 'archived';
 export type UniverseFilter = 'all' | 'high_roic' | 'low_sbc' | 'strike';
 export type UniverseSearchMode = 'keyword' | 'similar';
 export type PerspectiveKey = 'moat' | 'accounting' | 'latent_peers' | 'premortem';
+export type IndustryPerspectiveKey = 'value_chain' | 'moat' | 'failure_modes' | 'valuation_kpis';
+export type IndustryStatusKey = 'inside_circle' | 'studying' | 'too_hard';
+
+export interface IndustryStudyRecord {
+  slug: string;
+  title: string;
+  sicLabel: string;
+  status: IndustryStatusKey;
+  statusLabel: string;
+  anchorLabel: string;
+  boundTickers: string[];
+  feynmanChecklist: Array<{ text: string; checked: boolean }>;
+  peers: Array<{
+    ticker: string;
+    name: string;
+    roic5y: string;
+    gm5y: string;
+    fcfYield: string;
+    sbcOcf: string;
+    price: string;
+    refStrike: string;
+  }>;
+  perspectives: Record<IndustryPerspectiveKey, { title: string; summary: string; points: string[] }>;
+  secCitations: string[];
+  webCitations: Array<{ title: string; url: string }>;
+  humanNotes: string;
+}
 
 export interface InboxEvent {
   id: string;
@@ -11,10 +45,14 @@ export interface InboxEvent {
   company: string;
   category: 'discovery' | 'ripple' | 'strike' | 'red_flag';
   kindLabel: string;
+  circleStatusLabel: string;
+  circleStatusTone: 'emerald' | 'sky' | 'slate';
+  industrySlug?: string;
   severity: 'emerald' | 'gold' | 'sky' | 'violet' | 'coral';
   timestamp: string;
   headline: string;
   subline: string;
+  businessProfile10k: string;
   evidenceTitle: string;
   evidenceQuote: string;
   sourceUrl: string;
@@ -100,14 +138,19 @@ export const INBOX_EVENTS: InboxEvent[] = [
     ticker: 'SNPS',
     company: 'Synopsys, Inc.',
     category: 'strike',
-    kindLabel: 'Strike Zone Band',
+    kindLabel: 'Strike Zone',
+    circleStatusLabel: 'Circle Ind. · EDA & Silicon IP',
+    circleStatusTone: 'emerald',
+    industrySlug: 'eda-silicon-ip',
     severity: 'emerald',
     timestamp: '14m ago',
     headline: 'Spot moved within +4.2% of human strike price ($468.00)',
-    subline: 'Tier-1 quote · 10-K backlog verified · Paper fixture',
+    subline: 'Graduated Circle · 18–24x industry anchor · Tier-1 quote',
+    businessProfile10k:
+      'SEC 10-K Item 1: Licenses mission-critical Electronic Design Automation (EDA) verification tools and silicon IP blocks used across advanced sub-3nm chip tape-outs under multi-year time-based contracts.',
     evidenceTitle: 'FY25 Form 10-K — Multi-year EDA Backlog & Renewal Retention',
     evidenceQuote:
-      'Committed backlog under non-cancellable multi-year software license and IP agreements reached \$8.6B with >95% time-based visibility across leading-edge silicon nodes.',
+      'Committed backlog under non-cancellable multi-year software license and IP agreements reached $8.6B with >95% time-based visibility across leading-edge silicon nodes.',
     sourceUrl: 'https://www.sec.gov/Archives/edgar/data/883241/000088324126000018',
     similarityPct: '96%',
     metrics: [
@@ -117,32 +160,37 @@ export const INBOX_EVENTS: InboxEvent[] = [
       { label: 'Share Delta (3Y)', value: '−1.4% / yr', note: 'Net shrinkage' },
     ],
     summary:
-      'Catch-up evaluation flagged valuation compression toward your pre-registered strike band while core EDA royalty retention held steady. Pre-Mortem lens continues tracking Ansys integration leverage.',
+      'Strike signal allowed strictly because EDA & Semiconductor IP graduated into your Circle (18x low anchor). Unfamiliar market companies never trigger blind strike claims.',
     status: 'unread',
   },
   {
-    id: 'ev-adsk-filing',
-    ticker: 'ADSK',
-    company: 'Autodesk, Inc.',
+    id: 'ev-veev-discovery',
+    ticker: 'VEEV',
+    company: 'Veeva Systems Inc.',
     category: 'discovery',
-    kindLabel: 'New 10-K Facts',
+    kindLabel: 'Quant Screen',
+    circleStatusLabel: 'Studying · Life Sciences Cloud',
+    circleStatusTone: 'sky',
+    industrySlug: 'life-sciences-cloud',
     severity: 'sky',
     timestamp: '2h ago',
-    headline: 'Official filing parsed: SBC / OCF fell 210 bps to 27.8%',
-    subline: 'Primary XBRL parse · Accession #0000769397-26-000142',
-    evidenceTitle: 'Item 7 MD&A — Operating Cash Flow & Dilution Discipline',
+    headline: 'High-ROIC compounder outside watchlist · 5Y ROIC 26.4% (no blind strike)',
+    subline: 'SIC 7372 · Zero-LLM DuckDB 5Y Snapshot + SEC 10-K Item 1',
+    businessProfile10k:
+      'SEC 10-K Item 1: Cloud-based regulatory, clinical trial (Vault), and commercial software platform for global biopharmaceutical enterprises under multi-year enterprise subscriptions.',
+    evidenceTitle: 'Item 1A & Item 7 — Vault Clinical Switching Costs & Platform Migration',
     evidenceQuote:
-      'Free cash flow conversion strengthened alongside annual billing standardization, allowing share repurchases to exceed stock-based compensation grants net of forfeitures.',
-    sourceUrl: 'https://www.sec.gov/Archives/edgar/data/769397/000076939726000142',
-    similarityPct: '92%',
+      'Regulated biopharma customers rely on Veeva Vault to maintain FDA 21 CFR Part 11 validated trial and quality documentation across multi-year drug pipelines.',
+    sourceUrl: 'https://www.sec.gov/Archives/edgar/data/1393052/000139305226000014',
+    similarityPct: '91%',
     metrics: [
-      { label: 'Strict OE Yield', value: '3.9%', note: 'After full SBC deduction' },
-      { label: '5Y ROIC', value: '31.4%', note: '+140 bps YoY' },
-      { label: 'SBC / OCF', value: '27.8%', note: 'Down from 29.9%' },
-      { label: 'Share Delta (3Y)', value: '−0.9% / yr', note: 'Stabilizing dilution' },
+      { label: '5Y ROIC', value: '26.4%', note: '5Y gross margin 73.1%' },
+      { label: 'Strict FCF Yield', value: '4.1%', note: 'No strike until Circle' },
+      { label: 'SBC / OCF', value: '29.4%', note: 'Deducted in full' },
+      { label: 'Share Delta (3Y)', value: '+0.8% / yr', note: 'Net moderate dilution' },
     ],
     summary:
-      'Deterministic filing diff verified improving cash conversion directly from primary SEC figures with zero narrative adjustments.',
+      'Surfaced as a Quantitative Candidate with inline 5Y financials and 10-K business summary. Launch "Research Industry" with Alan to study Vault switching economics before setting any strike price.',
     status: 'unread',
   },
   {
@@ -151,10 +199,15 @@ export const INBOX_EVENTS: InboxEvent[] = [
     company: 'PTC Inc.',
     category: 'ripple',
     kindLabel: 'Latent Ripple',
+    circleStatusLabel: 'Circle · WATCH',
+    circleStatusTone: 'emerald',
+    industrySlug: 'eda-silicon-ip',
     severity: 'violet',
     timestamp: 'Yesterday',
     headline: 'Operational rhyme detected against Core holding ADSK (0.89 cosine)',
     subline: 'Offline 10-K similarity scan · Windchill / Onshape switching costs',
+    businessProfile10k:
+      'SEC 10-K Item 1: Industrial CAD, Product Lifecycle Management (PLM), and IIoT software enabling discrete manufacturers to manage bill-of-materials revision histories.',
     evidenceTitle: 'Item 1 Business — Multi-Decade Product Lifecycle Traceability',
     evidenceQuote:
       'Windchill serves as the system of record for bill-of-materials and regulatory compliance across aerospace, medical device, and industrial OEM supply chains.',
@@ -167,7 +220,7 @@ export const INBOX_EVENTS: InboxEvent[] = [
       { label: 'Implied Growth', value: '9.4%', note: 'Reverse DCF @ 10% hurdle' },
     ],
     summary:
-      'Full-market similarity search surfaced PTC outside the starting watchlist after disclosure structure echoed mission-critical CAD/PLM switching barriers.',
+      'Full-market similarity search surfaced PTC outside initial habits after disclosure structure echoed mission-critical CAD/PLM switching barriers.',
     status: 'unread',
   },
   {
@@ -176,10 +229,14 @@ export const INBOX_EVENTS: InboxEvent[] = [
     company: 'Intel Corporation',
     category: 'red_flag',
     kindLabel: 'Red Flag · Gate',
+    circleStatusLabel: 'Too Hard',
+    circleStatusTone: 'slate',
     severity: 'coral',
     timestamp: '2d ago',
     headline: 'Strict Owner Earnings negative for 8th quarter on foundry CapEx',
     subline: 'Basket: TOO HARD · Preserved as anti-pattern calibration fixture',
+    businessProfile10k:
+      'SEC 10-K Item 1: Vertically integrated semiconductor designer and foundry operator undergoing multi-node capital-intensive fabrication expansion.',
     evidenceTitle: 'Cash Flow Statement — Capital Expenditure vs Operating Cash Flow',
     evidenceQuote:
       'Additions to property, plant and equipment consumed 142% of operating cash flow before external partner contributions and subsidy reimbursements.',
@@ -189,11 +246,193 @@ export const INBOX_EVENTS: InboxEvent[] = [
       { label: 'Strict OE', value: '−$9.40B', note: 'CapEx consumes OCF' },
       { label: '5Y ROIC', value: '1.8%', note: 'Below capital hurdle' },
       { label: 'Share Delta (3Y)', value: '+1.9% / yr', note: 'Net equity dilution' },
-      { label: 'Discipline Gate', value: 'TOO HARD', note: 'Excluded from capital wait' },
+      { label: 'Discipline Gate', value: 'TOO HARD', note: 'Excluded from Strike Zone' },
     ],
     summary:
       'Maintained intentionally in the Too Hard pile: extreme reinvestment demand with uncertain foundry yields violates owner-earnings predictability.',
     status: 'too_hard',
+  },
+];
+
+export const INDUSTRIES: IndustryStudyRecord[] = [
+  {
+    slug: 'eda-silicon-ip',
+    title: 'EDA & Semiconductor IP',
+    sicLabel: 'SIC 7372 · Duopoly Software Tolls',
+    status: 'inside_circle',
+    statusLabel: 'Inside Circle ✓',
+    anchorLabel: '18–24x Strict OE',
+    boundTickers: ['SNPS', 'CDNS', 'ADSK', 'PTC'],
+    feynmanChecklist: [
+      {
+        text: 'Explain why chip designers spend <5% of R&D on EDA yet cannot switch mid-node.',
+        checked: true,
+      },
+      {
+        text: 'Name the two failure modes from past EDA/IP roll-ups (debt after large M&A + foundry customer concentration).',
+        checked: true,
+      },
+      {
+        text: 'Articulate why 18–24x Strict Owner Earnings (after full SBC) is justified vs cyclical fab equipment.',
+        checked: true,
+      },
+    ],
+    peers: [
+      {
+        ticker: 'SNPS',
+        name: 'Synopsys, Inc.',
+        roic5y: '24.8%',
+        gm5y: '80.2%',
+        fcfYield: '4.1%',
+        sbcOcf: '25.1%',
+        price: '$487.60',
+        refStrike: '$468.00',
+      },
+      {
+        ticker: 'CDNS',
+        name: 'Cadence Design',
+        roic5y: '29.4%',
+        gm5y: '89.1%',
+        fcfYield: '3.4%',
+        sbcOcf: '21.8%',
+        price: '$294.20',
+        refStrike: '$246.50',
+      },
+      {
+        ticker: 'ADSK',
+        name: 'Autodesk, Inc.',
+        roic5y: '31.4%',
+        gm5y: '91.0%',
+        fcfYield: '3.9%',
+        sbcOcf: '27.8%',
+        price: '$278.40',
+        refStrike: '$239.00',
+      },
+    ],
+    perspectives: {
+      value_chain: {
+        title: '产业链与利润池 · Value Chain & Profit Pool',
+        summary: 'Duopoly software tollbooth capturing recurring R&D budgets upstream of cyclical wafer fabs.',
+        points: [
+          'Synopsys + Cadence control >75% of front-end synthesis, place-and-route, and foundry sign-off certification.',
+          'Time-based subscription contracts eliminate boom-bust license lumpiness seen in semiconductor capital equipment.',
+        ],
+      },
+      moat: {
+        title: '商业模式与护城河 · Business Model & Moats',
+        summary: 'Foundry co-optimization + engineer muscle memory create multi-decade switching lock-in.',
+        points: [
+          'Every sub-3nm PDK from TSMC/Samsung is jointly validated on Synopsys & Cadence tools prior to customer tape-out.',
+          'IP cores embed recurring royalty annuities directly into silicon shipped over 5–8 year product cycles.',
+        ],
+      },
+      failure_modes: {
+        title: '历史死法与周期陷阱 · Failure Modes & Traps',
+        summary: 'Where vertical software/IP compounding breaks historically.',
+        points: [
+          'Over-leveraged mega-M&A (e.g., Ansys closing debt load) slowing net share buybacks during rate spikes.',
+          'SBC masking true cash generation when equity grants exceed 25% of operating cash flow.',
+        ],
+      },
+      valuation_kpis: {
+        title: '估值锚与核心 KPI · Valuation Anchor & Key KPIs',
+        summary: 'Human-selected 18–24x Strict Owner Earnings anchor after full SBC & CapEx deduction.',
+        points: [
+          'Track remaining performance obligations (RPO) growth, net SBC/OCF <28%, and IP royalty gross margin.',
+          'Because this industry graduated to Inside Circle, SNPS now surfaces in Strike Radar near $468.',
+        ],
+      },
+    },
+    secCitations: [
+      '[SEC 10-K: SNPS] FY25 Item 1 & Note 14 — $8.6B multi-year EDA/IP backlog',
+      '[SEC 10-K: CDNS] FY25 Item 7 — 89.1% gross margin & recurring RPO mix',
+    ],
+    webCitations: [
+      {
+        title: 'TSMC Open Innovation Platform (OIP) EDA Ecosystem Certification',
+        url: 'https://www.tsmc.com/english/dedicatedFoundry/technology/platform',
+      },
+      {
+        title: 'IEEE Spectrum: Sub-3nm Tape-Out Sign-off Complexity & Verification Costs',
+        url: 'https://spectrum.ieee.org/',
+      },
+    ],
+    humanNotes:
+      'Graduated to Inside Circle after verifying TSMC sign-off duplication risk. Hold strictly below 20x Strict OE unless post-Ansys debt pays down ahead of schedule.',
+  },
+  {
+    slug: 'life-sciences-cloud',
+    title: 'Life Sciences Regulated Cloud',
+    sicLabel: 'SIC 7372 · Regulated R&D SaaS',
+    status: 'studying',
+    statusLabel: 'Studying',
+    anchorLabel: '15–18x (Draft)',
+    boundTickers: ['VEEV', 'IQV', 'MEDP'],
+    feynmanChecklist: [
+      {
+        text: 'Compare Veeva CRM replatforming risk vs IQVIA data licensing lock-in.',
+        checked: true,
+      },
+      {
+        text: 'Verify clinical trial cycle sensitivity when biotech funding contracts.',
+        checked: false,
+      },
+    ],
+    peers: [
+      {
+        ticker: 'VEEV',
+        name: 'Veeva Systems Inc.',
+        roic5y: '26.4%',
+        gm5y: '73.1%',
+        fcfYield: '4.1%',
+        sbcOcf: '29.4%',
+        price: '$224.80',
+        refStrike: '$194.20',
+      },
+      {
+        ticker: 'MEDP',
+        name: 'Medpace Holdings',
+        roic5y: '41.2%',
+        gm5y: '68.4%',
+        fcfYield: '4.8%',
+        sbcOcf: '3.9%',
+        price: '$348.10',
+        refStrike: '$292.00',
+      },
+    ],
+    perspectives: {
+      value_chain: {
+        title: '产业链与利润池 · Value Chain & Profit Pool',
+        summary: 'Comparing Clinical CRO execution vs GxP-validated Cloud Software Systems of Record.',
+        points: [
+          'Vault eTMF and CTMS own regulatory compliance trails whereas CROs monetize clinical trial labor hours.',
+        ],
+      },
+      moat: {
+        title: '商业模式与护城河 · Business Model & Moats',
+        summary: 'FDA validation audits make migrating regulated clinical data extraordinarily risky.',
+        points: ['Top-20 pharma Vault Clinical suite expansion offsets Commercial CRM migration noise.'],
+      },
+      failure_modes: {
+        title: '历史死法与周期陷阱 · Failure Modes & Traps',
+        summary: 'Customer biotech funding winter + Salesforce competitive bundling.',
+        points: ['Monitor CRM attrition from Vault CRM migration vs Salesforce Life Sciences Cloud.'],
+      },
+      valuation_kpis: {
+        title: '估值锚与核心 KPI · Valuation Anchor & Key KPIs',
+        summary: 'Remains in Studying status — Strike Zone remains gated OFF until Feynman quiz passes.',
+        points: ['R&D Solutions subscription growth >= 14% and net SBC/OCF compression below 25%.'],
+      },
+    },
+    secCitations: ['[SEC 10-K: VEEV] FY25 Item 1 — Vault eTMF & EDC adoption across Top-20 biopharma'],
+    webCitations: [
+      {
+        title: 'FDA 21 CFR Part 11 Electronic Records Compliance Guidelines',
+        url: 'https://www.fda.gov/',
+      },
+    ],
+    humanNotes:
+      'Need to complete CRM transition analysis before deciding whether Veeva earns Circle graduation.',
   },
 ];
 
@@ -811,20 +1050,20 @@ export const PIPELINE_LAYERS: PipelineLayer[] = [
   },
   {
     id: 'ls',
-    tag: 'Stage 03 · Cross-Pollination',
-    title: 'Structural Analogy',
-    stat: 'Find businesses that rhyme',
-    heading: 'Step outside familiar habits via filing structure similarity',
+    tag: 'Stage 03 · Expand Your Circle',
+    title: 'Industry Research',
+    stat: 'Alan 4-Lens · 10-K + Web',
+    heading: 'Turn unfamiliar "Too Hard" companies into earned Circle competence',
     summary:
-      'Great businesses repeat underlying economic patterns across unrelated industries. M3 maps how companies describe unit economics, switching costs, and moats—surfacing unloved twins worth your reading list.',
+      'Instead of swinging blindly at quant screens or mechanical 18x targets, launch an Industry Research project from any topic, SIC cluster, or company. Alan pulls representative 10-Ks, builds a Zero-LLM peer matrix, searches public history, and quizzes you via Feynman Mastery before YOU graduate the industry into your Circle.',
     bullets: [
-      'Queries your Core holdings against thousands of less-followed filings in milliseconds',
-      'Highlights shared durability traits directly with verbatim filing passages',
-      'Turns passive industry reading into structured comparative baskets',
+      'Synthesizes Value Chain, Moats, Failure Modes & Key KPIs with separated SEC 10-K vs Web citations',
+      'Only graduated Inside-Circle industries unlock Strike Zone signals at your human multiple anchor',
+      'Protects your ## Human Notes & Feynman checklist verbatim across every re-run',
     ],
-    principle: 'Good mental models travel horizontally across industries.',
-    cadence: 'Instant local similarity scan · Zero external data leaks',
-    command: 'm3 universe similar ADSK --top 10',
+    principle: 'Width of reading without depth of understanding is noise; graduate industries deliberately.',
+    cadence: 'Human-gated Strike Zone · Manual Alan Industry Runs',
+    command: 'workbench/industries/<slug>.json + .md (human sovereignty)',
   },
   {
     id: 'l2',
