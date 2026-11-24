@@ -3,12 +3,27 @@
 低焦虑、高密度的 macOS 原生桌面研究工作台，基于 Rust 1.98.1 + GPUI 0.2.2 构建。采用与黑底白字像素风 `M3` 应用图标一脉相承的**深黑曜石精度仪表盘**设计：原生透明沉浸式标题栏（Immersive Titlebar）、左侧半透明毛玻璃边栏（`NSVisualEffectView` Vibrancy）、像素风 `M3` 徽标与 `TTM / FY` 分段控制器。由确定性本地 Rust 引擎从 SEC EDGAR 官方 XBRL 财报与 Yahoo Finance 日级公开行情计算 5–8 年 ROIC、严苛股东盈余（`OCF - CapEx - SBC`）、股本缩减/稀释率、反向隐含增速与击球价，配合 Alan 的跨学科审讯档案与费曼答辩记录使用。
 
 ```sh
-# 从 apps/m3-desktop 目录构建 M3.app（若应用已打开请先退出）
+# 本机正常安装到 /Applications/M3.app + ~/.local/bin/m3（从私有 GitHub Release 下载并绑定工作区）
+../../scripts/install.sh --channel beta
+
+# 或本地开发构建（若应用已打开请先退出）
 ./build.sh
 open artifacts/M3.app
+# 也可将本地构建包直接安装到 /Applications/M3.app
+../../scripts/install.sh --local --channel beta
 ```
 
-CLI 包装脚本 `./m3`（仓库根目录运行 `apps/m3-desktop/m3`）提供面向 Alan 与自动化的结构化 JSON 接口（含 `m3 universe status|sync|screen|peers` 全美股湖仓子命令），详见 [Agent 接口](../../docs/agent-interface.md)。
+### 版本、工作区绑定与双通道自更新
+
+- **工作区定位优先级**：`M3_REPO_ROOT` 环境变量 > 当前工作目录向上查找 `workbench/watchlist.json` > `~/Library/Application Support/M3/config.json`（`m3 workspace set <仓库路径>`）> 开发态编译期路径回退。
+- **发布通道（`stable` / `beta`）**：
+  - `beta`：每次合并到 `main`（改动应用代码/构建脚本）后由 GitHub Actions 自动构建发布 `beta` 滚动预发布（版本号 `<next>-beta.<YYYYMMDD>.<run>`）；
+  - `stable`：推送 `vX.Y.Z` tag（可用 `./scripts/release.sh stable X.Y.Z --push`）触发正式版发布；
+  - 若配置了 Apple Developer ID 签名与公证 Secrets（`MACOS_CERT_P12_BASE64`、`MACOS_CERT_P12_PASSWORD`、`APPLE_TEAM_ID`、`ASC_API_KEY_P8`、`ASC_API_KEY_ID`、`ASC_API_ISSUER_ID`），CI 会自动切换为严格签名 + 公证模式；未配置时自动降级为 ad-hoc 签名并如实在 `latest.json` 中标注 `signed: false, notarized: false`。
+- **桌面端交互**：启动时低频静默检查更新（`beta` TTL 1h / `stable` TTL 6h）；右上角可点击更新药丸一键下载校验并重启应用，底部状态栏 `vX.Y.Z · channel` 与命令面板 `⌘K` 也提供检查更新与切换通道入口。
+- **CLI 命令**：`m3 -V`、`m3 --version`、`m3 version`、`m3 workspace [show|set <PATH>]`、`m3 update [--check] [--channel stable|beta] [--version VER] [--force]`、`m3 update channel [stable|beta]`。
+
+CLI 包装脚本 `./m3`（仓库根目录运行 `apps/m3-desktop/m3`，或安装后的 `m3`）提供面向 Alan 与自动化的结构化 JSON 接口（含 `m3 universe status|sync|screen|peers` 全美股湖仓子命令），详见 [Agent 接口](../../docs/agent-interface.md)。
 
 ## 核心工作区视图
 

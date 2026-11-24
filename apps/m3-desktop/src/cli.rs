@@ -1,15 +1,33 @@
 use crate::{
+    app_config,
     lake::{LakeDb, UniverseFilter, UniverseSortBy, UniverseSummary},
     model::{Bucket, JournalAction, SyncStatusFile, parse_decimal_token},
     store::{self, WorkspacePaths},
     universe::{self, UniverseSyncOptions},
+    update::{self, ReleaseChannel, UpdateOptions},
 };
 use anyhow::{Context, Result, ensure};
 use rust_decimal::Decimal;
 use serde_json::json;
-use std::{str::FromStr, time::Instant};
+use std::{path::PathBuf, str::FromStr, time::Instant};
+
+/// Execute workspace-independent CLI subcommands (`version`, `workspace`, `update`).
+/// Returns `None` if the subcommand requires an initialized M3 workspace.
+pub fn run_standalone(args: &[String]) -> Option<Result<serde_json::Value>> {
+    let sub = args.first().map(String::as_str)?;
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "version" => Some(cmd_version(rest)),
+        "workspace" => Some(cmd_workspace(rest)),
+        "update" => Some(cmd_update(rest)),
+        _ => None,
+    }
+}
 
 pub fn run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    if let Some(standalone) = run_standalone(args) {
+        return standalone;
+    }
     let sub = args.first().map(String::as_str).unwrap_or("status");
     let rest = args.get(1..).unwrap_or(&[]);
     match sub {
@@ -22,7 +40,7 @@ pub fn run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
         "universe" => cmd_universe(paths, rest),
         "start" => cmd_start(paths),
         _ => anyhow::bail!(
-            "usage: m3 status | sync [--ticker SYM] [--prices-only] | report <SYM> | dossier <SYM> | add <SYM> ... | journal [list|record ...] | universe [status|sync|screen|peers ...] | start"
+            "usage: m3 status | sync [--ticker SYM] [--prices-only] | report <SYM> | dossier <SYM> | add <SYM> ... | journal [list|record ...] | universe [status|sync|screen|peers ...] | version | workspace [show|set <PATH>] | update [--check] [--channel stable|beta] [channel [stable|beta]] | start"
         ),
     }
 }
@@ -531,6 +549,156 @@ fn cmd_start(paths: &WorkspacePaths) -> Result<serde_json::Value> {
             "launched": app.display().to_string(),
             "workbench_root": paths.repo_root.display().to_string()
         }
+    }))
+}
+
+fn cmd_version(args: &[String]) -> Result<serde_json::Value> {
+    if let Some(unexpected) = args.first().filter(|a| a.as_str() != "--json") {
+        anyhow::bail!("unknown version argument: {unexpected}");
+    }
+    let (effective_channel, channel_source) = update::effective_channel();
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "version": update::current_binary_version(),
+            "long_version": update::current_long_version(),
+            "channel": update::current_binary_channel().as_str(),
+            "effective_channel": effective_channel.as_str(),
+            "channel_source": channel_source.as_str(),
+            "commit": update::current_build_commit(),
+            "target": update::semver::current_target_triple().ok(),
+            "exe_path": std::env::current_exe().ok().map(|p| p.display().to_string()),
+            "workspace_root": store::resolve_repo_root().ok().map(|p| p.display().to_string()),
+        }
+    }))
+}
+
+fn cmd_workspace(args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("show");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "show" => {
+            if let Some(unexpected) = rest.first().filter(|a| a.as_str() != "--json") {
+                anyhow::bail!("unknown workspace show argument: {unexpected}");
+            }
+            let cfg_path = app_config::config_path()?;
+            let configured = app_config::read_app_config()?.and_then(|c| c.workspace_root);
+            let resolved = store::resolve_repo_root()
+                .ok()
+                .map(|p| p.display().to_string());
+            Ok(json!({
+                "schema_version": 1,
+                "ok": true,
+                "data": {
+                    "config_path": cfg_path.display().to_string(),
+                    "configured_workspace_root": configured,
+                    "resolved_workspace_root": resolved,
+                }
+            }))
+        }
+        "set" => {
+            let target = rest
+                .first()
+                .filter(|s| !s.starts_with('-'))
+                .context("usage: m3 workspace set <PATH>")?;
+            if let Some(extra) = rest.get(1).filter(|a| a.as_str() != "--json") {
+                anyhow::bail!("unexpected extra argument for workspace set: {extra}");
+            }
+            let saved = app_config::write_workspace_root(std::path::Path::new(target))?;
+            Ok(json!({
+                "schema_version": 1,
+                "ok": true,
+                "data": {
+                    "config_path": app_config::config_path()?.display().to_string(),
+                    "workspace_root": saved.display().to_string(),
+                }
+            }))
+        }
+        _ => anyhow::bail!("usage: m3 workspace [show | set <PATH>]"),
+    }
+}
+
+fn cmd_update(args: &[String]) -> Result<serde_json::Value> {
+    if args.first().map(String::as_str) == Some("channel") {
+        let rest = args.get(1..).unwrap_or(&[]);
+        return cmd_update_channel(rest);
+    }
+
+    let mut opts = UpdateOptions::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--check" => opts.check_only = true,
+            "--force" => opts.force = true,
+            "--no-cli-link" => opts.no_cli_link = true,
+            "--json" => {}
+            "--channel" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .context("--channel requires `stable` or `beta`")?;
+                opts.channel = Some(ReleaseChannel::parse(raw)?);
+            }
+            "--version" => {
+                i += 1;
+                let raw = args.get(i).context("--version requires a version string")?;
+                opts.version = Some(raw.clone());
+            }
+            "--app-dir" => {
+                i += 1;
+                let raw = args.get(i).context("--app-dir requires a directory path")?;
+                opts.app_dir = Some(PathBuf::from(raw));
+            }
+            "--bin-dir" => {
+                i += 1;
+                let raw = args.get(i).context("--bin-dir requires a directory path")?;
+                opts.bin_dir = Some(PathBuf::from(raw));
+            }
+            "--manifest-url" => {
+                i += 1;
+                let raw = args.get(i).context("--manifest-url requires a URL")?;
+                opts.manifest_url = Some(raw.clone());
+            }
+            other => anyhow::bail!(
+                "unknown update argument `{other}`; usage: m3 update [--check] [--channel stable|beta] [--version VER] [--force] [--app-dir DIR] [--bin-dir DIR] [--no-cli-link] [--manifest-url URL] [--json] | channel [stable|beta]"
+            ),
+        }
+        i += 1;
+    }
+
+    let report = update::run_update(&opts)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": report
+    }))
+}
+
+fn cmd_update_channel(args: &[String]) -> Result<serde_json::Value> {
+    let mut target: Option<ReleaseChannel> = None;
+    for arg in args {
+        if arg == "--json" {
+            continue;
+        }
+        if arg.starts_with('-') {
+            anyhow::bail!("unknown update channel flag: {arg}");
+        }
+        ensure!(
+            target.is_none(),
+            "unexpected extra argument `{arg}` for `m3 update channel [stable|beta]`"
+        );
+        target = Some(ReleaseChannel::parse(arg)?);
+    }
+
+    if let Some(ch) = target {
+        update::channel::write_configured_channel(ch)?;
+    }
+    let status = update::channel::channel_status_report();
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": status
     }))
 }
 

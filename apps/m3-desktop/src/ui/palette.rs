@@ -3,6 +3,7 @@ use super::{
     components::*, format::*, theme::*,
 };
 use crate::model::{Bucket, primary_circle_tag};
+use crate::update::{self, ReleaseChannel};
 use gpui::{Context, MouseButton, Window, div, prelude::*, px, rgb, rgba};
 
 impl MungerWorkbench {
@@ -207,6 +208,57 @@ impl MungerWorkbench {
             dot_color: SKY_FG,
             action: PaletteAction::SyncUniverseNow,
         });
+        items.push(PaletteItem {
+            group: "UPDATE".into(),
+            title: format!(
+                "检查 M3 更新（当前 v{} · {} 通道）",
+                update::current_binary_version(),
+                self.update_channel.as_str()
+            ),
+            subtitle: "查询 GitHub Release 清单并比对 SHA-256".into(),
+            shortcut: None,
+            dot_color: SKY_FG,
+            action: PaletteAction::CheckUpdate,
+        });
+        if let Some(ver) = &self.update_applied_version {
+            items.push(PaletteItem {
+                group: "UPDATE".into(),
+                title: format!("立即重启应用已安装的 M3 v{ver}"),
+                subtitle: "重启新版本 M3.app 使更新生效".into(),
+                shortcut: None,
+                dot_color: EMERALD_FG,
+                action: PaletteAction::RestartApp,
+            });
+        } else if let Some(notice) = &self.update_notice {
+            items.push(PaletteItem {
+                group: "UPDATE".into(),
+                title: format!(
+                    "安装更新 · v{} ({})",
+                    notice.latest_version,
+                    notice.channel.as_str()
+                ),
+                subtitle: "校验 SHA-256 并原子替换当前 M3.app 与 ~/.local/bin/m3".into(),
+                shortcut: None,
+                dot_color: EMERALD_FG,
+                action: PaletteAction::ApplyUpdate,
+            });
+        }
+        let target_channel = match self.update_channel {
+            ReleaseChannel::Stable => ReleaseChannel::Beta,
+            ReleaseChannel::Beta => ReleaseChannel::Stable,
+        };
+        items.push(PaletteItem {
+            group: "UPDATE".into(),
+            title: format!("切换更新通道至 {}", target_channel.label_cn()),
+            subtitle: match target_channel {
+                ReleaseChannel::Beta => "跟随 main 分支每次合并自动发布的 rolling beta 构建",
+                ReleaseChannel::Stable => "仅接收带 tag (vX.Y.Z) 的稳定发布版本",
+            }
+            .into(),
+            shortcut: None,
+            dot_color: GOLD_FG,
+            action: PaletteAction::SwitchUpdateChannel(target_channel),
+        });
         items
     }
 
@@ -268,6 +320,22 @@ impl MungerWorkbench {
             PaletteAction::SyncUniverseNow => {
                 self.switch_view(NavView::Universe);
                 self.start_universe_sync(false, cx);
+                return;
+            }
+            PaletteAction::CheckUpdate => {
+                self.start_update_check(true, cx);
+                return;
+            }
+            PaletteAction::ApplyUpdate => {
+                self.start_update_apply(cx);
+                return;
+            }
+            PaletteAction::SwitchUpdateChannel(channel) => {
+                self.switch_update_channel(channel, cx);
+                return;
+            }
+            PaletteAction::RestartApp => {
+                self.restart_after_update(cx);
                 return;
             }
         }

@@ -1,11 +1,13 @@
 [package]
 name = "m3-desktop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
 
 [dependencies]
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+flate2 = "1"
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "runtime_shaders"] }
 log = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "gzip", "json", "rustls-tls"] }
@@ -13,6 +15,7 @@ rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
+tar = "0.4"
 async-trait = "0.1"
 alan-os-host = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4", default-features = false, features = ["provider-openrouter", "provider-openai", "provider-magpie", "provider-vertex"] }
 alan-agent-engine = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4", default-features = false }

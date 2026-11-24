@@ -1,4 +1,5 @@
 mod alan_interrogator;
+mod app_config;
 mod calculator;
 mod cli;
 mod edgar;
@@ -8,6 +9,7 @@ mod model;
 mod store;
 mod ui;
 mod universe;
+mod update;
 
 use anyhow::Result;
 use gpui::{
@@ -28,7 +30,8 @@ actions!(
         ViewAgent,
         ViewJournal,
         BackToBaskets,
-        SyncData
+        SyncData,
+        CheckUpdate
     ]
 );
 
@@ -86,10 +89,39 @@ fn main() -> Result<()> {
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(log::LevelFilter::Warn);
 
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.as_slice() == ["-V"] {
+        println!("m3 {}", update::current_binary_version());
+        return Ok(());
+    }
+    if args.as_slice() == ["--version"] {
+        println!("m3 {}", update::current_long_version());
+        return Ok(());
+    }
+    if !args.is_empty()
+        && let Some(standalone) = cli::run_standalone(&args)
+    {
+        let (value, code) = match standalone {
+            Ok(val) => {
+                let code = if val["ok"] == false { 1 } else { 0 };
+                (val, code)
+            }
+            Err(err) => (
+                serde_json::json!({
+                    "schema_version": 1,
+                    "ok": false,
+                    "error": format!("{err:#}")
+                }),
+                1,
+            ),
+        };
+        println!("{value}");
+        std::process::exit(code);
+    }
+
     let repo_root = store::resolve_repo_root()?;
     let paths = WorkspacePaths::from_root(repo_root);
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
     if !args.is_empty() {
         let (value, code) = match cli::run(&paths, &args) {
             Ok(val) => {
@@ -135,6 +167,7 @@ fn main() -> Result<()> {
                 MenuItem::action("返回篮子总览", BackToBaskets),
                 MenuItem::separator(),
                 MenuItem::action("同步财报与价格", SyncData),
+                MenuItem::action("检查更新", CheckUpdate),
                 MenuItem::separator(),
                 MenuItem::action("退出 M3", Quit),
             ],
@@ -238,6 +271,12 @@ fn main() -> Result<()> {
                 cx.on_action(move |_: &SyncData, cx| {
                     let _ = ws.update(cx, |v, _, cx| {
                         v.start_sync(cx);
+                    });
+                });
+                let wu = window;
+                cx.on_action(move |_: &CheckUpdate, cx| {
+                    let _ = wu.update(cx, |v, _, cx| {
+                        v.start_update_check(true, cx);
                     });
                 });
             }

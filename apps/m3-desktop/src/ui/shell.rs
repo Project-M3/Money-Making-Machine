@@ -1,5 +1,6 @@
 use super::{MungerWorkbench, NavView, components::*, format::*, theme::*};
 use crate::model::{Bucket, MungerReport};
+use crate::update;
 use gpui::{
     Context, MouseButton, MouseDownEvent, WindowControlArea, div, prelude::*, px, rgb, rgba,
 };
@@ -431,6 +432,78 @@ impl MungerWorkbench {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .when_some(self.update_applied_version.clone(), |d, ver| {
+                        d.child(
+                            div()
+                                .id("update-restart-pill")
+                                .px_2p5()
+                                .py_1()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(rgba(EMERALD_BG))
+                                .border_1()
+                                .border_color(rgba(EMERALD_BORDER))
+                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                .active(|s| s.bg(rgb(BG_ACTIVE)))
+                                .font_family(self.fonts.mono_num.clone())
+                                .text_size(px(11.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(EMERALD_FG))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.restart_after_update(cx);
+                                }))
+                                .child(format!("已更新 v{ver} · 重启")),
+                        )
+                    })
+                    .when(
+                        self.update_applied_version.is_none() && self.update_applying,
+                        |d| {
+                            d.child(
+                                div()
+                                    .id("update-applying-pill")
+                                    .px_2p5()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .bg(rgb(BG_WELL))
+                                    .border_1()
+                                    .border_color(rgb(BORDER_SUBTLE))
+                                    .font_family(self.fonts.mono_num.clone())
+                                    .text_size(px(11.))
+                                    .text_color(rgb(INK_MUTED))
+                                    .child("更新中…"),
+                            )
+                        },
+                    )
+                    .when_some(
+                        if self.update_applied_version.is_none() && !self.update_applying {
+                            self.update_notice.clone()
+                        } else {
+                            None
+                        },
+                        |d, notice| {
+                            d.child(
+                                div()
+                                    .id("update-available-pill")
+                                    .px_2p5()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgba(SKY_BG))
+                                    .border_1()
+                                    .border_color(rgba(SKY_BORDER))
+                                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                                    .active(|s| s.bg(rgb(BG_ACTIVE)))
+                                    .font_family(self.fonts.mono_num.clone())
+                                    .text_size(px(11.))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(rgb(SKY_FG))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.start_update_apply(cx);
+                                    }))
+                                    .child(format!("↑ v{}", notice.latest_version)),
+                            )
+                        },
+                    )
                     .child(
                         div()
                             .px_2p5()
@@ -522,7 +595,7 @@ impl MungerWorkbench {
             )
     }
 
-    pub(super) fn render_statusline(&self) -> gpui::Div {
+    pub(super) fn render_statusline(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (dot_col, legend) = if self.palette_open {
             (SKY_FG, "↑/↓ 选择 · ↵ 执行 · esc 关闭命令面板")
         } else {
@@ -577,14 +650,44 @@ impl MungerWorkbench {
             )
             .child(
                 div()
-                    .font_family(self.fonts.mono_term.clone())
-                    .text_size(px(10.))
-                    .text_color(rgb(INK_MUTED))
-                    .child(match self.active_view {
-                        NavView::Agent => "EMBEDDED ALAN · PAPER ONLY",
-                        NavView::Universe => "DUCKDB L0 · ZERO-LLM",
-                        _ => "ZERO-LLM · PAPER ONLY",
-                    }),
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .id("status-version-pill")
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded_xs()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                            .font_family(self.fonts.mono_term.clone())
+                            .text_size(px(10.))
+                            .text_color(rgb(INK_MUTED))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.start_update_check(true, cx);
+                            }))
+                            .child(if self.update_checking {
+                                "检查更新中…".to_owned()
+                            } else {
+                                format!(
+                                    "v{} · {}",
+                                    update::current_binary_version(),
+                                    self.update_channel.as_str()
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .font_family(self.fonts.mono_term.clone())
+                            .text_size(px(10.))
+                            .text_color(rgb(INK_MUTED))
+                            .child(match self.active_view {
+                                NavView::Agent => "EMBEDDED ALAN · PAPER ONLY",
+                                NavView::Universe => "DUCKDB L0 · ZERO-LLM",
+                                _ => "ZERO-LLM · PAPER ONLY",
+                            }),
+                    ),
             )
     }
 }

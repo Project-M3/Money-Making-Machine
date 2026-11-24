@@ -23,6 +23,7 @@ use crate::{
     },
     store::{self, WorkspacePaths},
     universe::UniverseSyncReport,
+    update::{self, PassiveUpdateNotice, ReleaseChannel, UpdateOptions, UpdateReport},
 };
 use gpui::{
     ClipboardItem, Context, FocusHandle, KeyDownEvent, SharedString, Window, div, prelude::*, px,
@@ -145,6 +146,10 @@ pub enum PaletteAction {
     CopyCli(String, String),
     SyncNow,
     SyncUniverseNow,
+    CheckUpdate,
+    ApplyUpdate,
+    SwitchUpdateChannel(ReleaseChannel),
+    RestartApp,
 }
 
 #[derive(Debug, Clone)]
@@ -216,10 +221,40 @@ pub struct MungerWorkbench {
     universe_sync_progress: Option<String>,
     universe_sync_rx: Option<mpsc::Receiver<Result<UniverseSyncReport, String>>>,
     universe_progress_rx: Option<mpsc::Receiver<String>>,
+    update_channel: ReleaseChannel,
+    update_notice: Option<PassiveUpdateNotice>,
+    update_checking: bool,
+    update_applying: bool,
+    update_applied_version: Option<String>,
+    update_passive_rx: Option<mpsc::Receiver<Option<PassiveUpdateNotice>>>,
+    update_check_rx: Option<(bool, mpsc::Receiver<Result<UpdateReport, String>>)>,
+    update_apply_rx: Option<mpsc::Receiver<Result<UpdateReport, String>>>,
 }
 
 impl MungerWorkbench {
     pub fn new(paths: WorkspacePaths, fonts: FontRoles, cx: &mut Context<Self>) -> Self {
+        let (effective_ch, _) = update::effective_channel();
+        let (initial_notice, update_passive_rx) =
+            if update::passive_check::should_skip_passive_check() {
+                (None, None)
+            } else {
+                let (cached_notice, needs_refresh) =
+                    update::passive_check::evaluate_local_passive_notice();
+                let passive_rx = if needs_refresh {
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        let res = update::refresh_passive_cache_once(effective_ch)
+                            .ok()
+                            .flatten();
+                        let _ = tx.send(res);
+                    });
+                    Some(rx)
+                } else {
+                    None
+                };
+                (cached_notice, passive_rx)
+            };
+
         let mut wb = Self {
             focus_handle: cx.focus_handle(),
             fonts,
@@ -288,6 +323,14 @@ impl MungerWorkbench {
             universe_sync_progress: None,
             universe_sync_rx: None,
             universe_progress_rx: None,
+            update_channel: effective_ch,
+            update_notice: initial_notice,
+            update_checking: false,
+            update_applying: false,
+            update_applied_version: None,
+            update_passive_rx,
+            update_check_rx: None,
+            update_apply_rx: None,
             paths,
         };
         wb.reload_from_disk();
@@ -487,7 +530,10 @@ impl MungerWorkbench {
     }
 
     pub fn poll_background_sync(&mut self) -> bool {
-        let dirty = self.poll_universe_sync();
+        let mut dirty = self.poll_universe_sync();
+        if self.poll_background_update() {
+            dirty = true;
+        }
         let Some(rx) = self.sync_rx.as_ref() else {
             return dirty;
         };
@@ -528,6 +574,225 @@ impl MungerWorkbench {
                 true
             }
         }
+    }
+
+    pub fn start_update_check(&mut self, notify_when_up_to_date: bool, cx: &mut Context<Self>) {
+        if self.update_checking || self.update_applying {
+            if notify_when_up_to_date {
+                self.banner = Some(("正在后台检查或应用更新，请稍候…".into(), false));
+                cx.notify();
+            }
+            return;
+        }
+        self.update_checking = true;
+        if notify_when_up_to_date {
+            self.banner = Some((
+                format!("正在检查 {} 通道更新…", self.update_channel.as_str()),
+                false,
+            ));
+        }
+        let target_channel = self.update_channel;
+        let (tx, rx) = mpsc::channel();
+        self.update_check_rx = Some((notify_when_up_to_date, rx));
+        std::thread::spawn(move || {
+            let res = update::run_update(&UpdateOptions {
+                check_only: true,
+                channel: Some(target_channel),
+                ..Default::default()
+            })
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(res);
+        });
+        cx.notify();
+    }
+
+    pub fn start_update_apply(&mut self, cx: &mut Context<Self>) {
+        if self.update_applying || self.update_checking {
+            self.banner = Some(("正在处理更新任务，请稍候…".into(), false));
+            cx.notify();
+            return;
+        }
+        self.update_applying = true;
+        self.banner = Some((
+            format!(
+                "正在从 {} 通道下载并校验 M3 更新…",
+                self.update_channel.as_str()
+            ),
+            false,
+        ));
+        let target_channel = self.update_channel;
+        let (tx, rx) = mpsc::channel();
+        self.update_apply_rx = Some(rx);
+        std::thread::spawn(move || {
+            let res = update::run_update(&UpdateOptions {
+                check_only: false,
+                channel: Some(target_channel),
+                ..Default::default()
+            })
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(res);
+        });
+        cx.notify();
+    }
+
+    pub fn switch_update_channel(&mut self, channel: ReleaseChannel, cx: &mut Context<Self>) {
+        match update::channel::write_configured_channel(channel) {
+            Ok(()) => {
+                self.update_channel = channel;
+                self.update_notice = None;
+                self.start_update_check(true, cx);
+            }
+            Err(err) => {
+                self.banner = Some((format!("切换更新通道失败：{err:#}"), true));
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn restart_after_update(&mut self, cx: &mut Context<Self>) {
+        let env_app_dir = std::env::var("M3_APP_DIR").ok();
+        let current_exe = std::env::current_exe().ok();
+        match update::install::resolve_target_app_bundle(
+            None,
+            env_app_dir.as_deref(),
+            current_exe.as_deref(),
+        ) {
+            Ok(bundle) if bundle.exists() => match update::install::relaunch_app_bundle(&bundle) {
+                Ok(()) => cx.quit(),
+                Err(err) => {
+                    self.banner = Some((format!("重启 M3.app 失败：{err:#}"), true));
+                    cx.notify();
+                }
+            },
+            Ok(bundle) => {
+                self.banner = Some((
+                    format!("未找到已安装的 M3.app（{}）", bundle.display()),
+                    true,
+                ));
+                cx.notify();
+            }
+            Err(err) => {
+                self.banner = Some((format!("定位 M3.app 失败：{err:#}"), true));
+                cx.notify();
+            }
+        }
+    }
+
+    fn poll_background_update(&mut self) -> bool {
+        let mut dirty = false;
+
+        if let Some(rx) = self.update_passive_rx.take() {
+            match rx.try_recv() {
+                Ok(notice_opt) => {
+                    if self.update_applied_version.is_none() {
+                        self.update_notice = notice_opt;
+                        dirty = true;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.update_passive_rx = Some(rx);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+
+        if let Some((notify_up_to_date, rx)) = self.update_check_rx.take() {
+            match rx.try_recv() {
+                Ok(Ok(report)) => {
+                    self.update_checking = false;
+                    if let Ok(ch) = ReleaseChannel::parse(&report.channel) {
+                        self.update_channel = ch;
+                    }
+                    if report.update_available {
+                        let ch =
+                            ReleaseChannel::parse(&report.channel).unwrap_or(self.update_channel);
+                        let notice = PassiveUpdateNotice {
+                            latest_version: report.target_version.clone(),
+                            channel: ch,
+                            tag: report.tag.clone(),
+                            is_channel_switch: report.previous_channel.is_some(),
+                            release_url: report.release_url.clone(),
+                        };
+                        self.update_notice = Some(notice);
+                        self.banner = Some((
+                            format!(
+                                "发现可用更新 v{}（{}），点击右上角更新药丸安装",
+                                report.target_version, report.channel
+                            ),
+                            false,
+                        ));
+                    } else {
+                        self.update_notice = None;
+                        if notify_up_to_date {
+                            self.banner = Some((
+                                format!(
+                                    "当前已是 {} 通道最新版本 (v{})",
+                                    report.channel, report.current_version
+                                ),
+                                false,
+                            ));
+                        }
+                    }
+                    dirty = true;
+                }
+                Ok(Err(err)) => {
+                    self.update_checking = false;
+                    if notify_up_to_date {
+                        self.banner = Some((format!("检查更新失败：{err}"), true));
+                    }
+                    dirty = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.update_check_rx = Some((notify_up_to_date, rx));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.update_checking = false;
+                    dirty = true;
+                }
+            }
+        }
+
+        if let Some(rx) = self.update_apply_rx.take() {
+            match rx.try_recv() {
+                Ok(Ok(report)) => {
+                    self.update_applying = false;
+                    if let Ok(ch) = ReleaseChannel::parse(&report.channel) {
+                        self.update_channel = ch;
+                    }
+                    self.update_notice = None;
+                    if report.updated {
+                        self.update_applied_version = Some(report.target_version.clone());
+                        self.banner = Some((
+                            format!(
+                                "已安装 M3 v{}（{}），点击右上角「已更新 · 重启」以生效",
+                                report.target_version, report.channel
+                            ),
+                            false,
+                        ));
+                    } else {
+                        self.banner = Some((
+                            format!("当前已是最新版本 (v{})", report.current_version),
+                            false,
+                        ));
+                    }
+                    dirty = true;
+                }
+                Ok(Err(err)) => {
+                    self.update_applying = false;
+                    self.banner = Some((format!("安装更新失败：{err}"), true));
+                    dirty = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.update_apply_rx = Some(rx);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.update_applying = false;
+                    dirty = true;
+                }
+            }
+        }
+
+        dirty
     }
 
     fn save_sandbox_assumptions(&mut self) {
@@ -1127,7 +1392,7 @@ impl Render for MungerWorkbench {
                                         .child(content),
                                 )
                             })
-                            .child(self.render_statusline()),
+                            .child(self.render_statusline(cx)),
                     ),
             )
             .when(self.palette_open, |d| {

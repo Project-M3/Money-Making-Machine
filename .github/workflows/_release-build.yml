@@ -1,0 +1,369 @@
+name: Release Build (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Pure SemVer release version (e.g. 0.2.0 or 0.2.1-beta.20261124.3)"
+        type: string
+        required: true
+      tag:
+        description: "Git release tag (e.g. v0.2.0 or beta)"
+        type: string
+        required: true
+      channel:
+        description: "Release channel (stable or beta)"
+        type: string
+        required: true
+      commit_sha:
+        description: "Optional short Git commit SHA embedded in build and manifest"
+        type: string
+        required: false
+        default: ""
+      target_sha:
+        description: "Full Git commit SHA to check out and tag"
+        type: string
+        required: false
+        default: ""
+      should_publish:
+        description: "Whether to publish assets to GitHub Releases"
+        type: boolean
+        required: true
+      require_sign_macos:
+        description: "Fail unless Apple Developer ID signing and notarization secrets are configured"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+
+      - name: Validate workflow inputs
+        env:
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_CHANNEL" in
+            stable|beta) ;;
+            *) echo "invalid channel: $RELEASE_CHANNEL" >&2; exit 1 ;;
+          esac
+          test -n "$RELEASE_VERSION"
+          test -n "$RELEASE_TAG"
+
+      - name: Detect Apple Developer ID signing availability
+        id: apple_sign
+        env:
+          REQUIRE_SIGN: ${{ inputs.require_sign_macos }}
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in MACOS_CERT_P12_BASE64 MACOS_CERT_P12_PASSWORD APPLE_TEAM_ID ASC_API_KEY_P8 ASC_API_KEY_ID ASC_API_ISSUER_ID; do
+            eval "value=\${$name-}"
+            if [ -z "$value" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -z "$missing" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Apple Developer ID signing + notarization enabled"
+          elif [ "$REQUIRE_SIGN" = "true" ]; then
+            echo "error: require_sign_macos=true but missing secrets:$missing" >&2
+            exit 1
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Apple signing secrets not configured; falling back to ad-hoc signing"
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+          cache-bin: false
+          workspaces: apps/m3-desktop
+
+      - name: Build, Developer-ID sign, notarize, and package (macOS)
+        if: steps.apple_sign.outputs.enabled == 'true'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          M3_TARGET: ${{ matrix.target }}
+          M3_RELEASE_VERSION: ${{ inputs.version }}
+          M3_BUILD_VERSION: ${{ inputs.version }}
+          M3_BUILD_CHANNEL: ${{ inputs.channel }}
+          M3_BUILD_COMMIT: ${{ inputs.commit_sha }}
+          M3_RELEASE_OUT_DIR: ${{ github.workspace }}/dist
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/m3-signing"
+          mkdir -p "$work"
+          keychain="$work/signing.keychain-db"
+          p12="$work/cert.p12"
+          p8="$work/AuthKey.p8"
+          pass="$(openssl rand -base64 32)"
+          cleanup() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -f "$p12" "$p8" "$work/import.err"
+          }
+          trap cleanup EXIT
+
+          printf '%s' "$MACOS_CERT_P12_BASE64" | tr -d '[:space:]' | base64 --decode > "$p12"
+          if printf '%s' "$ASC_API_KEY_P8" | grep -q "BEGIN "; then
+            printf '%s\n' "$ASC_API_KEY_P8" > "$p8"
+          else
+            printf '%s' "$ASC_API_KEY_P8" | tr -d '[:space:]' | base64 --decode > "$p8"
+          fi
+          chmod 600 "$p12" "$p8"
+
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          security import "$p12" -k "$keychain" -P "$MACOS_CERT_P12_PASSWORD" -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pass" "$keychain" >/dev/null
+
+          existing_keychains=()
+          while IFS= read -r kc; do
+            [ -n "$kc" ] && existing_keychains+=("$kc")
+          done < <(security list-keychains -d user | tr -d '"' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+          security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
+
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -n 1)"
+          if [ -z "$identity" ] || ! printf '%s' "$identity" | grep -q "($APPLE_TEAM_ID)"; then
+            echo "Developer ID Application identity missing or mismatched with APPLE_TEAM_ID" >&2
+            exit 1
+          fi
+
+          export M3_SIGN_IDENTITY="$identity"
+          export M3_SIGN_KEYCHAIN="$keychain"
+          export M3_NOTARY_KEY="$p8"
+          export M3_NOTARY_KEY_ID="$ASC_API_KEY_ID"
+          export M3_NOTARY_ISSUER="$ASC_API_ISSUER_ID"
+          export M3_SIGN_PROOF_OUT="$PWD/dist/signing-proof-${M3_TARGET}.txt"
+          export M3_NOTARY_JSON_OUT="$PWD/dist/notary-${M3_TARGET}.json"
+          export M3_REQUIRE_NOTARIZE=1
+          ./scripts/assemble-macos-release.sh
+
+      - name: Build and package (ad-hoc signed macOS)
+        if: steps.apple_sign.outputs.enabled != 'true'
+        env:
+          M3_TARGET: ${{ matrix.target }}
+          M3_RELEASE_VERSION: ${{ inputs.version }}
+          M3_BUILD_VERSION: ${{ inputs.version }}
+          M3_BUILD_CHANNEL: ${{ inputs.channel }}
+          M3_BUILD_COMMIT: ${{ inputs.commit_sha }}
+          M3_RELEASE_OUT_DIR: ${{ github.workspace }}/dist
+          M3_SIGN_PROOF_OUT: ${{ github.workspace }}/dist/signing-proof-${{ matrix.target }}.txt
+        run: ./scripts/assemble-macos-release.sh
+
+      - name: Upload target release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Manifest & Publish Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+
+      - name: Download built target artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate latest.json and checksums.txt
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          REPO: ${{ github.repository }}
+          REQUIRE_SIGN_MACOS: ${{ inputs.require_sign_macos }}
+        run: |
+          set -euo pipefail
+          extra_flags=()
+          if [ "$REQUIRE_SIGN_MACOS" = "true" ]; then
+            extra_flags+=(--require-apple-notarized)
+          fi
+          if [ -n "${COMMIT_SHA:-}" ]; then
+            extra_flags+=(--commit "$COMMIT_SHA")
+          fi
+          python3 scripts/generate-release-manifest.py \
+            --assets-dir release-assets \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --channel "$CHANNEL" \
+            --repo "$REPO" \
+            --targets aarch64-apple-darwin \
+            --verify-archives \
+            "${extra_flags[@]}"
+          (cd release-assets && sha256sum -c checksums.txt)
+          cat release-assets/latest.json
+          cat release-assets/checksums.txt
+
+      - name: Upload combined release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: m3-${{ inputs.channel }}-${{ inputs.version }}-release-bundle
+          path: release-assets/
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: inputs.should_publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          TARGET_SHA: ${{ inputs.target_sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          payload_assets=(
+            release-assets/m3-"${VERSION}"-*.tar.gz
+            release-assets/m3-"${VERSION}"-*.tar.gz.sha256
+            release-assets/signing-proof-*.txt
+            release-assets/notary-*.json
+          )
+          manifest_assets=(
+            release-assets/latest.json
+            release-assets/checksums.txt
+          )
+          if [ "${#payload_assets[@]}" -eq 0 ] || [ "${#manifest_assets[@]}" -ne 2 ]; then
+            echo "Missing release assets to publish" >&2
+            exit 1
+          fi
+
+          if [ "$CHANNEL" = "beta" ]; then
+            git tag -f beta "$TARGET_SHA"
+            git push origin refs/tags/beta --force
+
+            if gh release view beta >/dev/null 2>&1; then
+              gh release upload beta "${payload_assets[@]}" --clobber
+              gh release upload beta "${manifest_assets[@]}" --clobber
+              gh release edit beta --draft=false --prerelease=true --target "$TARGET_SHA" --title "M3 Beta"
+            else
+              gh release create beta "${payload_assets[@]}" \
+                --title "M3 Beta" \
+                --notes "Rolling beta pre-release builds from \`main\`." \
+                --prerelease \
+                --verify-tag
+              gh release upload beta "${manifest_assets[@]}" --clobber
+            fi
+
+            python3 - <<'PY'
+          import json, os, re, subprocess
+
+          current_version = os.environ["VERSION"]
+          asset_re = re.compile(
+              r"^m3-(.+)-(?:aarch64-apple-darwin|x86_64-apple-darwin)\.tar\.gz(?:\.sha256)?$"
+          )
+
+          def semver_key(ver: str):
+              try:
+                  core_pre = ver.split("+", 1)[0]
+                  core, _, pre = core_pre.partition("-")
+                  major, minor, patch = (int(p) for p in core.split("."))
+                  pre_key = []
+                  if pre:
+                      for part in pre.split("."):
+                          pre_key.append((0, int(part), "") if part.isdigit() else (1, 0, part))
+                  return (1, major, minor, patch, 1 if not pre else 0, pre_key)
+              except Exception:
+                  return (0, 0, 0, 0, 0, [(1, 0, ver)])
+
+          raw = subprocess.check_output(["gh", "release", "view", "beta", "--json", "assets"], text=True)
+          asset_names = [item["name"] for item in json.loads(raw).get("assets", [])]
+          versions_to_assets: dict[str, list[str]] = {}
+          for name in asset_names:
+              match = asset_re.match(name)
+              if match:
+                  versions_to_assets.setdefault(match.group(1), []).append(name)
+
+          other_versions = sorted(
+              (v for v in versions_to_assets if v != current_version),
+              key=semver_key,
+              reverse=True,
+          )
+          keep_versions = {current_version}
+          if other_versions:
+              keep_versions.add(other_versions[0])
+
+          to_delete = [
+              name
+              for ver, names in sorted(versions_to_assets.items())
+              if ver not in keep_versions
+              for name in sorted(names)
+          ]
+          print(f"Keeping beta asset versions: {sorted(keep_versions)}")
+          for name in to_delete:
+              print(f"Pruning old beta asset: {name}")
+              subprocess.run(["gh", "release", "delete-asset", "beta", name, "--yes"], check=True)
+          PY
+          else
+            prerelease_flags=()
+            edit_prerelease_flags=(--prerelease=false)
+            if [[ "$VERSION" == *-* ]]; then
+              prerelease_flags+=(--prerelease)
+              edit_prerelease_flags=(--prerelease=true)
+            fi
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" "${payload_assets[@]}" --clobber
+              gh release upload "$TAG" "${manifest_assets[@]}" --clobber
+              gh release edit "$TAG" --draft=false "${edit_prerelease_flags[@]}"
+            else
+              create_flags=(--title "$TAG" --generate-notes)
+              if [ "$EVENT_NAME" = "push" ]; then
+                create_flags+=(--verify-tag)
+              else
+                create_flags+=(--target "$TARGET_SHA")
+              fi
+              gh release create "$TAG" "${payload_assets[@]}" "${create_flags[@]}" "${prerelease_flags[@]}"
+              gh release upload "$TAG" "${manifest_assets[@]}" --clobber
+            fi
+          fi

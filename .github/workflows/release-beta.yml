@@ -1,0 +1,117 @@
+name: Release Beta
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".scratch/**"
+      - "workbench/**"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify manifest without publishing rolling beta release"
+        type: boolean
+        required: true
+        default: true
+      require_sign_macos:
+        description: "Fail if Apple Developer ID signing/notarization secrets are missing"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-beta-main
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Compute Beta Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      commit_sha: ${{ steps.meta.outputs.commit_sha }}
+      target_sha: ${{ steps.meta.outputs.target_sha }}
+      should_publish: ${{ steps.meta.outputs.should_publish }}
+      require_sign_macos: ${{ steps.meta.outputs.require_sign_macos }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Refresh git tags
+        run: git fetch --tags --force
+
+      - name: Resolve beta version and build metadata
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_REQUIRE_SIGN_MACOS: ${{ inputs.require_sign_macos }}
+        run: |
+          python3 - <<'PY'
+          import datetime, os, pathlib, re, subprocess, tomllib
+
+          cargo = tomllib.loads(pathlib.Path("apps/m3-desktop/Cargo.toml").read_text(encoding="utf-8"))
+          pkg_version = cargo["package"]["version"].strip()
+          match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", pkg_version)
+          if not match:
+              raise SystemExit(f"Invalid Cargo.toml package.version for beta calculation: {pkg_version!r}")
+          major, minor, patch = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+          tag_probe = subprocess.run(
+              ["git", "rev-parse", "-q", "--verify", f"refs/tags/v{pkg_version}"],
+              capture_output=True,
+              text=True,
+          )
+          base = f"{major}.{minor}.{patch + 1}" if tag_probe.returncode == 0 else f"{major}.{minor}.{patch}"
+
+          yyyymmdd = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+          run_number = os.environ["RUN_NUMBER"].strip()
+          if not run_number.isdigit() or int(run_number) <= 0:
+              raise SystemExit(f"Invalid github.run_number: {run_number!r}")
+
+          version = f"{base}-beta.{yyyymmdd}.{int(run_number)}"
+          tag = "beta"
+          target_sha = os.environ["GITHUB_SHA"].strip()
+          commit_sha = target_sha[:7]
+
+          event_name = os.environ["EVENT_NAME"]
+          if event_name == "push":
+              should_publish = True
+          elif event_name == "workflow_dispatch":
+              should_publish = os.environ.get("INPUT_DRY_RUN", "true").lower() != "true"
+          else:
+              raise SystemExit(f"Unsupported trigger: {event_name}")
+          req_sign = os.environ.get("INPUT_REQUIRE_SIGN_MACOS", "false").lower() == "true"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"version={version}\n")
+              fh.write(f"tag={tag}\n")
+              fh.write(f"commit_sha={commit_sha}\n")
+              fh.write(f"target_sha={target_sha}\n")
+              fh.write(f"should_publish={'true' if should_publish else 'false'}\n")
+              fh.write(f"require_sign_macos={'true' if req_sign else 'false'}\n")
+          print(f"Resolved beta version={version} tag={tag} commit={commit_sha} should_publish={should_publish}")
+          PY
+
+  release:
+    needs: prepare
+    uses: ./.github/workflows/_release-build.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      tag: ${{ needs.prepare.outputs.tag }}
+      channel: beta
+      commit_sha: ${{ needs.prepare.outputs.commit_sha }}
+      target_sha: ${{ needs.prepare.outputs.target_sha }}
+      should_publish: ${{ needs.prepare.outputs.should_publish == 'true' }}
+      require_sign_macos: ${{ needs.prepare.outputs.require_sign_macos == 'true' }}

@@ -54,13 +54,38 @@ pub fn civil_today_iso() -> String {
 
 pub fn resolve_repo_root() -> Result<PathBuf> {
     if let Ok(explicit) = std::env::var("M3_REPO_ROOT") {
-        let p = PathBuf::from(explicit);
-        if p.join("workbench/watchlist.json").exists() {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            let p = PathBuf::from(trimmed);
+            anyhow::ensure!(
+                p.join("workbench/watchlist.json").exists(),
+                "M3_REPO_ROOT `{trimmed}` 缺少 workbench/watchlist.json"
+            );
             return p.canonicalize().context("canonicalize M3_REPO_ROOT");
         }
     }
+    if let Ok(cwd) = std::env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            if ancestor.join("workbench/watchlist.json").exists() {
+                if let Ok(canon) = ancestor.canonicalize() {
+                    return Ok(canon);
+                }
+                return Ok(ancestor.to_path_buf());
+            }
+        }
+    }
+    if let Some(configured) = crate::app_config::read_workspace_root() {
+        return Ok(configured);
+    }
     let manifest_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    manifest_root.canonicalize().context("找不到仓库根目录")
+    if manifest_root.join("workbench/watchlist.json").exists()
+        && let Ok(canon) = manifest_root.canonicalize()
+    {
+        return Ok(canon);
+    }
+    anyhow::bail!(
+        "未找到 M3 工作区（缺少 workbench/watchlist.json）。请运行 `m3 workspace set <仓库路径>` 或设置环境变量 `M3_REPO_ROOT`。"
+    )
 }
 
 pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {

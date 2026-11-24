@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  M3_NO_UPDATE_CHECK: "1"
+
+jobs:
+  rust-quality:
+    name: Rust Quality & Tests (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+          components: clippy, rustfmt
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+          workspaces: apps/m3-desktop
+
+      - name: Check formatting and Clippy
+        working-directory: apps/m3-desktop
+        run: |
+          rustfmt --edition 2024 --check build.rs src/*.rs src/ui/*.rs src/update/*.rs
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Enforce zero production unwrap/expect
+        working-directory: apps/m3-desktop
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          prod_files = []
+          for p in sorted(pathlib.Path("src").rglob("*.rs")):
+              if p.name == "tests.rs":
+                  continue
+              prod_files.append(p)
+
+          hits = []
+          for p in prod_files:
+              text = p.read_text(encoding="utf-8")
+              # Strip inline #[cfg(test)] mod tests { ... } tail if present.
+              idx = text.find("#[cfg(test)]")
+              head = text if idx == -1 else text[:idx]
+              for lineno, line in enumerate(head.splitlines(), 1):
+                  if re.search(r"\.(unwrap|expect)\s*\(", line):
+                      hits.append(f"{p}:{lineno}: {line.strip()}")
+
+          if hits:
+              print("\n".join(hits), file=sys.stderr)
+              sys.exit(1)
+          print(f"Verified 0 production unwrap/expect calls across {len(prod_files)} files")
+          PY
+
+      - name: Run unit tests
+        working-directory: apps/m3-desktop
+        run: cargo test --locked -j 4
+
+      - name: Check release scripts and Python manifest generator
+        run: |
+          bash -n scripts/assemble-macos-release.sh scripts/install.sh scripts/release.sh apps/m3-desktop/build.sh
+          python3 scripts/generate-release-manifest.py --help >/dev/null

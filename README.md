@@ -29,6 +29,24 @@
 
 ---
 
+## 快速安装与双通道自动更新（macOS）
+
+```sh
+# 1. 安装（默认写入 /Applications/M3.app，建立 ~/.local/bin/m3 软链并绑定当前仓库为默认工作区）
+#    需先登录 gh auth login（私有仓库下载自动复用 gh token）或设置 M3_GITHUB_TOKEN
+./scripts/install.sh --channel beta    # 跟随 main 每次合并自动发布的 rolling beta
+./scripts/install.sh --channel stable  # 或选择带 tag (vX.Y.Z) 的稳定版
+
+# 2. 日常切换通道与自更新（命令行 & GPUI 桌面端均支持）
+m3 update channel beta     # 切到 beta（或 stable）
+m3 update --check          # 检查是否有新版本
+m3 update                  # 下载校验 SHA-256 并原子替换 /Applications/M3.app
+```
+
+- 持久化工作区与通道状态保存在 `~/Library/Application Support/M3/`（`config.json` 与 `updater/`），从 Finder 打开 `/Applications/M3.app` 也可直接定位 `workbench/` 与 `data/munger/`。
+
+---
+
 ## 文档入口
 
 - [GPUI 工作台与 CLI](apps/m3-desktop/README.md)：Munger Workbench 桌面界面与 JSON CLI 说明
