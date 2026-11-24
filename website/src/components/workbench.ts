@@ -247,8 +247,30 @@ export function mountWorkbench(container: HTMLElement): void {
           <div class="traffic-lights" aria-hidden="true">
             <span></span><span></span><span></span>
           </div>
-          <img src="./favicon.svg" alt="" width="20" height="20" style="border-radius: 4px" />
-          <span class="mono" style="font-size: 0.72rem; color: var(--ink-secondary); letter-spacing: 0.06em">M3</span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 16 10"
+            width="23"
+            height="14"
+            shape-rendering="crispEdges"
+            aria-label="M3"
+            role="img"
+          >
+            <rect x="0" y="0" width="2" height="10" fill="#FFFFFF" />
+            <rect x="6" y="0" width="2" height="10" fill="#FFFFFF" />
+            <rect x="2" y="1" width="1" height="2" fill="#FFFFFF" />
+            <rect x="5" y="1" width="1" height="2" fill="#FFFFFF" />
+            <rect x="3" y="2" width="2" height="1" fill="#FFFFFF" />
+            <rect x="3" y="3" width="1" height="2" fill="#FFFFFF" />
+            <rect x="4" y="3" width="1" height="2" fill="#FFFFFF" />
+            <rect x="10" y="0" width="5" height="1" fill="#FFFFFF" />
+            <rect x="10" y="1" width="6" height="1" fill="#FFFFFF" />
+            <rect x="14" y="2" width="2" height="2" fill="#FFFFFF" />
+            <rect x="12" y="4" width="3" height="2" fill="#FFFFFF" />
+            <rect x="14" y="6" width="2" height="2" fill="#FFFFFF" />
+            <rect x="10" y="8" width="6" height="1" fill="#FFFFFF" />
+            <rect x="10" y="9" width="5" height="1" fill="#FFFFFF" />
+          </svg>
         </div>
 
         <div class="m3-sidebar-palette-wrap">
