@@ -493,6 +493,128 @@ impl MungerWorkbench {
         self.active_view = target;
     }
 
+    pub fn workspace_root(&self) -> &std::path::Path {
+        &self.paths.repo_root
+    }
+
+    pub fn trigger_l1_catchup(&mut self, cx: &mut Context<Self>) {
+        self.switch_view(NavView::Inbox);
+        self.start_l1_catchup(false, cx);
+    }
+
+    pub fn trigger_universe_sync(&mut self, cx: &mut Context<Self>) {
+        self.switch_view(NavView::Universe);
+        self.start_universe_sync(false, cx);
+    }
+
+    pub fn trigger_themes_sync(&mut self, cx: &mut Context<Self>) {
+        self.switch_view(NavView::Journal);
+        self.start_themes_sync(cx);
+    }
+
+    pub fn run_deep_research_selected(&mut self, cx: &mut Context<Self>) {
+        let ticker = self.selected_ticker.clone();
+        if ticker.trim().is_empty() {
+            return;
+        }
+        self.active_view = NavView::Agent;
+        self.start_deep_research(&ticker, None, "menu", cx);
+    }
+
+    pub fn show_budget_status_notice(&mut self, cx: &mut Context<Self>) {
+        self.execute_palette_action(PaletteAction::ShowBudgetStatus, cx);
+        cx.notify();
+    }
+
+    pub fn toggle_basis(&mut self, cx: &mut Context<Self>) {
+        self.execute_palette_action(PaletteAction::ToggleBasis, cx);
+        cx.notify();
+    }
+
+    pub fn toggle_baskets_view(&mut self, cx: &mut Context<Self>) {
+        self.execute_palette_action(PaletteAction::ToggleBasketsView, cx);
+        cx.notify();
+    }
+
+    pub fn show_about_notice(&mut self, cx: &mut Context<Self>) {
+        self.banner = Some((
+            format!(
+                "Project M3 v{} ({}) · Apache-2.0 · 工作区：{}",
+                update::current_binary_version(),
+                self.update_channel.as_str(),
+                self.paths.repo_root.display()
+            ),
+            false,
+        ));
+        cx.notify();
+    }
+
+    fn active_input_buffer(&mut self) -> Option<(&mut String, bool)> {
+        if self.palette_open {
+            self.palette_cursor = 0;
+            return Some((&mut self.palette_query, false));
+        }
+        if self.active_view == NavView::Agent && self.agent_input_focused {
+            return Some((&mut self.agent_input_draft, false));
+        }
+        if self.active_view == NavView::Universe && self.universe_state.search_focused {
+            self.universe_state.similar_as_ticker = false;
+            return Some((&mut self.universe_state.query, true));
+        }
+        None
+    }
+
+    pub fn handle_menu_paste(&mut self, cx: &mut Context<Self>) {
+        let Some(raw) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let cleaned: String = raw
+            .chars()
+            .map(|ch| if ch == '\n' || ch == '\r' { ' ' } else { ch })
+            .filter(|ch| !ch.is_control())
+            .collect();
+        if cleaned.is_empty() {
+            return;
+        }
+        let Some((buf, is_universe)) = self.active_input_buffer() else {
+            return;
+        };
+        buf.push_str(&cleaned);
+        if is_universe {
+            self.apply_universe_query_change();
+        }
+        cx.notify();
+    }
+
+    pub fn handle_menu_copy(&mut self, cx: &mut Context<Self>) {
+        let text = if let Some((buf, _)) = self.active_input_buffer() {
+            buf.clone()
+        } else {
+            self.selected_ticker.clone()
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        self.banner = Some((format!("已拷贝：{text}"), false));
+        cx.notify();
+    }
+
+    pub fn handle_menu_cut(&mut self, cx: &mut Context<Self>) {
+        let Some((buf, is_universe)) = self.active_input_buffer() else {
+            return;
+        };
+        if buf.is_empty() {
+            return;
+        }
+        let text = std::mem::take(buf);
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        if is_universe {
+            self.apply_universe_query_change();
+        }
+        cx.notify();
+    }
+
     fn step_selected_company(&mut self, delta: isize) {
         let len = self.reports.len();
         if len == 0 {
