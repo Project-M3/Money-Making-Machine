@@ -10,6 +10,9 @@ on:
       - ".scratch/**"
       - "workbench/**"
       - "website/**"
+      - ".github/release-drafter.yml"
+      - ".github/workflows/release-drafter.yml"
+      - ".github/workflows/website.yml"
   workflow_dispatch:
     inputs:
       dry_run:

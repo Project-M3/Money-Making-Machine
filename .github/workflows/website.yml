@@ -5,15 +5,21 @@ on:
     branches: [main]
     paths:
       - "website/**"
+      - "scripts/install.sh"
       - ".github/workflows/website.yml"
   pull_request:
     paths:
       - "website/**"
+      - "scripts/install.sh"
       - ".github/workflows/website.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: website-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -37,6 +43,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: website/pnpm-lock.yaml
 
+      - name: Verify installer copy matches scripts/install.sh
+        run: diff -u ../scripts/install.sh public/install.sh
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -47,4 +56,41 @@ jobs:
         run: |
           test -f .cloudflare/output/v1/config.json
           test -f .cloudflare/output/v1/workers/default/assets/index.html
+          test -f .cloudflare/output/v1/workers/default/assets/install.sh
           test -f .cloudflare/output/v1/workers/default/bundle/index.js
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 12
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: website/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy m3-website to Cloudflare Workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN is not configured; skipping automatic Cloudflare deploy."
+            exit 0
+          fi
+          pnpm exec cloudflare deploy

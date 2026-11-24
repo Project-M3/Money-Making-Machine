@@ -1,0 +1,53 @@
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
+
+version-resolver:
+  major:
+    labels:
+      - semver:major
+  minor:
+    labels:
+      - semver:minor
+  patch:
+    labels:
+      - semver:patch
+  default: patch
+
+categories:
+  - title: "Desktop UI & Menu Bar"
+    labels:
+      - area/ui
+      - area/desktop
+  - title: "Lakehouse, Events & Latent Space"
+    labels:
+      - area/lakehouse
+      - area/events
+  - title: "Alan Deep Research & Budget Gate"
+    labels:
+      - area/research
+      - area/alan
+  - title: "CLI & Self-Updater"
+    labels:
+      - area/cli
+      - area/updater
+  - title: "Website"
+    labels:
+      - area/website
+  - title: "Documentation"
+    labels:
+      - area/docs
+  - title: "CI & Automation"
+    labels:
+      - area/ci
+  - title: "Dependencies"
+    labels:
+      - dependencies
+
+exclude-labels:
+  - skip-changelog
+
+template: |
+  ## Changes
+
+  $CHANGES

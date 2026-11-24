@@ -48,6 +48,22 @@ function bindCopyButtons(): void {
   });
 }
 
+async function hydrateLatestVersion(): Promise<void> {
+  try {
+    const res = await fetch('/latest.json', { cache: 'default' });
+    if (!res.ok) return;
+    const data = (await res.json()) as { version?: unknown };
+    if (typeof data.version !== 'string') return;
+    const trimmed = data.version.trim().replace(/^v/, '');
+    if (!trimmed) return;
+    document.querySelectorAll<HTMLElement>('[data-m3-version]').forEach((el) => {
+      el.textContent = `v${trimmed}`;
+    });
+  } catch {
+    // Keep baked fallback version if manifest endpoint is unreachable.
+  }
+}
+
 function setupRevealObserver(): void {
   const targets = document.querySelectorAll<HTMLElement>('[data-reveal]');
   if (!('IntersectionObserver' in window)) {
@@ -85,3 +101,4 @@ if (cliListRoot) {
 
 bindCopyButtons();
 setupRevealObserver();
+void hydrateLatestVersion();
