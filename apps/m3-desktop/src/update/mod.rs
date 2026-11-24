@@ -455,13 +455,13 @@ fn resolve_release(
     let status = resp.status();
     if matches!(status.as_u16(), 401 | 403) {
         bail!(
-            "GitHub API 鉴权失败（HTTP {status}）。请运行 `gh auth login` 确认有 `{repo}` 访问权限，或设置环境变量 `M3_GITHUB_TOKEN`。"
+            "GitHub API 请求受限或鉴权失败（HTTP {status}）。如遇匿名限流，请运行 `gh auth login` 或设置环境变量 `M3_GITHUB_TOKEN`。"
         );
     }
     if status.as_u16() == 404 {
         if token.is_none() {
             bail!(
-                "无法访问私有仓库 `{repo}` 的 Release（HTTP 404，未检测到 GitHub 凭证）。请先执行 `gh auth login` 或设置 `M3_GITHUB_TOKEN`。"
+                "未找到仓库 `{repo}` 在 `{target_channel}` 通道的 Release（HTTP 404）。若使用私有镜像仓库，请先执行 `gh auth login` 或设置 `M3_GITHUB_TOKEN`。"
             );
         }
         bail!(

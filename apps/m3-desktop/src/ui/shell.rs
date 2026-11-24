@@ -39,6 +39,7 @@ pub(super) fn resolve_sidebar_dock_notice_from(
     deep_research_running: bool,
     syncing: bool,
     themes_syncing: bool,
+    update_checking: bool,
     update_applying: bool,
 ) -> Option<SidebarDockNotice> {
     if let Some((msg, true)) = banner {
@@ -48,6 +49,28 @@ pub(super) fn resolve_sidebar_dock_notice_from(
             dot_color: CORAL_FG,
             border_color: CORAL_BORDER,
             dismissible: true,
+        });
+    }
+    if update_applying {
+        return Some(SidebarDockNotice {
+            tag: "UPDATING",
+            message: "正在下载并校验新版 M3.app…".to_owned(),
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            dismissible: false,
+        });
+    }
+    if update_checking {
+        let message = match banner {
+            Some((msg, false)) => msg.clone(),
+            _ => "正在检查新版本…".to_owned(),
+        };
+        return Some(SidebarDockNotice {
+            tag: "UPDATE",
+            message,
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            dismissible: false,
         });
     }
     if universe_syncing {
@@ -96,15 +119,6 @@ pub(super) fn resolve_sidebar_dock_notice_from(
         return Some(SidebarDockNotice {
             tag: "THEMES",
             message: "正在同步商业原型主题图谱…".to_owned(),
-            dot_color: SKY_FG,
-            border_color: SKY_BORDER,
-            dismissible: false,
-        });
-    }
-    if update_applying {
-        return Some(SidebarDockNotice {
-            tag: "UPDATING",
-            message: "正在下载并校验新版 M3.app…".to_owned(),
             dot_color: SKY_FG,
             border_color: SKY_BORDER,
             dismissible: false,
@@ -489,6 +503,7 @@ impl MungerWorkbench {
             self.deep_research_running,
             self.syncing,
             self.themes_syncing,
+            self.update_checking,
             self.update_applying,
         )
     }

@@ -237,192 +237,111 @@ fn register_global_actions(cx: &mut App) {
     cx.on_action(|_: &OpenReleases, cx| cx.open_url(M3_RELEASES_URL));
 }
 
+fn register_window_action<A: gpui::Action>(
+    cx: &mut App,
+    window: gpui::WindowHandle<MungerWorkbench>,
+    handler: impl Fn(&mut MungerWorkbench, &mut gpui::Window, &mut gpui::Context<MungerWorkbench>)
+    + std::marker::Copy
+    + 'static,
+) {
+    cx.on_action(move |_: &A, cx| {
+        // GPUI leases the active Window out of `cx.windows` while running
+        // `dispatch_action_on_node`. Deferring onto the end of the current
+        // effect cycle lets the Window return before `window.update` runs.
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |v, win, cx| handler(v, win, cx));
+        });
+    });
+}
+
 fn register_window_actions(cx: &mut App, window: gpui::WindowHandle<MungerWorkbench>) {
-    let w = window;
-    cx.on_action(move |_: &AboutM3, cx| {
-        let _ = w.update(cx, |v, _, cx| v.show_about_notice(cx));
+    register_window_action::<AboutM3>(cx, window, |v, _, cx| v.show_about_notice(cx));
+    register_window_action::<OpenPalette>(cx, window, |v, win, cx| {
+        v.toggle_palette(win);
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &OpenPalette, cx| {
-        let _ = w.update(cx, |v, win, cx| {
-            v.toggle_palette(win);
-            cx.notify();
-        });
+    register_window_action::<ViewInbox>(cx, window, |v, _, cx| {
+        v.switch_view(NavView::Inbox);
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &ViewInbox, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.switch_view(NavView::Inbox);
-            cx.notify();
-        });
+    register_window_action::<ViewUniverse>(cx, window, |v, _, cx| {
+        v.switch_view(NavView::Universe);
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &ViewUniverse, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.switch_view(NavView::Universe);
-            cx.notify();
-        });
+    register_window_action::<ViewBaskets>(cx, window, |v, _, cx| {
+        v.focus_basket(None);
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &ViewBaskets, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.focus_basket(None);
-            cx.notify();
-        });
+    register_window_action::<ViewDossier>(cx, window, |v, _, cx| {
+        v.switch_view(NavView::Dossier);
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &ViewDossier, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.switch_view(NavView::Dossier);
-            cx.notify();
-        });
+    register_window_action::<ViewAgent>(cx, window, |v, _, cx| {
+        v.switch_view(NavView::Agent);
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &ViewAgent, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.switch_view(NavView::Agent);
-            cx.notify();
-        });
+    register_window_action::<ViewJournal>(cx, window, |v, _, cx| {
+        v.switch_view(NavView::Journal);
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &ViewJournal, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.switch_view(NavView::Journal);
-            cx.notify();
-        });
+    register_window_action::<BackToBaskets>(cx, window, |v, _, cx| {
+        v.switch_view(NavView::Baskets);
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &BackToBaskets, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.switch_view(NavView::Baskets);
-            cx.notify();
-        });
+    register_window_action::<SyncData>(cx, window, |v, _, cx| v.start_sync(cx));
+    register_window_action::<CatchupEvents>(cx, window, |v, _, cx| v.trigger_l1_catchup(cx));
+    register_window_action::<SyncUniverse>(cx, window, |v, _, cx| v.trigger_universe_sync(cx));
+    register_window_action::<SyncThemes>(cx, window, |v, _, cx| v.trigger_themes_sync(cx));
+    register_window_action::<RevealWorkspace>(cx, window, |v, _, cx| {
+        let root = v.workspace_root().to_path_buf();
+        cx.reveal_path(&root);
     });
-    let w = window;
-    cx.on_action(move |_: &SyncData, cx| {
-        let _ = w.update(cx, |v, _, cx| v.start_sync(cx));
+    register_window_action::<ReloadWorkspace>(cx, window, |v, _, cx| {
+        v.reload_from_disk();
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &CatchupEvents, cx| {
-        let _ = w.update(cx, |v, _, cx| v.trigger_l1_catchup(cx));
+    register_window_action::<CheckUpdate>(cx, window, |v, _, cx| v.start_update_check(true, cx));
+    register_window_action::<ChannelStable>(cx, window, |v, _, cx| {
+        v.switch_update_channel(ReleaseChannel::Stable, cx);
     });
-    let w = window;
-    cx.on_action(move |_: &SyncUniverse, cx| {
-        let _ = w.update(cx, |v, _, cx| v.trigger_universe_sync(cx));
+    register_window_action::<ChannelBeta>(cx, window, |v, _, cx| {
+        v.switch_update_channel(ReleaseChannel::Beta, cx);
     });
-    let w = window;
-    cx.on_action(move |_: &SyncThemes, cx| {
-        let _ = w.update(cx, |v, _, cx| v.trigger_themes_sync(cx));
+    register_window_action::<RunDeepResearch>(cx, window, |v, _, cx| {
+        v.run_deep_research_selected(cx)
     });
-    let w = window;
-    cx.on_action(move |_: &RevealWorkspace, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            let root = v.workspace_root().to_path_buf();
-            cx.reveal_path(&root);
-        });
+    register_window_action::<ShowBudgetStatus>(cx, window, |v, _, cx| {
+        v.show_budget_status_notice(cx)
     });
-    let w = window;
-    cx.on_action(move |_: &ReloadWorkspace, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.reload_from_disk();
-            cx.notify();
-        });
+    register_window_action::<ToggleBasis>(cx, window, |v, _, cx| v.toggle_basis(cx));
+    register_window_action::<ToggleBasketsView>(cx, window, |v, _, cx| v.toggle_baskets_view(cx));
+    register_window_action::<FilterBasketAll>(cx, window, |v, _, cx| {
+        v.focus_basket(None);
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &CheckUpdate, cx| {
-        let _ = w.update(cx, |v, _, cx| v.start_update_check(true, cx));
+    register_window_action::<FilterBasketCore>(cx, window, |v, _, cx| {
+        v.focus_basket(Some(Bucket::Core));
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &ChannelStable, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.switch_update_channel(ReleaseChannel::Stable, cx);
-        });
+    register_window_action::<FilterBasketWatch>(cx, window, |v, _, cx| {
+        v.focus_basket(Some(Bucket::Watch));
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &ChannelBeta, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.switch_update_channel(ReleaseChannel::Beta, cx);
-        });
+    register_window_action::<FilterBasketOut>(cx, window, |v, _, cx| {
+        v.focus_basket(Some(Bucket::Out));
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &RunDeepResearch, cx| {
-        let _ = w.update(cx, |v, _, cx| v.run_deep_research_selected(cx));
+    register_window_action::<FilterBasketTooHard>(cx, window, |v, _, cx| {
+        v.focus_basket(Some(Bucket::TooHard));
+        cx.notify();
     });
-    let w = window;
-    cx.on_action(move |_: &ShowBudgetStatus, cx| {
-        let _ = w.update(cx, |v, _, cx| v.show_budget_status_notice(cx));
-    });
-    let w = window;
-    cx.on_action(move |_: &ToggleBasis, cx| {
-        let _ = w.update(cx, |v, _, cx| v.toggle_basis(cx));
-    });
-    let w = window;
-    cx.on_action(move |_: &ToggleBasketsView, cx| {
-        let _ = w.update(cx, |v, _, cx| v.toggle_baskets_view(cx));
-    });
-    let w = window;
-    cx.on_action(move |_: &FilterBasketAll, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.focus_basket(None);
-            cx.notify();
-        });
-    });
-    let w = window;
-    cx.on_action(move |_: &FilterBasketCore, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.focus_basket(Some(Bucket::Core));
-            cx.notify();
-        });
-    });
-    let w = window;
-    cx.on_action(move |_: &FilterBasketWatch, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.focus_basket(Some(Bucket::Watch));
-            cx.notify();
-        });
-    });
-    let w = window;
-    cx.on_action(move |_: &FilterBasketOut, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.focus_basket(Some(Bucket::Out));
-            cx.notify();
-        });
-    });
-    let w = window;
-    cx.on_action(move |_: &FilterBasketTooHard, cx| {
-        let _ = w.update(cx, |v, _, cx| {
-            v.focus_basket(Some(Bucket::TooHard));
-            cx.notify();
-        });
-    });
-    let w = window;
-    cx.on_action(move |_: &Copy, cx| {
-        let _ = w.update(cx, |v, _, cx| v.handle_menu_copy(cx));
-    });
-    let w = window;
-    cx.on_action(move |_: &Paste, cx| {
-        let _ = w.update(cx, |v, _, cx| v.handle_menu_paste(cx));
-    });
-    let w = window;
-    cx.on_action(move |_: &Cut, cx| {
-        let _ = w.update(cx, |v, _, cx| v.handle_menu_cut(cx));
-    });
-    let w = window;
-    cx.on_action(move |_: &MinimizeWindow, cx| {
-        let _ = w.update(cx, |_, win, _| win.minimize_window());
-    });
-    let w = window;
-    cx.on_action(move |_: &ZoomWindow, cx| {
-        let _ = w.update(cx, |_, win, _| win.zoom_window());
-    });
-    let w = window;
-    cx.on_action(move |_: &ToggleFullScreen, cx| {
-        let _ = w.update(cx, |_, win, _| win.toggle_fullscreen());
-    });
-    let w = window;
-    cx.on_action(move |_: &CloseWindow, cx| {
-        let _ = w.update(cx, |_, win, _| win.remove_window());
-    });
+    register_window_action::<Copy>(cx, window, |v, _, cx| v.handle_menu_copy(cx));
+    register_window_action::<Paste>(cx, window, |v, _, cx| v.handle_menu_paste(cx));
+    register_window_action::<Cut>(cx, window, |v, _, cx| v.handle_menu_cut(cx));
+    register_window_action::<MinimizeWindow>(cx, window, |_, win, _| win.minimize_window());
+    register_window_action::<ZoomWindow>(cx, window, |_, win, _| win.zoom_window());
+    register_window_action::<ToggleFullScreen>(cx, window, |_, win, _| win.toggle_fullscreen());
+    register_window_action::<CloseWindow>(cx, window, |_, win, _| win.remove_window());
 }
 
 fn resolve_font_roles(cx: &App) -> FontRoles {

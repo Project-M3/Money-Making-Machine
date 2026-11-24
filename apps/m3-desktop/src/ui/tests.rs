@@ -1134,7 +1134,7 @@ fn sidebar_dock_notice_prioritizes_errors_then_active_tasks_then_info() {
     // 1. Idle returns None.
     assert!(
         resolve_sidebar_dock_notice_from(
-            None, false, None, false, None, false, false, false, false
+            None, false, None, false, None, false, false, false, false, false
         )
         .is_none()
     );
@@ -1147,6 +1147,7 @@ fn sidebar_dock_notice_prioritizes_errors_then_active_tasks_then_info() {
         None,
         false,
         None,
+        false,
         false,
         false,
         false,
@@ -1167,13 +1168,33 @@ fn sidebar_dock_notice_prioritizes_errors_then_active_tasks_then_info() {
         false,
         false,
         false,
+        false,
     )
     .unwrap();
     assert_eq!(sync_notice.tag, "LAKE SYNC");
     assert!(!sync_notice.dismissible);
     assert!(sync_notice.message.contains("42%"));
 
-    // 4. Error banner takes top precedence over background state.
+    // 4. Explicit update checking surfaces UPDATE even while background catch-up runs.
+    let checking_banner = ("正在检查 beta 通道更新…".to_owned(), false);
+    let update_notice = resolve_sidebar_dock_notice_from(
+        Some(&checking_banner),
+        false,
+        None,
+        true,
+        Some("catchup"),
+        false,
+        false,
+        false,
+        true,
+        false,
+    )
+    .unwrap();
+    assert_eq!(update_notice.tag, "UPDATE");
+    assert!(!update_notice.dismissible);
+    assert_eq!(update_notice.message, "正在检查 beta 通道更新…");
+
+    // 5. Error banner takes top precedence over background state and update checks.
     let err = ("预算门控拦截".to_owned(), true);
     let err_notice = resolve_sidebar_dock_notice_from(
         Some(&err),
@@ -1181,6 +1202,7 @@ fn sidebar_dock_notice_prioritizes_errors_then_active_tasks_then_info() {
         Some("progress"),
         true,
         Some("catchup"),
+        true,
         true,
         true,
         true,

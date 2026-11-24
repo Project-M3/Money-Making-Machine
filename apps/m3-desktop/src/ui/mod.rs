@@ -933,7 +933,7 @@ impl MungerWorkbench {
                         self.update_notice = Some(notice);
                         self.banner = Some((
                             format!(
-                                "发现可用更新 v{}（{}），点击右上角更新药丸安装",
+                                "发现可用更新 v{}（{}），点击更新按钮立即安装",
                                 report.target_version, report.channel
                             ),
                             false,
@@ -981,7 +981,7 @@ impl MungerWorkbench {
                         self.update_applied_version = Some(report.target_version.clone());
                         self.banner = Some((
                             format!(
-                                "已安装 M3 v{}（{}），点击右上角「已更新 · 重启」以生效",
+                                "已安装 M3 v{}（{}），点击「重启」以生效",
                                 report.target_version, report.channel
                             ),
                             false,
