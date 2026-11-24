@@ -22,6 +22,7 @@ pub(super) fn roic_unavailable_label(roic_note: Option<&str>) -> String {
 
 impl MungerWorkbench {
     pub(super) fn render_company_shell(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let Some(rep) = self
             .reports
             .iter()
@@ -39,7 +40,7 @@ impl MungerWorkbench {
                             .text_sm()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_HERO))
-                            .child("未选择公司"),
+                            .child(l.t("未选择公司", "No Company Selected")),
                     )
                     .child(
                         div()
@@ -47,7 +48,10 @@ impl MungerWorkbench {
                             .text_xs()
                             .line_height(px(18.))
                             .text_color(rgb(INK_SECONDARY))
-                            .child("当前能力圈中暂无已选标的，请先从「全市场雷达」将公司加入能力圈，或在「能力圈总览」中选择一家标的。"),
+                            .child(l.t(
+                                "当前能力圈中暂无已选标的，请先从「全市场雷达」将公司加入能力圈，或在「能力圈总览」中选择一家标的。",
+                                "No holding is selected in your Circle. Promote a company from Universe Radar or pick one in Circle Overview.",
+                            )),
                     )
                     .child(
                         div().pt_1().child(
@@ -70,7 +74,7 @@ impl MungerWorkbench {
                                     this.switch_view(NavView::Universe);
                                     cx.notify();
                                 }))
-                                .child("前往全市场雷达 (⌘2)"),
+                                .child(l.t("前往全市场雷达 (⌘2)", "Open Universe Radar (⌘2)")),
                         ),
                     ),
             );
@@ -107,7 +111,7 @@ impl MungerWorkbench {
             self.active_view == NavView::Dossier && self.dossier_tab == DossierTab::Inspector;
 
         let prompt_ticker = rep.ticker.clone();
-        let prompt_str = build_alan_interrogation_prompt(&rep.ticker, &rep.name, rep.bucket);
+        let prompt_str = build_alan_interrogation_prompt_for(&rep.ticker, &rep.name, rep.bucket, l);
         let dr_header_ticker = rep.ticker.clone();
 
         // Unified 44px Sub-header: Routine Tabs + Research Desk Dispatcher + Basis Control
@@ -144,7 +148,7 @@ impl MungerWorkbench {
                     )
                     .when(rep.status == StrikeZoneStatus::InStrikeZone, |d| {
                         d.child(badge(
-                            "击球区".into(),
+                            l.t("击球区", "Strike Zone").into(),
                             EMERALD_FG,
                             EMERALD_BG,
                             EMERALD_BORDER,
@@ -156,7 +160,7 @@ impl MungerWorkbench {
                         seg_group()
                             .child(seg_tab(
                                 "tab-overview",
-                                "1 财报与活研报",
+                                l.t("1 财报与活研报", "1 Financials & Memo"),
                                 is_tab_overview,
                                 None,
                                 false,
@@ -181,7 +185,7 @@ impl MungerWorkbench {
                             ))
                             .child(seg_tab(
                                 "tab-inspector",
-                                "3 XBRL 底表",
+                                l.t("3 XBRL 底表", "3 XBRL Ledger"),
                                 is_tab_inspector,
                                 None,
                                 false,
@@ -220,9 +224,12 @@ impl MungerWorkbench {
                                     this.start_deep_research(&dr_header_ticker, None, "manual", cx);
                                 }))
                                 .child(if self.deep_research_running {
-                                    "Deep Research 运行中…"
+                                    l.t("Deep Research 运行中…", "Deep Research Running…")
                                 } else {
-                                    "Deep Research · 4 视角并行"
+                                    l.t(
+                                        "Deep Research · 4 视角并行",
+                                        "Deep Research · 4 Perspectives",
+                                    )
                                 }),
                         )
                     })
@@ -255,7 +262,7 @@ impl MungerWorkbench {
                                         .text_xs()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(rgb(VIOLET_FG))
-                                        .child("复制审讯 Prompt"),
+                                        .child(l.t("复制审讯 Prompt", "Copy Prompt")),
                                 )
                                 .child(kbd("p", &self.fonts)),
                         )
@@ -363,8 +370,9 @@ impl MungerWorkbench {
         sandbox_dirty: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let l = self.lang;
         if !rep.warnings.is_empty() {
-            canvas_el = canvas_el.child(render_warning_panel(&rep.warnings, &self.fonts));
+            canvas_el = canvas_el.child(render_warning_panel_for(&rep.warnings, l, &self.fonts));
         }
 
         if let Some(reason) = &rep.too_hard_reason {
@@ -380,7 +388,7 @@ impl MungerWorkbench {
                     .text_size(px(13.))
                     .line_height(px(20.))
                     .text_color(rgb(INK_PRIMARY))
-                    .child(format!("边界理由：{reason}")),
+                    .child(format!("{}: {reason}", l.t("边界理由", "Boundary Note"))),
             );
         }
 
@@ -400,7 +408,12 @@ impl MungerWorkbench {
                 (Some(avg), Some(std)) => format!("{avg:.1}% ± {std:.1}%"),
                 _ => row
                     .roic_total_capital_pct
-                    .map(|v| format!("总资本 {v:.1}% (净现金 > 账面)"))
+                    .map(|v| match l {
+                        crate::i18n::UiLang::Zh => format!("总资本 {v:.1}% (净现金 > 账面)"),
+                        crate::i18n::UiLang::En => {
+                            format!("Total Cap {v:.1}% (Net Cash > Equity)")
+                        }
+                    })
                     .unwrap_or_else(|| "—".into()),
             };
             let gm_display = match (rep.gross_margin_5y_avg_pct, rep.gross_margin_5y_stddev_pct) {
@@ -450,11 +463,20 @@ impl MungerWorkbench {
                             .flex_1()
                             .min_w_0()
                             .p_4()
-                            .child(card_title("护城河 & 股本质量", "5Y 稳定性", &self.fonts))
+                            .child(card_title(
+                                l.t("护城河 & 股本质量", "Moat & Share Discipline"),
+                                l.t("5Y 稳定性", "5Y Consistency"),
+                                &self.fonts,
+                            ))
                             .child(kv_line("5Y ROIC", roic_display, INK_HERO, &self.fonts))
-                            .child(kv_line("5Y 毛利率", gm_display, INK_PRIMARY, &self.fonts))
                             .child(kv_line(
-                                "当期净负债",
+                                l.t("5Y 毛利率", "5Y Gross Margin"),
+                                gm_display,
+                                INK_PRIMARY,
+                                &self.fonts,
+                            ))
+                            .child(kv_line(
+                                l.t("当期净负债", "Net Debt"),
                                 fmt_money_compact_opt(row.net_debt, &rep.currency),
                                 match row.net_debt {
                                     Some(v) if v <= Decimal::ZERO => EMERALD_FG,
@@ -464,7 +486,7 @@ impl MungerWorkbench {
                                 &self.fonts,
                             ))
                             .child(kv_line(
-                                "净负债 / 严苛 OE",
+                                l.t("净负债 / 严苛 OE", "Net Debt / Strict OE"),
                                 rep.net_debt_to_owner_earnings
                                     .map(|v| format!("{v:.2}x"))
                                     .unwrap_or_else(|| "—".into()),
@@ -475,10 +497,20 @@ impl MungerWorkbench {
                                 },
                                 &self.fonts,
                             ))
-                            .child(kv_line("3Y 稀释股本Δ", s3_str, s3_col, &self.fonts))
-                            .child(kv_line("5Y 稀释股本Δ", s5_str, s5_col, &self.fonts))
+                            .child(kv_line(
+                                l.t("3Y 稀释股本Δ", "3Y Diluted Shares Δ"),
+                                s3_str,
+                                s3_col,
+                                &self.fonts,
+                            ))
+                            .child(kv_line(
+                                l.t("5Y 稀释股本Δ", "5Y Diluted Shares Δ"),
+                                s5_str,
+                                s5_col,
+                                &self.fonts,
+                            ))
                             .when(!rep.annual_rows.is_empty(), |d| {
-                                d.child(roic_sparkline(&rep.annual_rows, &self.fonts))
+                                d.child(roic_sparkline_for(&rep.annual_rows, l, &self.fonts))
                             }),
                     )
                     .child(
@@ -486,15 +518,19 @@ impl MungerWorkbench {
                             .flex_1()
                             .min_w_0()
                             .p_4()
-                            .child(card_title("现金流真相", &row.label, &self.fonts))
+                            .child(card_title(
+                                l.t("现金流真相", "Cash Flow Reality"),
+                                &row.label,
+                                &self.fonts,
+                            ))
                             .child(kv_line(
-                                "经营现金流 (OCF)",
+                                l.t("经营现金流 (OCF)", "Operating Cash Flow (OCF)"),
                                 fmt_money_compact(row.ocf, &rep.currency),
                                 INK_HERO,
                                 &self.fonts,
                             ))
                             .child(kv_line(
-                                "严苛 OE (OCF−CapEx−SBC)",
+                                l.t("严苛 OE (OCF−CapEx−SBC)", "Strict OE (OCF−CapEx−SBC)"),
                                 fmt_money_compact_opt(row.strict_owner_earnings, &rep.currency),
                                 match row.strict_owner_earnings {
                                     Some(v) if v > Decimal::ZERO => EMERALD_FG,
@@ -504,7 +540,7 @@ impl MungerWorkbench {
                                 &self.fonts,
                             ))
                             .child(kv_line(
-                                "严苛 FCF% (市值 / EV)",
+                                l.t("严苛 FCF% (市值 / EV)", "Strict FCF Yield (MCap / EV)"),
                                 format!("{ym_str} / {ye_str}"),
                                 if ym_pol < 0 {
                                     CORAL_FG
@@ -516,7 +552,7 @@ impl MungerWorkbench {
                                 &self.fonts,
                             ))
                             .child(ratio_bar(
-                                "CapEx 开支".into(),
+                                l.t("CapEx 开支", "CapEx").into(),
                                 fmt_money_compact(row.capex, &rep.currency),
                                 Some(row.capex),
                                 row.ocf,
@@ -524,7 +560,7 @@ impl MungerWorkbench {
                                 &self.fonts,
                             ))
                             .child(ratio_bar(
-                                "SBC 激励".into(),
+                                l.t("SBC 激励", "SBC Dilution").into(),
                                 fmt_money_compact_opt(row.sbc, &rep.currency),
                                 row.sbc,
                                 row.ocf,
@@ -532,7 +568,7 @@ impl MungerWorkbench {
                                 &self.fonts,
                             ))
                             .child(ratio_bar(
-                                "剩余严苛 OE".into(),
+                                l.t("剩余严苛 OE", "Remaining Strict OE").into(),
                                 fmt_money_compact_opt(row.strict_owner_earnings, &rep.currency),
                                 row.strict_owner_earnings.map(|v| v.max(Decimal::ZERO)),
                                 row.ocf,
@@ -540,7 +576,7 @@ impl MungerWorkbench {
                                 &self.fonts,
                             ))
                             .child(kv_line(
-                                "回购 / SBC",
+                                l.t("回购 / SBC", "Buybacks / SBC"),
                                 format!(
                                     "{} / {}",
                                     fmt_money_compact_opt(row.buybacks, &rep.currency),
@@ -584,10 +620,16 @@ impl MungerWorkbench {
                     .text_size(px(13.))
                     .line_height(px(21.))
                     .text_color(rgb(GOLD_FG))
-                    .child(format!(
-                        "{} 暂无结构化财报数据；如需接入计算器，可录入 workbench/manual_financials/{}.json。",
-                        rep.ticker, rep.ticker
-                    )),
+                    .child(match l {
+                        crate::i18n::UiLang::Zh => format!(
+                            "{} 暂无结构化财报数据；如需接入计算器，可录入 workbench/manual_financials/{}.json。",
+                            rep.ticker, rep.ticker
+                        ),
+                        crate::i18n::UiLang::En => format!(
+                            "No structured SEC financials for {} yet; add workbench/manual_financials/{}.json if manual entry is needed.",
+                            rep.ticker, rep.ticker
+                        ),
+                    }),
             );
         }
 
@@ -624,21 +666,33 @@ impl MungerWorkbench {
                                             .text_sm()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(rgb(INK_HERO))
-                                            .child("人类判词 · 费曼防线"),
+                                            .child(l.t(
+                                                "人类判词 · 费曼防线",
+                                                "Human Judgment · Feynman Gate",
+                                            )),
                                     )
                                     .child(
                                         div()
                                             .font_family(self.fonts.ui.clone())
                                             .text_xs()
                                             .text_color(rgb(INK_MUTED))
-                                            .child("仅本人确认 · AI 草稿见「2 Alan 审讯台」"),
+                                            .child(l.t(
+                                                "仅本人确认 · AI 草稿见「2 Alan 审讯台」",
+                                                "Human-Owned Only · AI drafts live under Tab 2",
+                                            )),
                                     ),
                             )
                             .child(if human.pending_human_review {
-                                badge("待答辩".into(), GOLD_FG, GOLD_BG, GOLD_BORDER, &self.fonts)
+                                badge(
+                                    l.t("待答辩", "Pending Review").into(),
+                                    GOLD_FG,
+                                    GOLD_BG,
+                                    GOLD_BORDER,
+                                    &self.fonts,
+                                )
                             } else {
                                 badge(
-                                    "已确认".into(),
+                                    l.t("已确认", "Verified").into(),
                                     EMERALD_FG,
                                     EMERALD_BG,
                                     EMERALD_BORDER,
@@ -650,16 +704,29 @@ impl MungerWorkbench {
                         div()
                             .flex()
                             .gap_5()
-                            .child(div().flex_1().min_w_0().child(prose_block(
-                                "我的定性判词 (my_stance)",
-                                human.my_stance.as_deref().unwrap_or("（待填写）"),
-                                &self.fonts,
-                            )))
-                            .child(div().flex_1().min_w_0().child(prose_block(
-                                "分歧权重判断 (weight_rationale)",
-                                human.weight_rationale.as_deref().unwrap_or("（待填写）"),
-                                &self.fonts,
-                            ))),
+                            .child(
+                                div().flex_1().min_w_0().child(prose_block(
+                                    l.t("我的定性判词 (my_stance)", "My Stance (my_stance)"),
+                                    human
+                                        .my_stance
+                                        .as_deref()
+                                        .unwrap_or_else(|| l.t("（待填写）", "(pending)")),
+                                    &self.fonts,
+                                )),
+                            )
+                            .child(
+                                div().flex_1().min_w_0().child(prose_block(
+                                    l.t(
+                                        "分歧权重判断 (weight_rationale)",
+                                        "Sizing / Weight Rationale (weight_rationale)",
+                                    ),
+                                    human
+                                        .weight_rationale
+                                        .as_deref()
+                                        .unwrap_or_else(|| l.t("（待填写）", "(pending)")),
+                                    &self.fonts,
+                                )),
+                            ),
                     )
                     .child(
                         div()
@@ -680,7 +747,10 @@ impl MungerWorkbench {
                                             .text_xs()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(rgb(INK_SECONDARY))
-                                            .child("事前证伪指标 (falsification_metrics)"),
+                                            .child(l.t(
+                                                "事前证伪指标 (falsification_metrics)",
+                                                "Pre-Falsification Metrics (falsification_metrics)",
+                                            )),
                                     )
                                     .when(human.falsification_metrics.is_empty(), |d| {
                                         d.child(
@@ -689,7 +759,7 @@ impl MungerWorkbench {
                                                 .font_family(self.fonts.ui.clone())
                                                 .text_xs()
                                                 .text_color(rgb(INK_MUTED))
-                                                .child("（尚未设置）"),
+                                                .child(l.t("（尚未设置）", "(none configured)")),
                                         )
                                     })
                                     .children(human.falsification_metrics.iter().map(|m| {
@@ -708,7 +778,7 @@ impl MungerWorkbench {
                                         .font_family(self.fonts.mono_num.clone())
                                         .text_xs()
                                         .text_color(rgb(EMERALD_FG))
-                                        .child(format!("核验时间 {checked}")),
+                                        .child(format!("{} {checked}", l.t("核验时间", "Checked"))),
                                 )
                             }),
                     ),
@@ -729,9 +799,10 @@ impl MungerWorkbench {
         dist_live_str: String,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let l = self.lang;
         let basis_tag = val_opt
             .map(|v| format!("{} · {}", v.basis_label, v.period_end))
-            .unwrap_or_else(|| "待录入".into());
+            .unwrap_or_else(|| l.t("待录入", "Pending").into());
         let sha_short = rep
             .raw_sha256
             .as_deref()
@@ -753,13 +824,17 @@ impl MungerWorkbench {
             .count();
 
         let (fin_dot, fin_lbl, fin_col) = if rep.annual_rows.is_empty() {
-            ("○", "待录财报".into(), INK_MUTED)
+            ("○", l.t("待录财报", "No Filings").into(), INK_MUTED)
         } else if red_cnt > 0 {
-            ("●", format!("红灯 {red_cnt}"), CORAL_FG)
+            ("●", format!("{} {red_cnt}", l.t("红灯", "Red")), CORAL_FG)
         } else if amber_cnt > 0 {
-            ("○", format!("黄灯 {amber_cnt}"), GOLD_FG)
+            (
+                "○",
+                format!("{} {amber_cnt}", l.t("黄灯", "Amber")),
+                GOLD_FG,
+            )
         } else {
-            ("●", "无红灯".into(), EMERALD_FG)
+            ("●", l.t("无红灯", "Clean").into(), EMERALD_FG)
         };
 
         let pending_feynman = self
@@ -768,7 +843,7 @@ impl MungerWorkbench {
             .is_none_or(|d| d.human_judgment.pending_human_review);
 
         let (strike_dot, strike_lbl, strike_col) = match dist_live {
-            Some(d) if d <= Decimal::ZERO => ("●", "击球区".into(), EMERALD_FG),
+            Some(d) if d <= Decimal::ZERO => ("●", l.t("击球区", "Strike Zone").into(), EMERALD_FG),
             Some(_) => ("○", dist_live_str.clone(), INK_SECONDARY),
             None => ("○", "—".into(), INK_MUTED),
         };
@@ -810,7 +885,7 @@ impl MungerWorkbench {
                                     .font_family(self.fonts.ui.clone())
                                     .text_xs()
                                     .text_color(rgb(INK_MUTED))
-                                    .child("现价"),
+                                    .child(l.t("现价", "Price")),
                             )
                             .child(
                                 div()
@@ -822,7 +897,7 @@ impl MungerWorkbench {
                             ),
                     )
                     .child(kv_line(
-                        "沙盒击球价",
+                        l.t("沙盒击球价", "Sandbox Strike"),
                         fmt_price(active_strike, &rep.currency),
                         if active_strike.is_some() {
                             EMERALD_FG
@@ -832,7 +907,7 @@ impl MungerWorkbench {
                         &self.fonts,
                     ))
                     .child(kv_line(
-                        "距击球价",
+                        l.t("距击球价", "vs Strike"),
                         dist_live_str,
                         match dist_live {
                             Some(d) if d <= Decimal::ZERO => EMERALD_FG,
@@ -842,7 +917,7 @@ impl MungerWorkbench {
                         &self.fonts,
                     ))
                     .child(kv_line(
-                        "市值",
+                        l.t("市值", "Market Cap"),
                         val_opt
                             .and_then(|v| v.market_cap)
                             .map(|m| fmt_money_compact(m, &rep.currency))
@@ -851,7 +926,7 @@ impl MungerWorkbench {
                         &self.fonts,
                     ))
                     .child(kv_line(
-                        "企业价值 (EV)",
+                        l.t("企业价值 (EV)", "Enterprise Value (EV)"),
                         val_opt
                             .and_then(|v| v.enterprise_value)
                             .map(|m| fmt_money_compact(m, &rep.currency))
@@ -862,97 +937,96 @@ impl MungerWorkbench {
             )
             // 2. Silent 3-Line Munger Decision Gate
             .child(
-                prop_section("DECISION GATE · 决策检查", &self.fonts)
-                    .child(
-                        div()
-                            .id("gate-fin")
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .py_0p5()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(RAIL_HOVER)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.dossier_tab = DossierTab::Overview;
-                                this.active_view = NavView::Dossier;
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .font_family(self.fonts.ui.clone())
-                                    .text_xs()
-                                    .text_color(rgb(INK_SECONDARY))
-                                    .child("财务体检"),
-                            )
-                            .child(
-                                div()
-                                    .font_family(self.fonts.mono_num.clone())
-                                    .text_xs()
-                                    .text_color(rgb(fin_col))
-                                    .child(format!("{fin_dot} {fin_lbl}")),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("gate-feynman")
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .py_0p5()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(RAIL_HOVER)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.active_view = NavView::Agent;
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .font_family(self.fonts.ui.clone())
-                                    .text_xs()
-                                    .text_color(rgb(INK_SECONDARY))
-                                    .child("费曼答辩"),
-                            )
-                            .child(
-                                div()
-                                    .font_family(self.fonts.mono_num.clone())
-                                    .text_xs()
-                                    .text_color(rgb(if pending_feynman {
-                                        GOLD_FG
-                                    } else {
-                                        EMERALD_FG
-                                    }))
-                                    .child(if pending_feynman {
-                                        "○ 待答辩 →"
-                                    } else {
-                                        "● 已确认"
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .py_0p5()
-                            .child(
-                                div()
-                                    .font_family(self.fonts.ui.clone())
-                                    .text_xs()
-                                    .text_color(rgb(INK_SECONDARY))
-                                    .child("击球价格"),
-                            )
-                            .child(
-                                div()
-                                    .font_family(self.fonts.mono_num.clone())
-                                    .text_xs()
-                                    .text_color(rgb(strike_col))
-                                    .child(format!("{strike_dot} {strike_lbl}")),
-                            ),
-                    ),
+                prop_section(
+                    l.t("DECISION GATE · 决策检查", "DECISION GATE"),
+                    &self.fonts,
+                )
+                .child(
+                    div()
+                        .id("gate-fin")
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .py_0p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dossier_tab = DossierTab::Overview;
+                            this.active_view = NavView::Dossier;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .text_color(rgb(INK_SECONDARY))
+                                .child(l.t("财务体检", "Financial Check")),
+                        )
+                        .child(
+                            div()
+                                .font_family(self.fonts.mono_num.clone())
+                                .text_xs()
+                                .text_color(rgb(fin_col))
+                                .child(format!("{fin_dot} {fin_lbl}")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("gate-feynman")
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .py_0p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.active_view = NavView::Agent;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .text_color(rgb(INK_SECONDARY))
+                                .child(l.t("费曼答辩", "Feynman Gate")),
+                        )
+                        .child(
+                            div()
+                                .font_family(self.fonts.mono_num.clone())
+                                .text_xs()
+                                .text_color(rgb(if pending_feynman { GOLD_FG } else { EMERALD_FG }))
+                                .child(if pending_feynman {
+                                    l.t("○ 待答辩 →", "○ Pending →")
+                                } else {
+                                    l.t("● 已确认", "● Verified")
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .py_0p5()
+                        .child(
+                            div()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .text_color(rgb(INK_SECONDARY))
+                                .child(l.t("击球价格", "Strike Price")),
+                        )
+                        .child(
+                            div()
+                                .font_family(self.fonts.mono_num.clone())
+                                .text_xs()
+                                .text_color(rgb(strike_col))
+                                .child(format!("{strike_dot} {strike_lbl}")),
+                        ),
+                ),
             )
             // 3. Circle 2x2 Switcher
             .child(
-                prop_section("CIRCLE · 能力圈分层", &self.fonts)
+                prop_section(l.t("CIRCLE · 能力圈分层", "CIRCLE · TIER"), &self.fonts)
                     .child(
                         div().flex().gap_1p5().children(
                             [Bucket::Core, Bucket::Watch].into_iter().map(|b| {
@@ -970,7 +1044,7 @@ impl MungerWorkbench {
             )
             // 4. Circle Tag Linkage
             .child(
-                prop_section("LABELS · 能力圈", &self.fonts).child(
+                prop_section(l.t("LABELS · 能力圈", "LABELS · CIRCLE"), &self.fonts).child(
                     div()
                         .flex()
                         .items_center()
@@ -1001,19 +1075,24 @@ impl MungerWorkbench {
             )
             // 5. Provenance Metadata
             .child(
-                prop_section("PROVENANCE · 溯源", &self.fonts)
+                prop_section(l.t("PROVENANCE · 溯源", "PROVENANCE"), &self.fonts)
                     .child(kv_line(
                         "CIK",
                         rep.cik.clone().unwrap_or_else(|| "MANUAL".into()),
                         INK_SECONDARY,
                         &self.fonts,
                     ))
-                    .child(kv_line("口径", basis_tag, INK_SECONDARY, &self.fonts))
                     .child(kv_line(
-                        "最近财报",
+                        l.t("口径", "Basis"),
+                        basis_tag,
+                        INK_SECONDARY,
+                        &self.fonts,
+                    ))
+                    .child(kv_line(
+                        l.t("最近财报", "Last Filing"),
                         rep.latest_filing_end
                             .clone()
-                            .unwrap_or_else(|| "待录入".into()),
+                            .unwrap_or_else(|| l.t("待录入", "Pending").into()),
                         INK_SECONDARY,
                         &self.fonts,
                     ))
@@ -1080,6 +1159,7 @@ impl MungerWorkbench {
     }
 
     pub(super) fn render_multi_year_table(&self, rep: &MungerReport) -> gpui::Div {
+        let l = self.lang;
         let mut all_rows: Vec<&AnnualMetricRow> = rep.annual_rows.iter().collect();
         if let Some(ttm) = &rep.ttm_row {
             all_rows.push(ttm);
@@ -1090,19 +1170,22 @@ impl MungerWorkbench {
                 .font_family(self.fonts.ui.clone())
                 .text_xs()
                 .text_color(rgb(INK_MUTED))
-                .child("暂无多年结构化财务底表。");
+                .child(l.t(
+                    "暂无多年结构化财务底表。",
+                    "No multi-year financial history yet.",
+                ));
         }
         let fin_cols: &[(&str, f32, bool)] = &[
-            ("期间", 122., false),
-            ("营收", 84., true),
-            ("毛利率", 68., true),
+            (l.t("期间", "Period"), 122., false),
+            (l.t("营收", "Revenue"), 84., true),
+            (l.t("毛利率", "GM%"), 68., true),
             ("ROIC", 68., true),
             ("OCF", 84., true),
             ("CapEx", 80., true),
             ("SBC", 74., true),
-            ("严苛 OE", 88., true),
-            ("回购", 80., true),
-            ("稀释股本", 0., true),
+            (l.t("严苛 OE", "Strict OE"), 88., true),
+            (l.t("回购", "Buyback"), 80., true),
+            (l.t("稀释股本", "Shares"), 0., true),
         ];
         let sha_short = rep
             .raw_sha256
@@ -1134,7 +1217,10 @@ impl MungerWorkbench {
                             .text_sm()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_HERO))
-                            .child("多年确定性财务底表（Rust 解析自 SEC EDGAR XBRL）"),
+                            .child(l.t(
+                                "多年确定性财务底表（Rust 解析自 SEC EDGAR XBRL）",
+                                "Multi-Year Deterministic Ledger (Rust SEC EDGAR XBRL)",
+                            )),
                     )
                     .child(
                         div()
@@ -1291,7 +1377,7 @@ impl MungerWorkbench {
                         .text_xs()
                         .text_color(rgb(INK_MUTED))
                         .truncate()
-                        .child(format!("XBRL 溯源: {tag_summary}")),
+                        .child(format!("{}: {tag_summary}", l.t("XBRL 溯源", "XBRL Trace"))),
                 )
             })
     }
@@ -1303,10 +1389,11 @@ impl MungerWorkbench {
         val_opt: Option<&ValuationSnapshot>,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        let l = self.lang;
         let sha_full = rep
             .raw_sha256
             .as_deref()
-            .unwrap_or("— (无一手 XBRL 源文件)");
+            .unwrap_or_else(|| l.t("— (无一手 XBRL 源文件)", "— (No primary XBRL source)"));
         let raw_file_path = match &rep.cik {
             Some(cik) => format!("data/munger/raw/sec/CIK{cik}.json"),
             None => format!("workbench/manual_financials/{}.json", rep.ticker),
@@ -1329,7 +1416,7 @@ impl MungerWorkbench {
                 let imp_s = fmt_pct_clean(v.implied_growth_for_target_pct, true).0;
                 vec![
                     (
-                        "严苛股东盈余",
+                        l.t("严苛股东盈余", "Strict Owner Earnings"),
                         format!(
                             "Strict_OE = OCF({}) - CapEx({}) - SBC({}) = {}",
                             fmt_money_compact(r.ocf, &rep.currency),
@@ -1339,7 +1426,7 @@ impl MungerWorkbench {
                         ),
                     ),
                     (
-                        "投入资本回报率",
+                        l.t("投入资本回报率", "Return on Invested Cap"),
                         format!(
                             "ROIC = NOPAT({}) / IC(Debt {} + Eq {} - Cash {} = {}) = {}",
                             fmt_money_compact_opt(r.nopat, &rep.currency),
@@ -1351,7 +1438,7 @@ impl MungerWorkbench {
                         ),
                     ),
                     (
-                        "保守击球价格",
+                        l.t("保守击球价格", "Conservative Strike"),
                         format!(
                             "Strike = OE_per_share({oe_ps}) * Multiple_low({}x) = {}",
                             rep.assumptions.multiple_low,
@@ -1359,7 +1446,7 @@ impl MungerWorkbench {
                         ),
                     ),
                     (
-                        "反向隐含增速",
+                        l.t("反向隐含增速", "Reverse Implied Growth"),
                         format!(
                             "Implied_g = Target({}%) - Strict_OE/MCap({} / {} = {yield_s}) = {imp_s}",
                             rep.assumptions.target_return_pct,
@@ -1370,7 +1457,7 @@ impl MungerWorkbench {
                 ]
             }
             (Some(r), None) => vec![(
-                "严苛股东盈余",
+                l.t("严苛股东盈余", "Strict Owner Earnings"),
                 format!(
                     "Strict_OE = OCF({}) - CapEx({}) - SBC({}) = {}",
                     fmt_money_compact(r.ocf, &rep.currency),
@@ -1379,7 +1466,14 @@ impl MungerWorkbench {
                     fmt_money_compact_opt(r.strict_owner_earnings, &rep.currency)
                 ),
             )],
-            _ => vec![("STATUS", "无一手结构化财务事实（绝不由 LLM 补全）。".into())],
+            _ => vec![(
+                "STATUS",
+                l.t(
+                    "无一手结构化财务事实（绝不由 LLM 补全）。",
+                    "No primary structured financial facts (never fabricated by LLM).",
+                )
+                .into(),
+            )],
         };
 
         div()

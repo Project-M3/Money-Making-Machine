@@ -5,15 +5,17 @@ use super::agent::{
 use super::company::roic_unavailable_label;
 use super::format::*;
 use super::inbox::{
-    InboxFilter, InboxViewState, budget_watermark_summary, count_inbox_filter,
-    filter_inbox_signals, resolve_active_inbox_signal, should_skip_auto_catchup,
-    should_skip_auto_catchup_with, signal_kind_badge, signal_status_badge, step_inbox_selection,
+    InboxFilter, InboxViewState, budget_watermark_summary, budget_watermark_summary_for,
+    count_inbox_filter, filter_inbox_signals, resolve_active_inbox_signal,
+    should_skip_auto_catchup, should_skip_auto_catchup_with, signal_kind_badge,
+    signal_kind_badge_for, signal_status_badge, signal_status_badge_for, step_inbox_selection,
 };
 use super::theme::*;
 use super::themes::{format_theme_member_distance, format_theme_member_roic};
 use super::universe::{
     UniversePreset, UniverseSearchMode, UniverseViewState, apply_ui_row_guards,
-    build_scatter_model, format_watch_promote_banner, is_lake_empty, resolve_active_universe_row,
+    build_scatter_model, format_watch_promote_banner, format_watch_promote_banner_for,
+    is_lake_empty, resolve_active_universe_row,
 };
 use super::*;
 use crate::alan_interrogator::{InterrogatorEvent, TuringTapeKind};
@@ -1223,4 +1225,82 @@ fn compact_sidebar_version_label_shortens_rolling_beta_without_truncating_stable
         "v0.3.1-beta.6"
     );
     assert_eq!(compact_sidebar_version_label("0.3.0"), "v0.3.0");
+}
+
+#[test]
+fn bilingual_ui_helpers_render_english_copy() {
+    use super::shell::resolve_sidebar_dock_notice_for;
+    use crate::i18n::UiLang;
+
+    let en = UiLang::En;
+    let notice = resolve_sidebar_dock_notice_for(
+        None, false, None, false, None, false, false, false, false, false, en,
+    );
+    assert!(notice.is_none());
+
+    let err_banner = ("Sync timeout".to_owned(), true);
+    let err_notice = resolve_sidebar_dock_notice_for(
+        Some(&err_banner),
+        false,
+        None,
+        true,
+        None,
+        false,
+        false,
+        false,
+        false,
+        false,
+        en,
+    )
+    .expect("error notice expected");
+    assert_eq!(err_notice.dot_color, CORAL_FG);
+    assert!(err_notice.dismissible);
+
+    let syncing_notice = resolve_sidebar_dock_notice_for(
+        None, true, None, false, None, false, false, false, false, false, en,
+    )
+    .expect("syncing notice expected");
+    assert!(syncing_notice.message.contains("Syncing"));
+
+    let (default_lbl, _) = budget_watermark_summary_for(None, en);
+    assert_eq!(default_lbl, "AI Budget $0.00 / $10.00");
+
+    let custom_report = BudgetStatusReport {
+        config: BudgetConfig::default(),
+        usage: MonthlyBudgetUsage {
+            month_utc: "2026-11".into(),
+            total_runs: 1,
+            completed_runs: 1,
+            blocked_runs: 0,
+            failed_runs: 0,
+            total_input_tokens: 1_000,
+            total_output_tokens: 500,
+            total_cost_usd: Decimal::new(250, 2),
+            weekly_auto_runs: 0,
+        },
+        remaining_monthly_usd: Decimal::new(750, 2),
+        remaining_monthly_tokens: 1_998_500,
+        auto_trigger_remaining_weekly: 2,
+    };
+    let (used_lbl, _) = budget_watermark_summary_for(Some(&custom_report), en);
+    assert_eq!(used_lbl, "AI Budget $2.50 / $10.00");
+
+    assert_eq!(signal_kind_badge_for(SignalKind::Ripple, en).0, "Ripple");
+    assert_eq!(
+        signal_status_badge_for(SignalStatus::Researching, en).0,
+        "Alan"
+    );
+
+    assert_eq!(Bucket::Core.short_label_for(en), "Core Strike");
+    assert_eq!(StrikeZoneStatus::InStrikeZone.label_for(en), "Strike Zone");
+    assert_eq!(fmt_time_cn_for(None, en), "Never");
+
+    let (banner_en, is_err) =
+        format_watch_promote_banner_for("ADSK", "Autodesk", None, None, None, false, en);
+    assert!(!is_err);
+    assert!(banner_en.contains("Added ADSK (Autodesk) to Watch"));
+
+    assert_eq!(PerspectiveUiStatus::Pending.label_for(en), "Pending");
+    assert_eq!(UniversePreset::StrikeZone.label_for(en), "Strike Zone");
+    assert_eq!(UniverseSearchMode::Similar.label_for(en), "Lookalike");
 }

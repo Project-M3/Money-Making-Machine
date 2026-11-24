@@ -32,15 +32,19 @@ pub enum InboxFilter {
 }
 
 impl InboxFilter {
-    pub fn label(self) -> &'static str {
+    pub fn label_for(self, lang: crate::i18n::UiLang) -> &'static str {
         match self {
-            Self::Unread => "未读",
-            Self::All => "全部",
-            Self::Discovery => "新浮现",
-            Self::Ripple => "隐空间传导",
-            Self::StrikeAndRedFlag => "击球与红灯",
-            Self::Archived => "已归档",
+            Self::Unread => lang.t("未读", "Unread"),
+            Self::All => lang.t("全部", "All"),
+            Self::Discovery => lang.t("新浮现", "Discovery"),
+            Self::Ripple => lang.t("隐空间传导", "Ripple"),
+            Self::StrikeAndRedFlag => lang.t("击球与红灯", "Strike & Red"),
+            Self::Archived => lang.t("已归档", "Archived"),
         }
+    }
+
+    pub fn label(self) -> &'static str {
+        self.label_for(crate::i18n::UiLang::Zh)
     }
 
     pub fn all() -> [Self; 6] {
@@ -129,31 +133,83 @@ pub fn step_inbox_selection(
     Some((next_idx, visible[next_idx].signal_id.clone()))
 }
 
-/// Returns `(label, fg, bg, border)` styling for a signal kind.
-pub fn signal_kind_badge(kind: SignalKind) -> (&'static str, u32, u32, u32) {
+/// Returns `(label, fg, bg, border)` styling for a signal kind in the given language.
+pub fn signal_kind_badge_for(
+    kind: SignalKind,
+    lang: crate::i18n::UiLang,
+) -> (&'static str, u32, u32, u32) {
     match kind {
-        SignalKind::Discovery => ("新浮现", SKY_FG, SKY_BG, SKY_BORDER),
-        SignalKind::Ripple => ("隐空间传导", VIOLET_FG, VIOLET_BG, VIOLET_BORDER),
-        SignalKind::Strike => ("击球区", EMERALD_FG, EMERALD_BG, EMERALD_BORDER),
-        SignalKind::RedFlag => ("红灯预警", CORAL_FG, CORAL_BG, CORAL_BORDER),
+        SignalKind::Discovery => (lang.t("新浮现", "Discovery"), SKY_FG, SKY_BG, SKY_BORDER),
+        SignalKind::Ripple => (
+            lang.t("隐空间传导", "Ripple"),
+            VIOLET_FG,
+            VIOLET_BG,
+            VIOLET_BORDER,
+        ),
+        SignalKind::Strike => (
+            lang.t("击球区", "Strike"),
+            EMERALD_FG,
+            EMERALD_BG,
+            EMERALD_BORDER,
+        ),
+        SignalKind::RedFlag => (
+            lang.t("红灯预警", "Red Flag"),
+            CORAL_FG,
+            CORAL_BG,
+            CORAL_BORDER,
+        ),
+    }
+}
+
+/// Returns `(label, fg, bg, border)` styling for a signal kind.
+#[allow(dead_code)]
+pub fn signal_kind_badge(kind: SignalKind) -> (&'static str, u32, u32, u32) {
+    signal_kind_badge_for(kind, crate::i18n::UiLang::Zh)
+}
+
+/// Returns `(label, fg, bg, border)` styling for a signal triage status in the given language.
+pub fn signal_status_badge_for(
+    status: SignalStatus,
+    lang: crate::i18n::UiLang,
+) -> (&'static str, u32, u32, u32) {
+    match status {
+        SignalStatus::Unread => (lang.t("未读", "Unread"), SKY_FG, SKY_BG, SKY_BORDER),
+        SignalStatus::Researching => (
+            lang.t("Alan 研判", "Alan"),
+            VIOLET_FG,
+            VIOLET_BG,
+            VIOLET_BORDER,
+        ),
+        SignalStatus::Watch => (
+            lang.t("观察池", "Watch"),
+            EMERALD_FG,
+            EMERALD_BG,
+            EMERALD_BORDER,
+        ),
+        SignalStatus::TooHard => ("TOO HARD", SLATE_FG, SLATE_BG, SLATE_BORDER),
+        SignalStatus::Archived => (
+            lang.t("已归档", "Archived"),
+            INK_MUTED,
+            BG_WELL,
+            BORDER_SUBTLE,
+        ),
     }
 }
 
 /// Returns `(label, fg, bg, border)` styling for a signal triage status.
+#[allow(dead_code)]
 pub fn signal_status_badge(status: SignalStatus) -> (&'static str, u32, u32, u32) {
-    match status {
-        SignalStatus::Unread => ("未读", SKY_FG, SKY_BG, SKY_BORDER),
-        SignalStatus::Researching => ("Alan 研判", VIOLET_FG, VIOLET_BG, VIOLET_BORDER),
-        SignalStatus::Watch => ("观察池", EMERALD_FG, EMERALD_BG, EMERALD_BORDER),
-        SignalStatus::TooHard => ("TOO HARD", SLATE_FG, SLATE_BG, SLATE_BORDER),
-        SignalStatus::Archived => ("已归档", INK_MUTED, BG_WELL, BORDER_SUBTLE),
-    }
+    signal_status_badge_for(status, crate::i18n::UiLang::Zh)
 }
 
-/// Formats the monthly AI budget watermark for the Inbox KPI ribbon (`本月 AI 预算 $X.XX / $10.00`).
-pub fn budget_watermark_summary(report: Option<&BudgetStatusReport>) -> (String, u32) {
+/// Formats the monthly AI budget watermark for the Inbox KPI ribbon & sidebar dock.
+pub fn budget_watermark_summary_for(
+    report: Option<&BudgetStatusReport>,
+    lang: crate::i18n::UiLang,
+) -> (String, u32) {
+    let prefix = lang.t("本月 AI 预算", "AI Budget");
     let Some(r) = report else {
-        return ("本月 AI 预算 $0.00 / $10.00".to_owned(), EMERALD_FG);
+        return (format!("{prefix} $0.00 / $10.00"), EMERALD_FG);
     };
     let used = r.usage.total_cost_usd.round_dp(2).normalize();
     let limit = r.config.monthly_budget_usd.round_dp(2).normalize();
@@ -167,7 +223,13 @@ pub fn budget_watermark_summary(report: Option<&BudgetStatusReport>) -> (String,
     } else {
         EMERALD_FG
     };
-    (format!("本月 AI 预算 ${used:.2} / ${limit:.2}"), color)
+    (format!("{prefix} ${used:.2} / ${limit:.2}"), color)
+}
+
+/// Formats the monthly AI budget watermark for the Inbox KPI ribbon (`本月 AI 预算 $X.XX / $10.00`).
+#[allow(dead_code)]
+pub fn budget_watermark_summary(report: Option<&BudgetStatusReport>) -> (String, u32) {
+    budget_watermark_summary_for(report, crate::i18n::UiLang::Zh)
 }
 
 /// Evaluates whether startup/background auto-catchup should be skipped.
@@ -209,7 +271,12 @@ impl MungerWorkbench {
         if self.inbox_catching_up || self.universe_syncing || self.syncing {
             if self.universe_syncing || self.syncing {
                 self.banner = Some((
-                    "其他后台同步任务进行中，请等待完成后再追平事件流".into(),
+                    self.lang
+                        .t(
+                            "其他后台同步任务进行中，请等待完成后再追平事件流",
+                            "Another background sync is active; wait until it finishes",
+                        )
+                        .into(),
                     false,
                 ));
                 cx.notify();
@@ -224,17 +291,26 @@ impl MungerWorkbench {
         if self.inbox_catching_up || self.universe_syncing || self.syncing {
             return;
         }
+        let l = self.lang;
         self.inbox_catching_up = true;
         self.inbox_last_auto_catchup_at = Some(Instant::now());
         self.inbox_catchup_progress = Some(if silent_startup {
-            "启动后台追平 L1 事件流…".into()
+            l.t("启动后台追平 L1 事件流…", "Starting L1 catch-up…")
+                .into()
         } else {
-            "正在追平 SEC 公告、新闻与语义索引…".into()
+            l.t(
+                "正在追平 SEC 公告、新闻与语义索引…",
+                "Catching up SEC filings, news & semantic index…",
+            )
+            .into()
         });
         if !silent_startup {
             self.banner = Some((
-                "正在后台追平 L1 事件流（SEC 公告 + 候选新闻 + 本地语义索引，0 Flagship Token）…"
-                    .into(),
+                l.t(
+                    "正在后台追平 L1 事件流（SEC 公告 + 候选新闻 + 本地语义索引，0 Flagship Token）…",
+                    "Catching up L1 stream in background (SEC filings + news + local index, 0 Flagship Tokens)…",
+                )
+                .into(),
                 false,
             ));
         }
@@ -278,15 +354,26 @@ impl MungerWorkbench {
                     self.inbox_last_auto_catchup_at = Some(Instant::now());
                     self.reload_inbox_from_lake();
                     self.banner = Some((
-                        format!(
-                            "L1 事件流追平完成 · 新增公告 {} / 新闻 {} / 索引 {} 片段 / 信号 {}（未读 {} · {} Flagship Token）",
-                            report.sec_filings_ingested,
-                            report.news_events_ingested,
-                            report.chunks_indexed,
-                            report.signals_created_or_updated,
-                            report.summary.unread_signals,
-                            report.flagship_tokens_used,
-                        ),
+                        match self.lang {
+                            crate::i18n::UiLang::Zh => format!(
+                                "L1 事件流追平完成 · 新增公告 {} / 新闻 {} / 索引 {} 片段 / 信号 {}（未读 {} · {} Flagship Token）",
+                                report.sec_filings_ingested,
+                                report.news_events_ingested,
+                                report.chunks_indexed,
+                                report.signals_created_or_updated,
+                                report.summary.unread_signals,
+                                report.flagship_tokens_used,
+                            ),
+                            crate::i18n::UiLang::En => format!(
+                                "L1 catch-up complete · +{} filings / +{} news / {} chunks / {} signals ({} unread · {} Flagship Tokens)",
+                                report.sec_filings_ingested,
+                                report.news_events_ingested,
+                                report.chunks_indexed,
+                                report.signals_created_or_updated,
+                                report.summary.unread_signals,
+                                report.flagship_tokens_used,
+                            ),
+                        },
                         false,
                     ));
                     return true;
@@ -297,7 +384,13 @@ impl MungerWorkbench {
                     self.inbox_progress_rx = None;
                     self.inbox_catchup_progress = None;
                     self.inbox_last_auto_catchup_at = Some(Instant::now());
-                    self.banner = Some((format!("L1 事件流追平失败：{err}"), true));
+                    self.banner = Some((
+                        format!(
+                            "{}: {err}",
+                            self.lang.t("L1 事件流追平失败", "L1 catch-up failed")
+                        ),
+                        true,
+                    ));
                     return true;
                 }
                 Err(mpsc::TryRecvError::Empty) => return dirty,
@@ -353,12 +446,20 @@ impl MungerWorkbench {
                         self.sync_inbox_selection();
                     }
                     (Err(err), _) | (_, Err(err)) => {
-                        self.inbox_error = Some(format!("读取 L1 简报收件箱失败：{err:#}"));
+                        self.inbox_error = Some(format!(
+                            "{}: {err:#}",
+                            self.lang
+                                .t("读取 L1 简报收件箱失败", "Failed to read L1 Briefing Inbox")
+                        ));
                     }
                 }
             }
             Err(err) => {
-                self.inbox_error = Some(format!("打开 m3.duckdb 失败：{err:#}"));
+                self.inbox_error = Some(format!(
+                    "{}: {err:#}",
+                    self.lang
+                        .t("打开 m3.duckdb 失败", "Failed to open m3.duckdb")
+                ));
             }
         }
     }
@@ -419,7 +520,15 @@ impl MungerWorkbench {
         cx: &mut Context<Self>,
     ) {
         if self.universe_syncing || self.inbox_catching_up {
-            self.banner = Some(("后台事件追平或湖仓同步进行中，请稍候再分拣".into(), false));
+            self.banner = Some((
+                self.lang
+                    .t(
+                        "后台事件追平或湖仓同步进行中，请稍候再分拣",
+                        "Background sync or catch-up running — try triage in a moment",
+                    )
+                    .into(),
+                false,
+            ));
             cx.notify();
             return;
         }
@@ -430,7 +539,13 @@ impl MungerWorkbench {
             .find(|s| s.signal_id == signal_id)
             .cloned()
         else {
-            self.banner = Some((format!("未找到信号 {signal_id}"), true));
+            self.banner = Some((
+                format!(
+                    "{} {signal_id}",
+                    self.lang.t("未找到信号", "Signal not found:")
+                ),
+                true,
+            ));
             cx.notify();
             return;
         };
@@ -442,7 +557,15 @@ impl MungerWorkbench {
             .any(|r| r.ticker.eq_ignore_ascii_case(&ticker));
 
         let Ok(db) = LakeDb::open(&self.paths) else {
-            self.banner = Some(("打开 m3.duckdb 失败，无法更新信号状态".into(), true));
+            self.banner = Some((
+                self.lang
+                    .t(
+                        "打开 m3.duckdb 失败，无法更新信号状态",
+                        "Failed to open m3.duckdb to update signal status",
+                    )
+                    .into(),
+                true,
+            ));
             cx.notify();
             return;
         };
@@ -450,12 +573,26 @@ impl MungerWorkbench {
         match db.triage_signal(signal_id, target_status, store::now_ms()) {
             Ok(true) => {}
             Ok(false) => {
-                self.banner = Some((format!("信号 {signal_id} 不存在或未变更"), true));
+                self.banner = Some((
+                    match self.lang {
+                        crate::i18n::UiLang::Zh => format!("信号 {signal_id} 不存在或未变更"),
+                        crate::i18n::UiLang::En => {
+                            format!("Signal {signal_id} missing or unchanged")
+                        }
+                    },
+                    true,
+                ));
                 cx.notify();
                 return;
             }
             Err(err) => {
-                self.banner = Some((format!("分拣信号失败：{err:#}"), true));
+                self.banner = Some((
+                    format!(
+                        "{}: {err:#}",
+                        self.lang.t("分拣信号失败", "Failed to triage signal")
+                    ),
+                    true,
+                ));
                 cx.notify();
                 return;
             }
@@ -502,7 +639,14 @@ impl MungerWorkbench {
             ) {
                 self.reload_inbox_from_lake();
                 self.banner = Some((
-                    format!("已更新信号状态，但加入观察池 ({ticker}) 失败：{err:#}"),
+                    match self.lang {
+                        crate::i18n::UiLang::Zh => {
+                            format!("已更新信号状态，但加入观察池 ({ticker}) 失败：{err:#}")
+                        }
+                        crate::i18n::UiLang::En => {
+                            format!("Updated signal, but failed to add {ticker} to Watch: {err:#}")
+                        }
+                    },
                     true,
                 ));
                 cx.notify();
@@ -518,12 +662,24 @@ impl MungerWorkbench {
 
         self.reload_inbox_from_lake();
 
-        let status_label = signal_status_badge(target_status).0;
+        let status_label = signal_status_badge_for(target_status, self.lang).0;
         self.banner = Some((
             if promote_watch {
-                format!("已将 {ticker} 加入观察池 [WATCH] 并标记信号为「{status_label}」")
+                match self.lang {
+                    crate::i18n::UiLang::Zh => {
+                        format!("已将 {ticker} 加入观察池 [WATCH] 并标记信号为「{status_label}」")
+                    }
+                    crate::i18n::UiLang::En => {
+                        format!("Added {ticker} to [WATCH] and marked signal as {status_label}")
+                    }
+                }
             } else {
-                format!("已将 {ticker} 信号标记为「{status_label}」")
+                match self.lang {
+                    crate::i18n::UiLang::Zh => {
+                        format!("已将 {ticker} 信号标记为「{status_label}」")
+                    }
+                    crate::i18n::UiLang::En => format!("Marked {ticker} signal as {status_label}"),
+                }
             },
             false,
         ));
@@ -671,7 +827,7 @@ impl MungerWorkbench {
     fn render_inbox_kpi_ribbon(&self, cx: &mut Context<Self>) -> gpui::Div {
         let u_sum = self.universe_summary.clone().unwrap_or_default();
         let l1_sum = self.inbox_summary.clone().unwrap_or_default();
-        let last_catchup = fmt_time_cn(l1_sum.last_catchup_ms);
+        let last_catchup = fmt_time_cn_for(l1_sum.last_catchup_ms, self.lang);
 
         div()
             .h(px(44.))
@@ -693,31 +849,40 @@ impl MungerWorkbench {
                     .items_center()
                     .gap_3()
                     .child(journal_stat(
-                        "全美股池",
-                        format!("{} 家", u_sum.total_companies),
+                        self.lang.t("全美股池", "US Universe"),
+                        match self.lang {
+                            crate::i18n::UiLang::Zh => format!("{} 家", u_sum.total_companies),
+                            crate::i18n::UiLang::En => format!("{}", u_sum.total_companies),
+                        },
                         INK_HERO,
                         &self.fonts,
                     ))
                     .child(v_divider())
                     .child(journal_stat(
-                        "上次追平",
+                        self.lang.t("上次追平", "Last Catch-Up"),
                         last_catchup,
                         INK_SECONDARY,
                         &self.fonts,
                     ))
                     .child(v_divider())
                     .child(journal_stat(
-                        "语义索引",
-                        format!(
-                            "{} 片段 / {} 公司",
-                            l1_sum.doc_chunks_count, l1_sum.indexed_companies_count
-                        ),
+                        self.lang.t("语义索引", "Semantic Index"),
+                        match self.lang {
+                            crate::i18n::UiLang::Zh => format!(
+                                "{} 片段 / {} 公司",
+                                l1_sum.doc_chunks_count, l1_sum.indexed_companies_count
+                            ),
+                            crate::i18n::UiLang::En => format!(
+                                "{} chunks / {} cos",
+                                l1_sum.doc_chunks_count, l1_sum.indexed_companies_count
+                            ),
+                        },
                         SKY_FG,
                         &self.fonts,
                     ))
                     .child(v_divider())
                     .child(journal_stat(
-                        "未读信号",
+                        self.lang.t("未读信号", "Unread"),
                         format!("{}", l1_sum.unread_signals),
                         if l1_sum.unread_signals > 0 {
                             EMERALD_FG
@@ -756,15 +921,16 @@ impl MungerWorkbench {
                             this.start_l1_catchup(false, cx);
                         }))
                         .child(if self.inbox_catching_up {
-                            "追平中…"
+                            self.lang.t("追平中…", "Catching Up…")
                         } else {
-                            "追平事件流"
+                            self.lang.t("追平事件流", "Catch Up")
                         }),
                 ),
             )
     }
 
     fn render_inbox_filter_bar(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         div()
             .flex_shrink_0()
             .px_5()
@@ -780,11 +946,12 @@ impl MungerWorkbench {
                 InboxFilter::all().into_iter().map(|f| {
                     let active = self.inbox_state.filter == f;
                     let count = count_inbox_filter(&self.inbox_signals, f);
+                    let display_lbl = f.label_for(l);
                     let label = if count > 0 || matches!(f, InboxFilter::Unread | InboxFilter::All)
                     {
-                        format!("{} {count}", f.label())
+                        format!("{display_lbl} {count}")
                     } else {
-                        f.label().to_owned()
+                        display_lbl.to_owned()
                     };
                     div()
                         .id(gpui::SharedString::from(format!(
@@ -827,11 +994,11 @@ impl MungerWorkbench {
                     .items_center()
                     .gap_1p5()
                     .child(kbd("j/k", &self.fonts))
-                    .child(kbd("w 观察", &self.fonts))
+                    .child(kbd(l.t("w 观察", "w Watch"), &self.fonts))
                     .child(kbd("x TooHard", &self.fonts))
-                    .child(kbd("e 归档", &self.fonts))
+                    .child(kbd(l.t("e 归档", "e Archive"), &self.fonts))
                     .child(kbd("d Alan", &self.fonts))
-                    .child(kbd("r 追平", &self.fonts)),
+                    .child(kbd(l.t("r 追平", "r Catch-Up"), &self.fonts)),
             )
     }
 
@@ -842,8 +1009,8 @@ impl MungerWorkbench {
         is_selected: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (kind_label, kind_fg, kind_bg, kind_br) = signal_kind_badge(sig.kind);
-        let (st_label, st_fg, st_bg, st_br) = signal_status_badge(sig.status);
+        let (kind_label, kind_fg, kind_bg, kind_br) = signal_kind_badge_for(sig.kind, self.lang);
+        let (st_label, st_fg, st_bg, st_br) = signal_status_badge_for(sig.status, self.lang);
         let sig_id = sig.signal_id.clone();
         let secondary_tickers: Vec<&str> = sig
             .tickers
@@ -972,14 +1139,19 @@ impl MungerWorkbench {
                             .font_family(self.fonts.mono_term.clone())
                             .text_size(px(10.))
                             .text_color(rgb(INK_MUTED))
-                            .child(format!("{} 条证据", sig.evidence.len())),
+                            .child(format!(
+                                "{} {}",
+                                sig.evidence.len(),
+                                self.lang.t("条证据", "evidence")
+                            )),
                     ),
             )
     }
 
     fn render_inbox_detail(&self, sig: &SignalInboxRow, cx: &mut Context<Self>) -> gpui::Div {
-        let (kind_label, kind_fg, kind_bg, kind_br) = signal_kind_badge(sig.kind);
-        let (st_label, st_fg, st_bg, st_br) = signal_status_badge(sig.status);
+        let l = self.lang;
+        let (kind_label, kind_fg, kind_bg, kind_br) = signal_kind_badge_for(sig.kind, l);
+        let (st_label, st_fg, st_bg, st_br) = signal_status_badge_for(sig.status, l);
         let ticker_open = sig.primary_ticker.clone();
         let id_watch = sig.signal_id.clone();
         let id_alan = sig.signal_id.clone();
@@ -1062,7 +1234,7 @@ impl MungerWorkbench {
                                     .child(format!(
                                         "Score {:.2} · {}",
                                         sig.score,
-                                        fmt_time_cn(Some(sig.updated_at_ms))
+                                        fmt_time_cn_for(Some(sig.updated_at_ms), self.lang)
                                     )),
                             ),
                     )
@@ -1094,9 +1266,9 @@ impl MungerWorkbench {
                             .child(Self::inbox_action_button(
                                 "inbox-act-open",
                                 if in_watchlist {
-                                    "打开研报 Dossier"
+                                    l.t("打开研报 Dossier", "Open Dossier")
                                 } else {
-                                    "在全市场雷达查看"
+                                    l.t("在全市场雷达查看", "Inspect in Radar")
                                 },
                                 "↵",
                                 true,
@@ -1108,7 +1280,7 @@ impl MungerWorkbench {
                             ))
                             .child(Self::inbox_action_button(
                                 "inbox-act-watch",
-                                "入观察池 WATCH",
+                                l.t("入观察池 WATCH", "Add to Watch"),
                                 "w",
                                 false,
                                 (EMERALD_FG, EMERALD_BG, EMERALD_BORDER),
@@ -1125,7 +1297,7 @@ impl MungerWorkbench {
                             ))
                             .child(Self::inbox_action_button(
                                 "inbox-act-alan",
-                                "派 Alan 深研",
+                                l.t("派 Alan 深研", "Dispatch Alan"),
                                 "d",
                                 false,
                                 (VIOLET_FG, VIOLET_BG, VIOLET_BORDER),
@@ -1159,7 +1331,7 @@ impl MungerWorkbench {
                             ))
                             .child(Self::inbox_action_button(
                                 "inbox-act-archive",
-                                "归档",
+                                l.t("归档", "Archive"),
                                 "e",
                                 false,
                                 (INK_SECONDARY, BG_WELL, BORDER_SUBTLE),
@@ -1177,7 +1349,7 @@ impl MungerWorkbench {
                             .when(sig.status != SignalStatus::Unread, |d| {
                                 d.child(Self::inbox_action_button(
                                     "inbox-act-unread",
-                                    "标为未读",
+                                    l.t("标为未读", "Mark Unread"),
                                     "u",
                                     false,
                                     (SKY_FG, SKY_BG, SKY_BORDER),
@@ -1201,8 +1373,12 @@ impl MungerWorkbench {
                     .flex_col()
                     .gap_2p5()
                     .child(section_header(
-                        "一手原文出处证据",
-                        format!("{} 条检索片段 · 0 Flagship Token", sig.evidence.len()),
+                        l.t("一手原文出处证据", "PRIMARY SOURCE EVIDENCE"),
+                        format!(
+                            "{} {} · 0 Flagship Token",
+                            sig.evidence.len(),
+                            l.t("条检索片段", "retrieved chunks")
+                        ),
                         &self.fonts,
                     ))
                     .when(sig.evidence.is_empty(), |d| {
@@ -1212,7 +1388,10 @@ impl MungerWorkbench {
                                     .font_family(self.fonts.ui.clone())
                                     .text_xs()
                                     .text_color(rgb(INK_MUTED))
-                                    .child("该信号暂无附带原文引用片段。"),
+                                    .child(l.t(
+                                        "该信号暂无附带原文引用片段。",
+                                        "No source excerpts attached to this signal.",
+                                    )),
                             ),
                         )
                     })
@@ -1332,7 +1511,11 @@ impl MungerWorkbench {
                                     .text_size(px(11.))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(EMERALD_FG))
-                                    .child(format!("相似度 {:.0}%", ev.similarity * 100.0)),
+                                    .child(format!(
+                                        "{} {:.0}%",
+                                        self.lang.t("相似度", "Sim"),
+                                        ev.similarity * 100.0
+                                    )),
                             )
                             .when(!ev.source_url.trim().is_empty(), |d| {
                                 d.child(
@@ -1359,7 +1542,7 @@ impl MungerWorkbench {
                                             );
                                             cx.notify();
                                         }))
-                                        .child("复制 URL"),
+                                        .child(self.lang.t("复制 URL", "Copy URL")),
                                 )
                             }),
                     ),
@@ -1401,6 +1584,7 @@ impl MungerWorkbench {
     }
 
     fn render_inbox_empty_lake_state(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let cli = "./apps/m3-desktop/m3 events catchup --bootstrap";
         card_shell()
             .p_6()
@@ -1408,7 +1592,10 @@ impl MungerWorkbench {
             .flex_col()
             .gap_4()
             .child(section_header(
-                "L1 事件流与简报收件箱尚未初始化",
+                l.t(
+                    "L1 事件流与简报收件箱尚未初始化",
+                    "L1 Event Stream & Briefing Inbox Not Initialized",
+                ),
                 "MILESTONE B · ZERO-FLAGSHIP-LLM".into(),
                 &self.fonts,
             ))
@@ -1418,7 +1605,10 @@ impl MungerWorkbench {
                     .text_size(px(13.))
                     .line_height(px(22.))
                     .text_color(rgb(INK_SECONDARY))
-                    .child("先同步全美股 L0 湖仓，或点击「追平事件流」拉取 SEC EDGAR submissions / 8-K / 10-K 与公开新闻片段，自动生成「新浮现」「隐空间传导」「击球与红灯」待审讯简报。"),
+                    .child(l.t(
+                        "先同步全美股 L0 湖仓，或点击「追平事件流」拉取 SEC EDGAR submissions / 8-K / 10-K 与公开新闻片段，自动生成「新浮现」「隐空间传导」「击球与红灯」待审讯简报。",
+                        "Sync the US L0 lakehouse or click Catch Up Now to ingest SEC EDGAR submissions / 8-K / 10-K and public news snippets into Discovery, Ripple, Strike & Red-Flag briefings.",
+                    )),
             )
             .child(
                 div()
@@ -1441,7 +1631,7 @@ impl MungerWorkbench {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.start_l1_catchup(true, cx);
                             }))
-                            .child("立即追平事件流"),
+                            .child(l.t("立即追平事件流", "Catch Up Now")),
                     )
                     .child(
                         div()
@@ -1467,6 +1657,7 @@ impl MungerWorkbench {
     }
 
     fn render_inbox_empty_filter_state(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         div()
             .p_6()
             .flex()
@@ -1478,7 +1669,14 @@ impl MungerWorkbench {
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(INK_HERO))
-                    .child(format!("「{}」下暂无信号", self.inbox_state.filter.label())),
+                    .child(match l {
+                        crate::i18n::UiLang::Zh => {
+                            format!("「{}」下暂无信号", self.inbox_state.filter.label_for(l))
+                        }
+                        crate::i18n::UiLang::En => {
+                            format!("No signals under \"{}\"", self.inbox_state.filter.label_for(l))
+                        }
+                    }),
             )
             .child(
                 div()
@@ -1486,7 +1684,10 @@ impl MungerWorkbench {
                     .text_xs()
                     .line_height(px(18.))
                     .text_color(rgb(INK_MUTED))
-                    .child("可点击右上角「追平事件流」拉取最新 SEC 公告与候选新闻，或切换至「全部」查看历史已分拣简报。"),
+                    .child(l.t(
+                        "可点击右上角「追平事件流」拉取最新 SEC 公告与候选新闻，或切换至「全部」查看历史已分拣简报。",
+                        "Click Catch Up above to fetch new SEC filings and candidate news, or switch to All to inspect triaged briefings.",
+                    )),
             )
             .child(
                 div()
@@ -1511,7 +1712,7 @@ impl MungerWorkbench {
                                 this.set_inbox_filter(InboxFilter::All);
                                 cx.notify();
                             }))
-                            .child("查看全部信号"),
+                            .child(l.t("查看全部信号", "View All Signals")),
                     ),
             )
     }
@@ -1522,7 +1723,10 @@ impl MungerWorkbench {
                 .font_family(self.fonts.ui.clone())
                 .text_xs()
                 .text_color(rgb(INK_MUTED))
-                .child("在左侧列表选择一条信号，或按 r 追平 L1 事件流。"),
+                .child(self.lang.t(
+                    "在左侧列表选择一条信号，或按 r 追平 L1 事件流。",
+                    "Select a signal on the left, or press r to catch up L1 events.",
+                )),
         )
     }
 }

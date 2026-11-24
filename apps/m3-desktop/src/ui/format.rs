@@ -1,4 +1,5 @@
 use super::{PaletteItem, SortCol, StatusQuickFilter, TodayPulse};
+use crate::i18n::UiLang;
 use crate::model::{
     AnnualMetricRow, Bucket, MungerReport, OhlcBar, StrikeZoneStatus, ValuationSnapshot,
     WarningSeverity, primary_circle_tag,
@@ -77,14 +78,28 @@ pub fn filter_reports_for_basket<'a>(
     rows
 }
 
-pub fn build_alan_interrogation_prompt(ticker: &str, name: &str, bucket: Bucket) -> String {
-    format!(
-        "请作为我的芒格跨学科研究幕僚 Alan，执行 [{ticker} · {name}]（当前分桶: {}）的审讯工作流：\n\
-        1) 先运行 `./apps/m3-desktop/m3 report {ticker}` 与 `./apps/m3-desktop/m3 dossier {ticker}` 获取确定性财务与现有草稿（严禁口算或改动数字）。\n\
-        2) 基于 10-K/电话会更新三句话业务过滤、跨学科思维格栅与 5 年逆向事前验尸。\n\
-        3) 针对我提出的质疑进行一轮费曼答辩追问；保留 workbench/dossiers/{ticker}.json 中的 human_judgment 待我本人拍板，严禁输出买卖指令。",
-        bucket.code()
-    )
+pub fn build_alan_interrogation_prompt_for(
+    ticker: &str,
+    name: &str,
+    bucket: Bucket,
+    lang: crate::i18n::UiLang,
+) -> String {
+    match lang {
+        crate::i18n::UiLang::Zh => format!(
+            "请作为我的芒格跨学科研究幕僚 Alan，执行 [{ticker} · {name}]（当前分桶: {}）的审讯工作流：\n\
+            1) 先运行 `./apps/m3-desktop/m3 report {ticker}` 与 `./apps/m3-desktop/m3 dossier {ticker}` 获取确定性财务与现有草稿（严禁口算或改动数字）。\n\
+            2) 基于 10-K/电话会更新三句话业务过滤、跨学科思维格栅与 5 年逆向事前验尸。\n\
+            3) 针对我提出的质疑进行一轮费曼答辩追问；保留 workbench/dossiers/{ticker}.json 中的 human_judgment 待我本人拍板，严禁输出买卖指令。",
+            bucket.code()
+        ),
+        crate::i18n::UiLang::En => format!(
+            "Act as Alan, my interdisciplinary research chief of staff, and run the interrogation workflow for [{ticker} · {name}] (tier: {}):\n\
+            1) Run `./apps/m3-desktop/m3 report {ticker}` and `./apps/m3-desktop/m3 dossier {ticker}` first for deterministic financials and existing notes (never alter or fabricate numbers).\n\
+            2) Update the 3-sentence business filter, multidisciplinary latticework, and 5-year pre-mortem from primary filings.\n\
+            3) Press me with one Feynman interrogation round; preserve human_judgment in workbench/dossiers/{ticker}.json for my decision only and never emit trade orders.",
+            bucket.code()
+        ),
+    }
 }
 
 pub(super) fn dec_to_f64(d: Decimal) -> Option<f64> {
@@ -226,9 +241,9 @@ pub(super) fn civil_ym_from_ms(ms: u64) -> String {
     format!("{yr:04}-{m:02}")
 }
 
-pub(super) fn fmt_time_cn(ms: Option<u64>) -> String {
+pub(super) fn fmt_time_cn_for(ms: Option<u64>, lang: UiLang) -> String {
     let Some(ms) = ms else {
-        return "未同步".into();
+        return lang.t("未同步", "Never").into();
     };
     let secs = (ms / 1000 + 8 * 3600) as i64;
     let days = secs.div_euclid(86_400);

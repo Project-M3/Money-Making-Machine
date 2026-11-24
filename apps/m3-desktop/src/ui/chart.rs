@@ -13,6 +13,7 @@ impl MungerWorkbench {
         sandbox_dirty: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        let l = self.lang;
         let bars: Vec<OhlcBar> = match self.chart_timeframe {
             ChartTimeframe::FiveYearWeekly => self
                 .selected_history_wk
@@ -52,7 +53,7 @@ impl MungerWorkbench {
                     b.open, b.high, b.low, b.close
                 )
             }
-            None => "暂无本地 K 线缓存".into(),
+            None => l.t("暂无本地 K 线缓存", "No local K-line cache").into(),
         };
 
         let peak_high = bars
@@ -111,7 +112,7 @@ impl MungerWorkbench {
                                 .map(|tf| {
                                     seg_tab(
                                         format!("tf-{}", tf.label()),
-                                        tf.label(),
+                                        tf.label_for(l),
                                         self.chart_timeframe == tf,
                                         None,
                                         true,
@@ -147,7 +148,7 @@ impl MungerWorkbench {
                                         .font_family(self.fonts.ui.clone())
                                         .text_size(px(11.))
                                         .text_color(rgb(INK_MUTED))
-                                        .child("高点回撤"),
+                                        .child(l.t("高点回撤", "Drawdown")),
                                 )
                                 .child(
                                     div()
@@ -169,7 +170,7 @@ impl MungerWorkbench {
                                         .font_family(self.fonts.ui.clone())
                                         .text_size(px(11.))
                                         .text_color(rgb(INK_MUTED))
-                                        .child("击球线"),
+                                        .child(l.t("击球线", "Strike")),
                                 )
                                 .child(
                                     div()
@@ -369,8 +370,10 @@ impl MungerWorkbench {
                                             .text_size(px(10.))
                                             .text_color(rgb(EMERALD_FG))
                                             .child(format!(
-                                                "↓ 击球线 {} (低于区间底价)",
-                                                fmt_price(strike_price, &rep.currency)
+                                                "↓ {} {} ({})",
+                                                l.t("击球线", "Strike"),
+                                                fmt_price(strike_price, &rep.currency),
+                                                l.t("低于区间底价", "below visible floor")
                                             )),
                                     )
                                 }),
@@ -426,7 +429,14 @@ impl MungerWorkbench {
                             .font_family(self.fonts.ui.clone())
                             .text_xs()
                             .text_color(rgb(INK_MUTED))
-                            .child(format!("尚未同步 {} 的历史 K 线缓存", rep.ticker)),
+                            .child(match l {
+                                crate::i18n::UiLang::Zh => {
+                                    format!("尚未同步 {} 的历史 K 线缓存", rep.ticker)
+                                }
+                                crate::i18n::UiLang::En => {
+                                    format!("No historical K-line cache synced for {}", rep.ticker)
+                                }
+                            }),
                     )
                     .child(
                         div()
@@ -445,7 +455,7 @@ impl MungerWorkbench {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.start_sync(cx);
                             }))
-                            .child("同步行情 K 线"),
+                            .child(l.t("同步行情 K 线", "Sync Quotes & K-Lines")),
                     ),
             );
         }
@@ -472,7 +482,7 @@ impl MungerWorkbench {
                             .flex_wrap()
                             .gap_3()
                             .child(stepper_inline(
-                                "倍数",
+                                l.t("倍数", "Mult"),
                                 format!("{}x", self.sandbox_multiple),
                                 "sb-mult",
                                 &self.fonts,
@@ -490,7 +500,7 @@ impl MungerWorkbench {
                                 }),
                             ))
                             .child(stepper_inline(
-                                "目标",
+                                l.t("目标", "Target"),
                                 format!("{}%", self.sandbox_target_return),
                                 "sb-ret",
                                 &self.fonts,
@@ -508,7 +518,7 @@ impl MungerWorkbench {
                                 }),
                             ))
                             .child(stepper_inline(
-                                "增速",
+                                l.t("增速", "Growth"),
                                 format!("{}%", self.sandbox_expected_growth),
                                 "sb-gro",
                                 &self.fonts,
@@ -541,7 +551,7 @@ impl MungerWorkbench {
                                             .font_family(self.fonts.ui.clone())
                                             .text_xs()
                                             .text_color(rgb(INK_MUTED))
-                                            .child("隐含增速"),
+                                            .child(l.t("隐含增速", "Implied Growth")),
                                     )
                                     .child(
                                         div()
@@ -562,7 +572,7 @@ impl MungerWorkbench {
                                             .font_family(self.fonts.ui.clone())
                                             .text_xs()
                                             .text_color(rgb(INK_MUTED))
-                                            .child("预期年化"),
+                                            .child(l.t("预期年化", "Expected IRR")),
                                     )
                                     .child(
                                         div()
@@ -592,7 +602,7 @@ impl MungerWorkbench {
                                             this.reset_sandbox_to_saved();
                                             cx.notify();
                                         }))
-                                        .child("重置"),
+                                        .child(l.t("重置", "Reset")),
                                 )
                             })
                             .child(
@@ -623,9 +633,9 @@ impl MungerWorkbench {
                                         cx.notify();
                                     }))
                                     .child(if sandbox_dirty {
-                                        "保存假设"
+                                        l.t("保存假设", "Save Assumptions")
                                     } else {
-                                        "已保存"
+                                        l.t("已保存", "Saved")
                                     }),
                             ),
                     ),

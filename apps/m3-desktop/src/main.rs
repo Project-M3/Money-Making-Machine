@@ -5,6 +5,7 @@ mod calculator;
 mod cli;
 mod edgar;
 mod events;
+mod i18n;
 mod lake;
 mod lake_l1;
 mod lake_l2;
@@ -23,6 +24,7 @@ use gpui::{
     TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, point,
     prelude::*, px, size,
 };
+use i18n::UiLang;
 use model::Bucket;
 use std::{borrow::Cow, time::Duration};
 use store::WorkspacePaths;
@@ -37,9 +39,12 @@ actions!(
     m3,
     [
         AboutM3,
+        OpenSettings,
         CheckUpdate,
         ChannelStable,
         ChannelBeta,
+        SetLangZh,
+        SetLangEn,
         HideApp,
         HideOthers,
         ShowAll,
@@ -83,113 +88,185 @@ actions!(
     ]
 );
 
-fn build_app_menus() -> Vec<Menu> {
+pub(crate) fn build_app_menus(lang: UiLang) -> Vec<Menu> {
     vec![
         Menu {
             name: SharedString::from("M3"),
             items: vec![
                 MenuItem::action(
-                    format!("关于 Project M3 (v{})", update::current_binary_version()),
+                    format!(
+                        "{} (v{})",
+                        lang.t("关于 Project M3", "About Project M3"),
+                        update::current_binary_version()
+                    ),
                     AboutM3,
                 ),
                 MenuItem::separator(),
-                MenuItem::action("检查更新…", CheckUpdate),
+                MenuItem::action(lang.t("设置…", "Settings…"), OpenSettings),
+                MenuItem::action(lang.t("检查更新…", "Check for Updates…"), CheckUpdate),
                 MenuItem::submenu(Menu {
-                    name: SharedString::from("更新通道"),
+                    name: SharedString::from(lang.t("更新通道", "Release Channel")),
                     items: vec![
-                        MenuItem::action("稳定版 (stable)", ChannelStable),
-                        MenuItem::action("测试版 (beta)", ChannelBeta),
+                        MenuItem::action(
+                            lang.t("稳定版 (stable)", "Stable (stable)"),
+                            ChannelStable,
+                        ),
+                        MenuItem::action(lang.t("测试版 (beta)", "Beta (beta)"), ChannelBeta),
+                    ],
+                }),
+                MenuItem::submenu(Menu {
+                    name: SharedString::from(lang.t("语言 / Language", "Language / 语言")),
+                    items: vec![
+                        MenuItem::action("中文", SetLangZh),
+                        MenuItem::action("English", SetLangEn),
                     ],
                 }),
                 MenuItem::separator(),
-                MenuItem::os_submenu("服务", SystemMenuType::Services),
+                MenuItem::os_submenu(lang.t("服务", "Services"), SystemMenuType::Services),
                 MenuItem::separator(),
-                MenuItem::action("隐藏 M3", HideApp),
-                MenuItem::action("隐藏其他", HideOthers),
-                MenuItem::action("全部显示", ShowAll),
+                MenuItem::action(lang.t("隐藏 M3", "Hide M3"), HideApp),
+                MenuItem::action(lang.t("隐藏其他", "Hide Others"), HideOthers),
+                MenuItem::action(lang.t("全部显示", "Show All"), ShowAll),
                 MenuItem::separator(),
-                MenuItem::action("退出 M3", Quit),
+                MenuItem::action(lang.t("退出 M3", "Quit M3"), Quit),
             ],
         },
         Menu {
-            name: SharedString::from("文件"),
+            name: SharedString::from(lang.t("文件", "File")),
             items: vec![
-                MenuItem::action("命令面板…", OpenPalette),
+                MenuItem::action(lang.t("命令面板…", "Command Palette…"), OpenPalette),
                 MenuItem::separator(),
-                MenuItem::action("同步核心池财报与价格", SyncData),
-                MenuItem::action("追平 L1 事件流", CatchupEvents),
-                MenuItem::action("同步全美股 L0 湖仓", SyncUniverse),
-                MenuItem::action("同步主题图谱", SyncThemes),
+                MenuItem::action(
+                    lang.t("同步核心池财报与价格", "Sync Circle Financials & Prices"),
+                    SyncData,
+                ),
+                MenuItem::action(
+                    lang.t("追平 L1 事件流", "Catch Up L1 Events"),
+                    CatchupEvents,
+                ),
+                MenuItem::action(
+                    lang.t("同步全美股 L0 湖仓", "Sync US L0 Lakehouse"),
+                    SyncUniverse,
+                ),
+                MenuItem::action(lang.t("同步主题图谱", "Sync Theme Graph"), SyncThemes),
                 MenuItem::separator(),
-                MenuItem::action("在 Finder 中打开工作区", RevealWorkspace),
-                MenuItem::action("重新加载本地工作区", ReloadWorkspace),
+                MenuItem::action(
+                    lang.t("在 Finder 中打开工作区", "Reveal Workspace in Finder"),
+                    RevealWorkspace,
+                ),
+                MenuItem::action(
+                    lang.t("重新加载本地工作区", "Reload Workspace from Disk"),
+                    ReloadWorkspace,
+                ),
                 MenuItem::separator(),
-                MenuItem::action("关闭窗口", CloseWindow),
+                MenuItem::action(lang.t("关闭窗口", "Close Window"), CloseWindow),
             ],
         },
         Menu {
-            name: SharedString::from("编辑"),
+            name: SharedString::from(lang.t("编辑", "Edit")),
             items: vec![
-                MenuItem::os_action("撤销", Undo, OsAction::Undo),
-                MenuItem::os_action("重做", Redo, OsAction::Redo),
+                MenuItem::os_action(lang.t("撤销", "Undo"), Undo, OsAction::Undo),
+                MenuItem::os_action(lang.t("重做", "Redo"), Redo, OsAction::Redo),
                 MenuItem::separator(),
-                MenuItem::os_action("剪切", Cut, OsAction::Cut),
-                MenuItem::os_action("拷贝", Copy, OsAction::Copy),
-                MenuItem::os_action("粘贴", Paste, OsAction::Paste),
-                MenuItem::os_action("全选", SelectAll, OsAction::SelectAll),
+                MenuItem::os_action(lang.t("剪切", "Cut"), Cut, OsAction::Cut),
+                MenuItem::os_action(lang.t("拷贝", "Copy"), Copy, OsAction::Copy),
+                MenuItem::os_action(lang.t("粘贴", "Paste"), Paste, OsAction::Paste),
+                MenuItem::os_action(lang.t("全选", "Select All"), SelectAll, OsAction::SelectAll),
             ],
         },
         Menu {
-            name: SharedString::from("视图"),
+            name: SharedString::from(lang.t("视图", "View")),
             items: vec![
-                MenuItem::action("简报收件箱", ViewInbox),
-                MenuItem::action("全市场雷达", ViewUniverse),
-                MenuItem::action("能力圈总览", ViewBaskets),
-                MenuItem::action("主题与账本", ViewJournal),
+                MenuItem::action(lang.t("简报收件箱", "Briefing Inbox"), ViewInbox),
+                MenuItem::action(lang.t("全市场雷达", "Universe Radar"), ViewUniverse),
+                MenuItem::action(lang.t("能力圈总览", "Circle Overview"), ViewBaskets),
+                MenuItem::action(lang.t("主题与账本", "Themes & Journal"), ViewJournal),
                 MenuItem::separator(),
-                MenuItem::action("财报与活研报", ViewDossier),
+                MenuItem::action(lang.t("财报与活研报", "Financials & Memo"), ViewDossier),
                 MenuItem::action("Research Desk · Alan", ViewAgent),
-                MenuItem::action("返回能力圈总览", BackToBaskets),
+                MenuItem::action(
+                    lang.t("返回能力圈总览", "Back to Circle Overview"),
+                    BackToBaskets,
+                ),
                 MenuItem::separator(),
-                MenuItem::action("切换 TTM / 年报口径", ToggleBasis),
-                MenuItem::action("切换列表与看板视图", ToggleBasketsView),
+                MenuItem::action(
+                    lang.t("切换 TTM / 年报口径", "Toggle TTM / FY Basis"),
+                    ToggleBasis,
+                ),
+                MenuItem::action(
+                    lang.t("切换列表与看板视图", "Toggle List / Board View"),
+                    ToggleBasketsView,
+                ),
                 MenuItem::separator(),
-                MenuItem::action("进入或退出全屏", ToggleFullScreen),
+                MenuItem::action(
+                    lang.t("进入或退出全屏", "Toggle Full Screen"),
+                    ToggleFullScreen,
+                ),
             ],
         },
         Menu {
-            name: SharedString::from("研究"),
+            name: SharedString::from(lang.t("研究", "Research")),
             items: vec![
-                MenuItem::action("对当前标的运行 Deep Research（4 视角）", RunDeepResearch),
-                MenuItem::action("查看本月 AI 预算状态", ShowBudgetStatus),
+                MenuItem::action(
+                    lang.t(
+                        "对当前标的运行 Deep Research（4 视角）",
+                        "Run Deep Research on Selected (4 Perspectives)",
+                    ),
+                    RunDeepResearch,
+                ),
+                MenuItem::action(
+                    lang.t("查看本月 AI 预算状态", "Show Monthly AI Budget Status"),
+                    ShowBudgetStatus,
+                ),
                 MenuItem::separator(),
                 MenuItem::submenu(Menu {
-                    name: SharedString::from("按能力圈筛选"),
+                    name: SharedString::from(lang.t("按能力圈筛选", "Filter by Circle Tier")),
                     items: vec![
-                        MenuItem::action("全部能力圈", FilterBasketAll),
-                        MenuItem::action("CORE · 核心重仓候补", FilterBasketCore),
-                        MenuItem::action("WATCH · 持续跟踪", FilterBasketWatch),
-                        MenuItem::action("OUT · 超出能力圈", FilterBasketOut),
-                        MenuItem::action("TOO HARD · 暂不碰", FilterBasketTooHard),
+                        MenuItem::action(lang.t("全部能力圈", "All Tiers"), FilterBasketAll),
+                        MenuItem::action(
+                            lang.t("CORE · 核心重仓候补", "CORE · Strike Candidates"),
+                            FilterBasketCore,
+                        ),
+                        MenuItem::action(
+                            lang.t("WATCH · 持续跟踪", "WATCH · Tracking"),
+                            FilterBasketWatch,
+                        ),
+                        MenuItem::action(
+                            lang.t("OUT · 超出能力圈", "OUT · Outside Circle"),
+                            FilterBasketOut,
+                        ),
+                        MenuItem::action(
+                            lang.t("TOO HARD · 暂不碰", "TOO HARD · Archived"),
+                            FilterBasketTooHard,
+                        ),
                     ],
                 }),
             ],
         },
         Menu {
-            name: SharedString::from("窗口"),
+            name: SharedString::from(lang.t("窗口", "Window")),
             items: vec![
-                MenuItem::action("最小化", MinimizeWindow),
-                MenuItem::action("缩放", ZoomWindow),
+                MenuItem::action(lang.t("最小化", "Minimize"), MinimizeWindow),
+                MenuItem::action(lang.t("缩放", "Zoom"), ZoomWindow),
                 MenuItem::separator(),
-                MenuItem::action("进入或退出全屏", ToggleFullScreen),
+                MenuItem::action(
+                    lang.t("进入或退出全屏", "Toggle Full Screen"),
+                    ToggleFullScreen,
+                ),
             ],
         },
         Menu {
-            name: SharedString::from("帮助"),
+            name: SharedString::from(lang.t("帮助", "Help")),
             items: vec![
-                MenuItem::action("Project M3 官网", OpenWebsite),
-                MenuItem::action("GitHub 开源仓库", OpenGitHub),
-                MenuItem::action("版本发布记录 (Releases)", OpenReleases),
+                MenuItem::action(lang.t("Project M3 官网", "Project M3 Website"), OpenWebsite),
+                MenuItem::action(
+                    lang.t("GitHub 开源仓库", "GitHub Open Source Repository"),
+                    OpenGitHub,
+                ),
+                MenuItem::action(
+                    lang.t("版本发布记录 (Releases)", "Release Notes (Releases)"),
+                    OpenReleases,
+                ),
             ],
         },
     ]
@@ -197,6 +274,7 @@ fn build_app_menus() -> Vec<Menu> {
 
 fn bind_keybindings(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-h", HideApp, None),
         KeyBinding::new("cmd-alt-h", HideOthers, None),
@@ -256,6 +334,12 @@ fn register_window_action<A: gpui::Action>(
 
 fn register_window_actions(cx: &mut App, window: gpui::WindowHandle<MungerWorkbench>) {
     register_window_action::<AboutM3>(cx, window, |v, _, cx| v.show_about_notice(cx));
+    register_window_action::<OpenSettings>(cx, window, |v, _, cx| {
+        v.switch_view(NavView::Settings);
+        cx.notify();
+    });
+    register_window_action::<SetLangZh>(cx, window, |v, _, cx| v.set_language(UiLang::Zh, cx));
+    register_window_action::<SetLangEn>(cx, window, |v, _, cx| v.set_language(UiLang::En, cx));
     register_window_action::<OpenPalette>(cx, window, |v, win, cx| {
         v.toggle_palette(win);
         cx.notify();
@@ -452,10 +536,11 @@ fn main() -> Result<()> {
 
     Application::new().run(move |cx: &mut App| {
         let fonts = resolve_font_roles(cx);
+        let initial_lang = app_config::read_ui_language();
 
         register_global_actions(cx);
         bind_keybindings(cx);
-        cx.set_menus(build_app_menus());
+        cx.set_menus(build_app_menus(initial_lang));
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -523,16 +608,31 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod menu_tests {
     use super::build_app_menus;
+    use crate::i18n::UiLang;
 
     #[test]
     fn builds_full_pro_macos_menu_bar() {
-        let menus = build_app_menus();
-        let names: Vec<&str> = menus.iter().map(|m| m.name.as_ref()).collect();
+        let zh_menus = build_app_menus(UiLang::Zh);
+        let zh_names: Vec<&str> = zh_menus.iter().map(|m| m.name.as_ref()).collect();
         assert_eq!(
-            names,
+            zh_names,
             vec!["M3", "文件", "编辑", "视图", "研究", "窗口", "帮助"]
         );
-        for menu in &menus {
+        for menu in &zh_menus {
+            assert!(
+                !menu.items.is_empty(),
+                "menu `{}` should not be empty",
+                menu.name
+            );
+        }
+
+        let en_menus = build_app_menus(UiLang::En);
+        let en_names: Vec<&str> = en_menus.iter().map(|m| m.name.as_ref()).collect();
+        assert_eq!(
+            en_names,
+            vec!["M3", "File", "Edit", "View", "Research", "Window", "Help"]
+        );
+        for menu in &en_menus {
             assert!(
                 !menu.items.is_empty(),
                 "menu `{}` should not be empty",

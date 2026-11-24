@@ -8,6 +8,7 @@ use crate::{
         parse_acme_evidence_tokens,
     },
     cli,
+    i18n::UiLang,
     lake::LakeDb,
     lake_l1::SimilarSearchFilter,
     lake_l2::ResearchRunStatus,
@@ -132,13 +133,23 @@ pub enum PerspectiveUiStatus {
 }
 
 impl PerspectiveUiStatus {
-    pub fn label_cn(self) -> &'static str {
+    pub fn label_for(self, lang: UiLang) -> &'static str {
         match self {
-            Self::Pending => "待命",
-            Self::Running => "分析中…",
-            Self::Completed => "已完成",
-            Self::Failed => "未完成",
+            Self::Pending => lang.t("待命", "Pending"),
+            Self::Running => lang.t("分析中…", "Running…"),
+            Self::Completed => lang.t("已完成", "Completed"),
+            Self::Failed => lang.t("未完成", "Incomplete"),
         }
+    }
+}
+
+pub(super) fn perspective_title_for(id: &str, fallback_cn: &str, lang: UiLang) -> String {
+    match (lang, id) {
+        (UiLang::En, "moat") => "Moat".to_owned(),
+        (UiLang::En, "accounting") => "Accounting".to_owned(),
+        (UiLang::En, "latent_peers") => "Latent Peers".to_owned(),
+        (UiLang::En, "premortem") => "5Y Pre-Mortem".to_owned(),
+        _ => fallback_cn.to_owned(),
     }
 }
 
@@ -186,23 +197,44 @@ pub struct DeepResearchEventEffect {
     pub banner: Option<(String, bool)>,
 }
 
+#[allow(dead_code)]
 pub fn apply_deep_research_event(
     state: &mut DeepResearchUiSlice<'_>,
     ev: &DeepResearchEvent,
+) -> DeepResearchEventEffect {
+    apply_deep_research_event_for(state, ev, UiLang::Zh)
+}
+
+pub fn apply_deep_research_event_for(
+    state: &mut DeepResearchUiSlice<'_>,
+    ev: &DeepResearchEvent,
+    lang: UiLang,
 ) -> DeepResearchEventEffect {
     match ev {
         DeepResearchEvent::Started { run_id, ticker } => {
             *state.running = true;
             *state.run_id = Some(run_id.clone());
             *state.budget_blocked = None;
-            *state.status_note = Some(format!("正在启动 4 视角并行深研 ({ticker})…"));
+            *state.status_note = Some(match lang {
+                UiLang::Zh => format!("正在启动 4 视角并行深研 ({ticker})…"),
+                UiLang::En => format!("Starting 4-perspective parallel Deep Research ({ticker})…"),
+            });
             let seq = state.tape.len() + 1;
             state.tape.push(TuringTapeEntry {
                 seq,
                 call_id: Some(run_id.clone()),
                 kind: TuringTapeKind::Input,
-                summary: format!("Deep Research 启动 · {ticker} ({run_id})"),
-                detail: Some("4 并行视角：护城河 / 会计排雷 / 隐空间同行 / 5年逆向验尸".to_owned()),
+                summary: match lang {
+                    UiLang::Zh => format!("Deep Research 启动 · {ticker} ({run_id})"),
+                    UiLang::En => format!("Deep Research started · {ticker} ({run_id})"),
+                },
+                detail: Some(
+                    lang.t(
+                        "4 并行视角：护城河 / 会计排雷 / 隐空间同行 / 5年逆向验尸",
+                        "4 parallel lenses: Moat / Accounting / Latent Peers / 5Y Pre-Mortem",
+                    )
+                    .to_owned(),
+                ),
                 status: "started".to_owned(),
             });
             DeepResearchEventEffect {
@@ -218,7 +250,10 @@ pub fn apply_deep_research_event(
             *state.running = false;
             *state.run_id = Some(run_id.clone());
             *state.budget_blocked = Some(reason.clone());
-            *state.status_note = Some(format!("预算闸门硬拦截：{reason}"));
+            *state.status_note = Some(match lang {
+                UiLang::Zh => format!("预算闸门硬拦截：{reason}"),
+                UiLang::En => format!("Budget gate blocked: {reason}"),
+            });
             for p in state.perspectives.iter_mut() {
                 if p.status == PerspectiveUiStatus::Pending {
                     p.status = PerspectiveUiStatus::Failed;
@@ -229,20 +264,32 @@ pub fn apply_deep_research_event(
                 seq,
                 call_id: Some(run_id.clone()),
                 kind: TuringTapeKind::Policy,
-                summary: format!("预算硬拦截 · {ticker}（0 LLM Token）"),
+                summary: match lang {
+                    UiLang::Zh => format!("预算硬拦截 · {ticker}（0 LLM Token）"),
+                    UiLang::En => format!("Budget blocked · {ticker} (0 LLM tokens)"),
+                },
                 detail: Some(reason.clone()),
                 status: "blocked_budget".to_owned(),
             });
             DeepResearchEventEffect {
                 reload_context: true,
                 banner: Some((
-                    format!("{ticker} Deep Research 已被预算闸门拦截：{reason}"),
+                    match lang {
+                        UiLang::Zh => format!("{ticker} Deep Research 已被预算闸门拦截：{reason}"),
+                        UiLang::En => {
+                            format!("{ticker} Deep Research blocked by budget gate: {reason}")
+                        }
+                    },
                     true,
                 )),
             }
         }
         DeepResearchEvent::PerspectiveStarted { perspective, label } => {
-            *state.status_note = Some(format!("4 视角并行推进中 · {label}…"));
+            let localized_label = perspective_title_for(perspective, label, lang);
+            *state.status_note = Some(match lang {
+                UiLang::Zh => format!("4 视角并行推进中 · {localized_label}…"),
+                UiLang::En => format!("4-perspective run in progress · {localized_label}…"),
+            });
             if let Some(p) = state
                 .perspectives
                 .iter_mut()
@@ -355,9 +402,16 @@ pub fn apply_deep_research_event(
             }
         }
         DeepResearchEvent::Synthesizing { ticker } => {
-            *state.status_note = Some(format!(
-                "正在合成 {ticker} Living Research Memo（保留 ## Human Notes）…"
-            ));
+            *state.status_note = Some(match lang {
+                UiLang::Zh => {
+                    format!("正在合成 {ticker} Living Research Memo（保留 ## Human Notes）…")
+                }
+                UiLang::En => {
+                    format!(
+                        "Synthesizing {ticker} Living Research Memo (preserving ## Human Notes)…"
+                    )
+                }
+            });
             DeepResearchEventEffect {
                 reload_context: false,
                 banner: None,
@@ -385,30 +439,49 @@ pub fn apply_deep_research_event(
             }
             let cost_str = result.cost_usd.round_dp(4).normalize();
             let memo_label = result.memo_path.as_deref().unwrap_or("workbench/memos");
-            *state.status_note = Some(format!(
-                "完成 · {} in / {} out · ${cost_str} · {memo_label}",
-                result.input_tokens, result.output_tokens
-            ));
+            *state.status_note = Some(match lang {
+                UiLang::Zh => format!(
+                    "完成 · {} in / {} out · ${cost_str} · {memo_label}",
+                    result.input_tokens, result.output_tokens
+                ),
+                UiLang::En => format!(
+                    "Completed · {} in / {} out · ${cost_str} · {memo_label}",
+                    result.input_tokens, result.output_tokens
+                ),
+            });
             let seq = state.tape.len() + 1;
             state.tape.push(TuringTapeEntry {
                 seq,
                 call_id: Some(result.run_id.clone()),
                 kind: TuringTapeKind::Out,
-                summary: format!(
-                    "Deep Research 完成 · {} (${cost_str} · {} 引用)",
-                    result.ticker,
-                    result.citations.len()
-                ),
+                summary: match lang {
+                    UiLang::Zh => format!(
+                        "Deep Research 完成 · {} (${cost_str} · {} 引用)",
+                        result.ticker,
+                        result.citations.len()
+                    ),
+                    UiLang::En => format!(
+                        "Deep Research completed · {} (${cost_str} · {} citations)",
+                        result.ticker,
+                        result.citations.len()
+                    ),
+                },
                 detail: Some(memo_label.to_owned()),
                 status: "completed".to_owned(),
             });
             DeepResearchEventEffect {
                 reload_context: true,
                 banner: Some((
-                    format!(
-                        "{} Deep Research 完成（{} in / {} out · ${cost_str}）· 已写入 {memo_label}",
-                        result.ticker, result.input_tokens, result.output_tokens
-                    ),
+                    match lang {
+                        UiLang::Zh => format!(
+                            "{} Deep Research 完成（{} in / {} out · ${cost_str}）· 已写入 {memo_label}",
+                            result.ticker, result.input_tokens, result.output_tokens
+                        ),
+                        UiLang::En => format!(
+                            "{} Deep Research complete ({} in / {} out · ${cost_str}) · wrote {memo_label}",
+                            result.ticker, result.input_tokens, result.output_tokens
+                        ),
+                    },
                     false,
                 )),
             }
@@ -422,7 +495,10 @@ pub fn apply_deep_research_event(
             if !run_id.is_empty() {
                 *state.run_id = Some(run_id.clone());
             }
-            *state.status_note = Some(format!("Deep Research 未完成：{error}"));
+            *state.status_note = Some(match lang {
+                UiLang::Zh => format!("Deep Research 未完成：{error}"),
+                UiLang::En => format!("Deep Research incomplete: {error}"),
+            });
             for p in state.perspectives.iter_mut() {
                 if matches!(
                     p.status,
@@ -436,13 +512,22 @@ pub fn apply_deep_research_event(
                 seq,
                 call_id: (!run_id.is_empty()).then(|| run_id.clone()),
                 kind: TuringTapeKind::Error,
-                summary: format!("Deep Research 失败 · {ticker}"),
+                summary: match lang {
+                    UiLang::Zh => format!("Deep Research 失败 · {ticker}"),
+                    UiLang::En => format!("Deep Research failed · {ticker}"),
+                },
                 detail: Some(error.clone()),
                 status: "failed".to_owned(),
             });
             DeepResearchEventEffect {
                 reload_context: true,
-                banner: Some((format!("{ticker} Deep Research 失败：{error}"), true)),
+                banner: Some((
+                    match lang {
+                        UiLang::Zh => format!("{ticker} Deep Research 失败：{error}"),
+                        UiLang::En => format!("{ticker} Deep Research failed: {error}"),
+                    },
+                    true,
+                )),
             }
         }
     }
@@ -454,6 +539,7 @@ impl MungerWorkbench {
     }
 
     pub(super) fn reload_budget_from_lake(&mut self) {
+        self.budget_config = crate::budget::load_budget_config(&self.paths).unwrap_or_default();
         if self.universe_syncing {
             return;
         }
@@ -508,7 +594,12 @@ impl MungerWorkbench {
         }
         if self.deep_research_running {
             self.banner = Some((
-                "Deep Research 任务正在执行中，请等待当前运行完成".into(),
+                self.lang
+                    .t(
+                        "Deep Research 任务正在执行中，请等待当前运行完成",
+                        "Deep Research is already running; wait for completion.",
+                    )
+                    .into(),
                 false,
             ));
             cx.notify();
@@ -516,7 +607,12 @@ impl MungerWorkbench {
         }
         if self.universe_syncing {
             self.banner = Some((
-                "全美股 L0 湖仓正在同步，请完成后再发起 Deep Research".into(),
+                self.lang
+                    .t(
+                        "全美股 L0 湖仓正在同步，请完成后再发起 Deep Research",
+                        "US universe L0 lakehouse is syncing; start Deep Research after it finishes.",
+                    )
+                    .into(),
                 false,
             ));
             cx.notify();
@@ -528,7 +624,10 @@ impl MungerWorkbench {
         self.deep_research_run_id = None;
         self.deep_research_budget_blocked = None;
         self.deep_research_perspectives = default_deep_research_perspectives();
-        self.deep_research_status_note = Some(format!("正在准备 {upper} · 4 视角并行深研…"));
+        self.deep_research_status_note = Some(match self.lang {
+            UiLang::Zh => format!("正在准备 {upper} · 4 视角并行深研…"),
+            UiLang::En => format!("Preparing {upper} · 4-perspective Deep Research…"),
+        });
 
         let root = self.paths.repo_root.clone();
         let req = DeepResearchRequest {
@@ -593,7 +692,7 @@ impl MungerWorkbench {
                 last_result: &mut self.deep_research_last_result,
                 tape: &mut self.agent_tape,
             };
-            let effect = apply_deep_research_event(&mut slice, ev);
+            let effect = apply_deep_research_event_for(&mut slice, ev, self.lang);
             if effect.reload_context {
                 reload_ctx = true;
             }
@@ -665,7 +764,14 @@ impl MungerWorkbench {
         self.agent_input_focused = false;
         self.agent_session_ticker = Some(ticker.to_string());
         self.agent_streaming = true;
-        self.agent_status_hint = Some("正在连接 EmbeddedAlan V2…".to_string());
+        self.agent_status_hint = Some(
+            self.lang
+                .t(
+                    "正在连接 EmbeddedAlan V2…",
+                    "Connecting to EmbeddedAlan V2…",
+                )
+                .to_string(),
+        );
 
         let short_q: String = question.chars().take(72).collect();
         self.append_tape(
@@ -700,9 +806,14 @@ impl MungerWorkbench {
     }
 
     pub(super) fn start_feynman_interrogation(&mut self, ticker: &str, name: &str, bucket: Bucket) {
-        let starter = format!(
-            "请使用 m3_report 与 m3_dossier 获取 {ticker}（{name}）的确定性财务报告与现有审讯档案，指出当前估值与护城河中最脆弱的核心假设，并向我发起一轮费曼审讯追问。"
-        );
+        let starter = match self.lang {
+            UiLang::Zh => format!(
+                "请使用 m3_report 与 m3_dossier 获取 {ticker}（{name}）的确定性财务报告与现有审讯档案，指出当前估值与护城河中最脆弱的核心假设，并向我发起一轮费曼审讯追问。"
+            ),
+            UiLang::En => format!(
+                "Please use m3_report and m3_dossier to fetch the deterministic financial report and existing interrogation dossier for {ticker} ({name}), identify the most fragile assumptions in current valuation and moat, and initiate a round of Feynman interrogation."
+            ),
+        };
         self.submit_alan_question(ticker, name, bucket, starter);
     }
 
@@ -711,7 +822,11 @@ impl MungerWorkbench {
             handle.interrupt();
         }
         self.agent_streaming = false;
-        self.agent_status_hint = Some("已中断当前审讯".to_string());
+        self.agent_status_hint = Some(
+            self.lang
+                .t("已中断当前审讯", "Interrogation interrupted")
+                .to_string(),
+        );
         if let Some(last) = self
             .agent_messages
             .iter_mut()
@@ -766,8 +881,14 @@ impl MungerWorkbench {
                 tape: &mut self.agent_tape,
                 seq: &mut self.agent_seq,
             };
-            if apply_interrogator_event(&mut slice, &ev, &focus_ticker, &self.reports, &dossier_map)
-            {
+            if apply_interrogator_event_for(
+                &mut slice,
+                &ev,
+                &focus_ticker,
+                &self.reports,
+                &dossier_map,
+                self.lang,
+            ) {
                 reload_disk = true;
             }
         }
@@ -823,7 +944,10 @@ impl MungerWorkbench {
                                 .font_family(self.fonts.ui.clone())
                                 .text_xs()
                                 .text_color(rgb(VIOLET_FG))
-                                .child(format!("AI 幕僚草稿 · {draft_source}")),
+                                .child(match self.lang {
+                                    UiLang::Zh => format!("AI 幕僚草稿 · {draft_source}"),
+                                    UiLang::En => format!("AI Staff Draft · {draft_source}"),
+                                }),
                         ),
                 )
                 .child(
@@ -831,7 +955,10 @@ impl MungerWorkbench {
                         .font_family(self.fonts.mono_num.clone())
                         .text_xs()
                         .text_color(rgb(INK_MUTED))
-                        .child(format!("更新于 {updated_at}")),
+                        .child(match self.lang {
+                            UiLang::Zh => format!("更新于 {updated_at}"),
+                            UiLang::En => format!("Updated {updated_at}"),
+                        }),
                 ),
         );
 
@@ -848,7 +975,10 @@ impl MungerWorkbench {
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_SECONDARY))
-                            .child("能力圈三句话过滤"),
+                            .child(
+                                self.lang
+                                    .t("能力圈三句话过滤", "3-Sentence Business Filter"),
+                            ),
                     )
                     .child(
                         div()
@@ -899,7 +1029,10 @@ impl MungerWorkbench {
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_HERO))
-                            .child("跨学科思维格栅"),
+                            .child(
+                                self.lang
+                                    .t("跨学科思维格栅", "Interdisciplinary Latticework"),
+                            ),
                     )
                     .child(
                         div()
@@ -907,25 +1040,32 @@ impl MungerWorkbench {
                             .border_b_1()
                             .border_color(rgb(BORDER_HAIRLINE))
                             .child(
-                                quad("微观经济与护城河", &dossier.latticework.microeconomics)
-                                    .border_r_1()
-                                    .border_color(rgb(BORDER_HAIRLINE)),
+                                quad(
+                                    self.lang.t("微观经济与护城河", "Microeconomics & Moat"),
+                                    &dossier.latticework.microeconomics,
+                                )
+                                .border_r_1()
+                                .border_color(rgb(BORDER_HAIRLINE)),
                             )
-                            .child(quad("生态位与技术演化", &dossier.latticework.ecology)),
+                            .child(quad(
+                                self.lang
+                                    .t("生态位与技术演化", "Ecosystem & Tech Evolution"),
+                                &dossier.latticework.ecology,
+                            )),
                     )
                     .child(
                         div()
                             .flex()
                             .child(
                                 quad(
-                                    "心理学与管理层激励",
+                                    self.lang.t("心理学与管理层激励", "Psychology & Incentives"),
                                     &dossier.latticework.psychology_incentives,
                                 )
                                 .border_r_1()
                                 .border_color(rgb(BORDER_HAIRLINE)),
                             )
                             .child(quad(
-                                "资本配置历史",
+                                self.lang.t("资本配置历史", "Capital Allocation History"),
                                 &dossier.latticework.capital_allocation,
                             )),
                     ),
@@ -955,7 +1095,10 @@ impl MungerWorkbench {
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(CORAL_FG))
-                                    .child("5 年逆向事前验尸（亏损 >50% 路径）"),
+                                    .child(self.lang.t(
+                                        "5 年逆向事前验尸（亏损 >50% 路径）",
+                                        "5-Year Pre-Mortem (>50% Drawdown Paths)",
+                                    )),
                             )
                             .when(dossier.premortem.is_empty(), |d| {
                                 d.child(
@@ -964,7 +1107,10 @@ impl MungerWorkbench {
                                         .font_family(self.fonts.ui.clone())
                                         .text_xs()
                                         .text_color(rgb(INK_MUTED))
-                                        .child("（尚无事前验尸草稿）"),
+                                        .child(self.lang.t(
+                                            "（尚无事前验尸草稿）",
+                                            "(No pre-mortem draft yet)",
+                                        )),
                                 )
                             })
                             .children(dossier.premortem.iter().enumerate().map(|(i, item)| {
@@ -1001,11 +1147,14 @@ impl MungerWorkbench {
                                             .text_sm()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(rgb(INK_HERO))
-                                            .child("费曼待答辩关键质疑"),
+                                            .child(self.lang.t(
+                                                "费曼待答辩关键质疑",
+                                                "Open Feynman Interrogation Questions",
+                                            )),
                                     )
                                     .child(if pending {
                                         badge(
-                                            "待作答".into(),
+                                            self.lang.t("待作答", "Open").into(),
                                             GOLD_FG,
                                             GOLD_BG,
                                             GOLD_BORDER,
@@ -1013,7 +1162,7 @@ impl MungerWorkbench {
                                         )
                                     } else {
                                         badge(
-                                            "已通过".into(),
+                                            self.lang.t("已通过", "Cleared").into(),
                                             EMERALD_FG,
                                             EMERALD_BG,
                                             EMERALD_BORDER,
@@ -1042,10 +1191,16 @@ impl MungerWorkbench {
                     .font_family(self.fonts.ui.clone())
                     .text_xs()
                     .text_color(rgb(INK_MUTED))
-                    .child(format!(
-                        "尚无 {} 审讯档案（{dossier_file}），可点击右上角「复制审讯 Prompt (p)」启动。",
-                        rep.ticker
-                    )),
+                    .child(match self.lang {
+                        UiLang::Zh => format!(
+                            "尚无 {} 审讯档案（{dossier_file}），可点击右上角「复制审讯 Prompt (p)」启动。",
+                            rep.ticker
+                        ),
+                        UiLang::En => format!(
+                            "No interrogation dossier for {} ({dossier_file}). Click \"Copy Prompt (p)\" in the top right to start.",
+                            rep.ticker
+                        ),
+                    }),
             );
         }
 
@@ -1114,9 +1269,11 @@ impl MungerWorkbench {
 
         let status_pill = if self.agent_streaming {
             badge(
-                self.agent_status_hint
-                    .clone()
-                    .unwrap_or_else(|| "Alan 审讯运行中…".into()),
+                self.agent_status_hint.clone().unwrap_or_else(|| {
+                    self.lang
+                        .t("Alan 审讯运行中…", "Alan interrogation running…")
+                        .into()
+                }),
                 VIOLET_FG,
                 VIOLET_BG,
                 VIOLET_BORDER,
@@ -1124,7 +1281,12 @@ impl MungerWorkbench {
             )
         } else {
             badge(
-                "只读 /mnt/m3 · 确定性工具".into(),
+                self.lang
+                    .t(
+                        "只读 /mnt/m3 · 确定性工具",
+                        "Read-only /mnt/m3 · Deterministic Tools",
+                    )
+                    .into(),
                 EMERALD_FG,
                 EMERALD_BG,
                 EMERALD_BORDER,
@@ -1153,7 +1315,10 @@ impl MungerWorkbench {
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_HERO))
-                            .child(format!("Alan 费曼审讯台 · {}", rep.ticker)),
+                            .child(match self.lang {
+                                UiLang::Zh => format!("Alan 费曼审讯台 · {}", rep.ticker),
+                                UiLang::En => format!("Alan Feynman Desk · {}", rep.ticker),
+                            }),
                     )
                     .child(status_pill),
             );
@@ -1179,7 +1344,7 @@ impl MungerWorkbench {
                         this.interrupt_alan();
                         cx.notify();
                     }))
-                    .child("中断生成"),
+                    .child(self.lang.t("中断生成", "Interrupt")),
             );
         } else {
             actions = actions.child(
@@ -1199,7 +1364,7 @@ impl MungerWorkbench {
                         this.start_feynman_interrogation(&start_ticker, &start_name, start_bucket);
                         cx.notify();
                     }))
-                    .child("启动费曼审讯"),
+                    .child(self.lang.t("启动费曼审讯", "Start Feynman Session")),
             );
         }
 
@@ -1222,7 +1387,7 @@ impl MungerWorkbench {
                         this.reset_alan_session();
                         cx.notify();
                     }))
-                    .child("清空"),
+                    .child(self.lang.t("清空", "Clear")),
             );
         }
 
@@ -1238,10 +1403,16 @@ impl MungerWorkbench {
             if self.agent_input_focused {
                 "_".to_string()
             } else {
-                format!(
-                    "点击输入对 {} 的费曼追问（按 Enter 发送，Esc 退出输入）…",
-                    rep.ticker
-                )
+                match self.lang {
+                    UiLang::Zh => format!(
+                        "点击输入对 {} 的费曼追问（按 Enter 发送，Esc 退出输入）…",
+                        rep.ticker
+                    ),
+                    UiLang::En => format!(
+                        "Click to ask {} a Feynman follow-up (Enter to send, Esc to blur)…",
+                        rep.ticker
+                    ),
+                }
             }
         } else if self.agent_input_focused {
             format!("{}_", self.agent_input_draft)
@@ -1317,7 +1488,7 @@ impl MungerWorkbench {
                         );
                         cx.notify();
                     }))
-                    .child("发送"),
+                    .child(self.lang.t("发送", "Send")),
             );
 
         // Flatten expanded evidence lookup across messages.
@@ -1337,7 +1508,10 @@ impl MungerWorkbench {
                     .text_xs()
                     .line_height(px(20.))
                     .text_color(rgb(INK_MUTED))
-                    .child("点击「启动费曼审讯」或在上方输入追问，直接驱动进程内 EmbeddedAlan V2；工具受红线策略钩子硬保护（严禁触碰 human_judgment 与 computed/*），右上角「复制审讯 Prompt」仍可作为外部会话兜底。"),
+                    .child(self.lang.t(
+                        "点击「启动费曼审讯」或在上方输入追问，直接驱动进程内 EmbeddedAlan V2；工具受红线策略钩子硬保护（严禁触碰 human_judgment 与 computed/*），右上角「复制审讯 Prompt」仍可作为外部会话兜底。",
+                        "Click \"Start Feynman Session\" or enter a follow-up above to drive in-process EmbeddedAlan V2 directly; tools are enforced by redline policy hooks (blocking human_judgment and computed/*), and \"Copy Prompt\" remains available as an external fallback.",
+                    )),
             );
         } else {
             for (msg_idx, msg) in self.agent_messages.iter().enumerate() {
@@ -1355,7 +1529,10 @@ impl MungerWorkbench {
                                 .text_xs()
                                 .line_height(px(19.))
                                 .text_color(rgb(INK_HERO))
-                                .child(format!("你  ·  {}", msg.text)),
+                                .child(match self.lang {
+                                    UiLang::Zh => format!("你  ·  {}", msg.text),
+                                    UiLang::En => format!("You  ·  {}", msg.text),
+                                }),
                         );
                     }
                     AgentMessageRole::SystemNote => {
@@ -1376,7 +1553,12 @@ impl MungerWorkbench {
                     }
                     AgentMessageRole::Assistant => {
                         let body = if msg.text.is_empty() && msg.streaming {
-                            "Alan 正在读取 /mnt/m3 与确定性报告…".to_string()
+                            self.lang
+                                .t(
+                                    "Alan 正在读取 /mnt/m3 与确定性报告…",
+                                    "Alan is reading /mnt/m3 and deterministic reports…",
+                                )
+                                .to_string()
                         } else {
                             msg.text.clone()
                         };
@@ -1464,7 +1646,12 @@ impl MungerWorkbench {
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(INK_HERO))
-                                    .child(format!("Acme 证据核验 · {}", tok.label)),
+                                    .child(match self.lang {
+                                        UiLang::Zh => format!("Acme 证据核验 · {}", tok.label),
+                                        UiLang::En => {
+                                            format!("Acme Evidence Verification · {}", tok.label)
+                                        }
+                                    }),
                             )
                             .child(
                                 div()
@@ -1495,7 +1682,10 @@ impl MungerWorkbench {
                                                     this.active_view = NavView::Dossier;
                                                     cx.notify();
                                                 }))
-                                                .child("跳至 3 XBRL 底表 →"),
+                                                .child(self.lang.t(
+                                                    "跳至 3 XBRL 底表 →",
+                                                    "Jump to 3 XBRL Schedule →",
+                                                )),
                                         )
                                     })
                                     .child(
@@ -1511,7 +1701,7 @@ impl MungerWorkbench {
                                                 this.agent_expanded_evidence = None;
                                                 cx.notify();
                                             }))
-                                            .child("收起"),
+                                            .child(self.lang.t("收起", "Collapse")),
                                     ),
                             ),
                     )
@@ -1668,10 +1858,23 @@ impl MungerWorkbench {
             } else {
                 (EMERALD_FG, EMERALD_BG, EMERALD_BORDER)
             };
-            (format!("本月 AI 预算 ${used:.2} / ${limit:.2}"), fg, bg, br)
+            (
+                match self.lang {
+                    UiLang::Zh => format!("本月 AI 预算 ${used:.2} / ${limit:.2}"),
+                    UiLang::En => format!("Monthly AI Budget ${used:.2} / ${limit:.2}"),
+                },
+                fg,
+                bg,
+                br,
+            )
         } else {
             (
-                "本月 AI 预算 $0.00 / $10.00".to_owned(),
+                self.lang
+                    .t(
+                        "本月 AI 预算 $0.00 / $10.00",
+                        "Monthly AI Budget $0.00 / $10.00",
+                    )
+                    .to_owned(),
                 EMERALD_FG,
                 EMERALD_BG,
                 EMERALD_BORDER,
@@ -1680,7 +1883,9 @@ impl MungerWorkbench {
 
         let status_badge = if self.deep_research_running {
             badge(
-                "4 视角并行分析中…".into(),
+                self.lang
+                    .t("4 视角并行分析中…", "4-perspective analysis running…")
+                    .into(),
                 VIOLET_FG,
                 VIOLET_BG,
                 VIOLET_BORDER,
@@ -1688,7 +1893,7 @@ impl MungerWorkbench {
             )
         } else if active_for_ticker && self.deep_research_budget_blocked.is_some() {
             badge(
-                "预算闸门已拦截".into(),
+                self.lang.t("预算闸门已拦截", "Budget Gate Blocked").into(),
                 CORAL_FG,
                 CORAL_BG,
                 CORAL_BORDER,
@@ -1701,7 +1906,7 @@ impl MungerWorkbench {
                 .is_some_and(|r| r.status == "completed")
         {
             badge(
-                "最近运行已完成".into(),
+                self.lang.t("最近运行已完成", "Latest Run Complete").into(),
                 EMERALD_FG,
                 EMERALD_BG,
                 EMERALD_BORDER,
@@ -1709,7 +1914,12 @@ impl MungerWorkbench {
             )
         } else {
             badge(
-                "受预算硬门控 · 只读湖仓工具".into(),
+                self.lang
+                    .t(
+                        "受预算硬门控 · 只读湖仓工具",
+                        "Budget Hard-Gated · Read-only Lakehouse Tools",
+                    )
+                    .into(),
                 SKY_FG,
                 SKY_BG,
                 SKY_BORDER,
@@ -1779,9 +1989,13 @@ impl MungerWorkbench {
                             this.start_deep_research(&dispatch_ticker, None, "manual", cx);
                         }))
                         .child(if self.deep_research_running {
-                            "4 视角并行运行中…"
+                            self.lang
+                                .t("4 视角并行运行中…", "4-Perspective Run Active…")
                         } else {
-                            "Deep Research · 4 视角并行"
+                            self.lang.t(
+                                "Deep Research · 4 视角并行",
+                                "Deep Research · 4 Perspectives",
+                            )
                         }),
                 ),
         );
@@ -1797,7 +2011,12 @@ impl MungerWorkbench {
                     .font_family(self.fonts.ui.clone())
                     .text_xs()
                     .text_color(rgb(CORAL_FG))
-                    .child(format!("预算硬闸门已拦截（0 LLM Token 消耗）：{reason}")),
+                    .child(match self.lang {
+                        UiLang::Zh => format!("预算硬闸门已拦截（0 LLM Token 消耗）：{reason}"),
+                        UiLang::En => {
+                            format!("Hard budget gate blocked (0 LLM tokens used): {reason}")
+                        }
+                    }),
             );
         } else if active_for_ticker && let Some(note) = &self.deep_research_status_note {
             card = card.child(
@@ -1825,6 +2044,7 @@ impl MungerWorkbench {
         let right_pair: Vec<&DeepResearchPerspectiveUi> =
             perspectives.iter().skip(2).take(2).collect();
 
+        let lang = self.lang;
         let render_p_card = |p: &DeepResearchPerspectiveUi| {
             let (st_fg, st_bg, st_br) = match p.status {
                 PerspectiveUiStatus::Pending => (INK_MUTED, BG_WELL, BORDER_SUBTLE),
@@ -1834,10 +2054,34 @@ impl MungerWorkbench {
             };
             let excerpt: String = if p.stream_text.trim().is_empty() {
                 match p.status {
-                    PerspectiveUiStatus::Pending => "点击「Deep Research · 4 视角并行」后，由独立只读子会话并行核验一手的财报/公告证据。".into(),
-                    PerspectiveUiStatus::Running => "正在检索 Lakehouse 工具与生成分析结论…".into(),
-                    PerspectiveUiStatus::Completed => format!("已完成（{} 字符，已合并至 Living Research Memo）", p.summary_chars),
-                    PerspectiveUiStatus::Failed => "未产生输出（已保留既有工作区状态）".into(),
+                    PerspectiveUiStatus::Pending => lang
+                        .t(
+                            "点击「Deep Research · 4 视角并行」后，由独立只读子会话并行核验一手的财报/公告证据。",
+                            "Click \"Deep Research · 4 Perspectives\" to launch parallel read-only sub-sessions verifying primary filings and disclosures.",
+                        )
+                        .into(),
+                    PerspectiveUiStatus::Running => lang
+                        .t(
+                            "正在检索 Lakehouse 工具与生成分析结论…",
+                            "Querying Lakehouse tools and synthesizing findings…",
+                        )
+                        .into(),
+                    PerspectiveUiStatus::Completed => match lang {
+                        UiLang::Zh => format!(
+                            "已完成（{} 字符，已合并至 Living Research Memo）",
+                            p.summary_chars
+                        ),
+                        UiLang::En => format!(
+                            "Completed ({} chars, merged into Living Research Memo)",
+                            p.summary_chars
+                        ),
+                    },
+                    PerspectiveUiStatus::Failed => lang
+                        .t(
+                            "未产生输出（已保留既有工作区状态）",
+                            "No output produced (existing workspace preserved)",
+                        )
+                        .into(),
                 }
             } else {
                 let chars: Vec<char> = p.stream_text.trim().chars().collect();
@@ -1883,10 +2127,10 @@ impl MungerWorkbench {
                                 .text_xs()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(rgb(INK_HERO))
-                                .child(p.title_cn.clone()),
+                                .child(perspective_title_for(&p.id, &p.title_cn, lang)),
                         )
                         .child(badge(
-                            p.status.label_cn().into(),
+                            p.status.label_for(lang).into(),
                             st_fg,
                             st_bg,
                             st_br,
@@ -1957,11 +2201,16 @@ impl MungerWorkbench {
             .flex_col()
             .gap_3()
             .child(section_header(
-                "跨公司对照 · 同业分位数 & 隐空间 Lookalike",
+                self.lang.t(
+                    "跨公司对照 · 同业分位数 & 隐空间 Lookalike",
+                    "Cross-Company Comparison · Peer Percentiles & Latent Lookalikes",
+                ),
                 if has_peers || has_similar {
                     "DUCKDB L0/L1 · 0 LLM TOKEN".into()
                 } else {
-                    "等待 L0/L1 湖仓数据".into()
+                    self.lang
+                        .t("等待 L0/L1 湖仓数据", "Awaiting L0/L1 Lakehouse Data")
+                        .into()
                 },
                 &self.fonts,
             ));
@@ -1972,7 +2221,10 @@ impl MungerWorkbench {
                     .font_family(self.fonts.ui.clone())
                     .text_xs()
                     .text_color(rgb(INK_MUTED))
-                    .child("同步全美股 L0/L1 湖仓后，此处展示 SIC 同业 ROIC/毛利/FCF 分位数与语义 Lookalike 近邻公司。"),
+                    .child(self.lang.t(
+                        "同步全美股 L0/L1 湖仓后，此处展示 SIC 同业 ROIC/毛利/FCF 分位数与语义 Lookalike 近邻公司。",
+                        "After syncing US L0/L1 lakehouse, SIC peer ROIC/gross margin/strict FCF percentiles and semantic lookalikes appear here.",
+                    )),
             );
         }
 
@@ -2008,7 +2260,14 @@ impl MungerWorkbench {
                             .flex_wrap()
                             .gap_2()
                             .child(badge(
-                                format!("{} · {} 家同行", peers.sic_group, peers.peer_count),
+                                match self.lang {
+                                    UiLang::Zh => {
+                                        format!("{} · {} 家同行", peers.sic_group, peers.peer_count)
+                                    }
+                                    UiLang::En => {
+                                        format!("{} · {} peers", peers.sic_group, peers.peer_count)
+                                    }
+                                },
                                 SKY_FG,
                                 SKY_BG,
                                 SKY_BORDER,
@@ -2019,9 +2278,14 @@ impl MungerWorkbench {
                                     .font_family(self.fonts.mono_num.clone())
                                     .text_xs()
                                     .text_color(rgb(INK_PRIMARY))
-                                    .child(format!(
-                                        "ROIC {roic_p} · 毛利率 {gm_p} · 严苛 FCF {fcf_p}"
-                                    )),
+                                    .child(match self.lang {
+                                        UiLang::Zh => format!(
+                                            "ROIC {roic_p} · 毛利率 {gm_p} · 严苛 FCF {fcf_p}"
+                                        ),
+                                        UiLang::En => format!(
+                                            "ROIC {roic_p} · Gross Margin {gm_p} · Strict FCF {fcf_p}"
+                                        ),
+                                    }),
                             ),
                     )
                     .child(div().flex().items_center().flex_wrap().gap_1p5().children(
@@ -2068,7 +2332,7 @@ impl MungerWorkbench {
                             .font_family(self.fonts.ui.clone())
                             .text_xs()
                             .text_color(rgb(INK_MUTED))
-                            .child("隐空间 Lookalike:"),
+                            .child(self.lang.t("隐空间 Lookalike:", "Latent Lookalike:")),
                     )
                     .children(
                         self.selected_similar_hits
@@ -2166,7 +2430,7 @@ impl MungerWorkbench {
                                     this.copy_cli_command(md.clone(), &lbl, cx);
                                     cx.notify();
                                 }))
-                                .child("复制 Markdown"),
+                                .child(self.lang.t("复制 Markdown", "Copy Markdown")),
                         )
                     })
                     .child(
@@ -2185,11 +2449,20 @@ impl MungerWorkbench {
                             .text_color(rgb(INK_PRIMARY))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.reload_research_desk_context(&refresh_ticker);
-                                this.banner =
-                                    Some((format!("已从磁盘刷新 {refresh_ticker} Memo"), false));
+                                this.banner = Some((
+                                    match this.lang {
+                                        UiLang::Zh => {
+                                            format!("已从磁盘刷新 {refresh_ticker} Memo")
+                                        }
+                                        UiLang::En => {
+                                            format!("Reloaded {refresh_ticker} Memo from disk")
+                                        }
+                                    },
+                                    false,
+                                ));
                                 cx.notify();
                             }))
-                            .child("刷新"),
+                            .child(self.lang.t("刷新", "Refresh")),
                     ),
             );
 
@@ -2203,9 +2476,14 @@ impl MungerWorkbench {
                     .text_xs()
                     .line_height(px(19.))
                     .text_color(rgb(INK_MUTED))
-                    .child(format!(
-                        "尚未生成 {memo_rel}。点击上方「Deep Research · 4 视角并行」或运行 `m3 research run {ticker}` 后将在此展示结构化活研报与一手引用。"
-                    )),
+                    .child(match self.lang {
+                        UiLang::Zh => format!(
+                            "尚未生成 {memo_rel}。点击上方「Deep Research · 4 视角并行」或运行 `m3 research run {ticker}` 后将在此展示结构化活研报与一手引用。"
+                        ),
+                        UiLang::En => format!(
+                            "{memo_rel} not generated yet. Click \"Deep Research · 4 Perspectives\" above or run `m3 research run {ticker}` to render the structured living memo and primary citations."
+                        ),
+                    }),
             );
         };
 
@@ -2333,7 +2611,10 @@ impl MungerWorkbench {
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(GOLD_FG))
-                            .child("## Human Notes（人类主权区 · Deep Research 永不覆盖）"),
+                            .child(self.lang.t(
+                                "## Human Notes（人类主权区 · Deep Research 永不覆盖）",
+                                "## Human Notes (Human-Owned · Never Overwritten by Deep Research)",
+                            )),
                     )
                     .child(
                         div()
@@ -2356,11 +2637,20 @@ impl MungerWorkbench {
             .flex_col()
             .gap_2p5()
             .child(section_header(
-                &format!("Deep Research 审计记录 · {ticker}"),
-                format!(
-                    "{} 条最近运行（m3.duckdb · research_runs）",
-                    self.selected_research_runs.len()
-                ),
+                &match self.lang {
+                    UiLang::Zh => format!("Deep Research 审计记录 · {ticker}"),
+                    UiLang::En => format!("Deep Research Audit Log · {ticker}"),
+                },
+                match self.lang {
+                    UiLang::Zh => format!(
+                        "{} 条最近运行（m3.duckdb · research_runs）",
+                        self.selected_research_runs.len()
+                    ),
+                    UiLang::En => format!(
+                        "{} recent runs (m3.duckdb · research_runs)",
+                        self.selected_research_runs.len()
+                    ),
+                },
                 &self.fonts,
             ));
 
@@ -2370,7 +2660,10 @@ impl MungerWorkbench {
                     .font_family(self.fonts.ui.clone())
                     .text_xs()
                     .text_color(rgb(INK_MUTED))
-                    .child("暂无该标的的 Deep Research 运行记录。"),
+                    .child(self.lang.t(
+                        "暂无该标的的 Deep Research 运行记录。",
+                        "No Deep Research runs recorded for this ticker yet.",
+                    )),
             );
         }
 
@@ -2443,7 +2736,7 @@ impl MungerWorkbench {
                             .text_color(rgb(INK_SECONDARY))
                             .child(format!("{}in/{}out", run.input_tokens, run.output_tokens))
                             .child(format!("${:.4}", run.cost_usd.round_dp(4).normalize()))
-                            .child(fmt_time_cn(Some(run.started_at_ms))),
+                            .child(fmt_time_cn_for(Some(run.started_at_ms), self.lang)),
                     ),
             );
         }
@@ -2460,6 +2753,7 @@ pub(super) struct AgentPanelSlice<'a> {
     pub(super) seq: &'a mut usize,
 }
 
+#[allow(dead_code)]
 pub(super) fn apply_interrogator_event(
     state: &mut AgentPanelSlice<'_>,
     ev: &InterrogatorEvent,
@@ -2467,12 +2761,23 @@ pub(super) fn apply_interrogator_event(
     reports: &[MungerReport],
     dossiers: &HashMap<String, Option<Dossier>>,
 ) -> bool {
+    apply_interrogator_event_for(state, ev, focus_ticker, reports, dossiers, UiLang::Zh)
+}
+
+pub(super) fn apply_interrogator_event_for(
+    state: &mut AgentPanelSlice<'_>,
+    ev: &InterrogatorEvent,
+    focus_ticker: &str,
+    reports: &[MungerReport],
+    dossiers: &HashMap<String, Option<Dossier>>,
+    lang: UiLang,
+) -> bool {
     match ev {
         InterrogatorEvent::Ready | InterrogatorEvent::UserSubmitted { .. } => {
             if state
                 .status_hint
                 .as_deref()
-                .is_some_and(|h| h.contains("正在连接"))
+                .is_some_and(|h| h.contains("正在连接") || h.contains("Connecting"))
             {
                 *state.status_hint = None;
             }
@@ -2483,7 +2788,10 @@ pub(super) fn apply_interrogator_event(
             name,
             title,
         } => {
-            *state.status_hint = Some(format!("正在执行 {name}…"));
+            *state.status_hint = Some(match lang {
+                UiLang::Zh => format!("正在执行 {name}…"),
+                UiLang::En => format!("Running {name}…"),
+            });
             let seq = state.tape.len() + 1;
             state.tape.push(TuringTapeEntry {
                 seq,
@@ -2516,7 +2824,8 @@ pub(super) fn apply_interrogator_event(
             status,
             preview,
         } => {
-            let blocked_by_redline = preview.contains("红线拦截");
+            let blocked_by_redline =
+                preview.contains("红线拦截") || preview.to_ascii_lowercase().contains("redline");
             if let Some(row) = state
                 .tape
                 .iter_mut()
@@ -2615,7 +2924,9 @@ pub(super) fn apply_interrogator_event(
                     seq,
                     call_id: None,
                     kind: TuringTapeKind::Error,
-                    summary: "审讯未能完成".to_string(),
+                    summary: lang
+                        .t("审讯未能完成", "Interrogation did not complete")
+                        .to_string(),
                     detail: Some(err.clone()),
                     status: "error".to_string(),
                 });
@@ -2643,7 +2954,12 @@ pub(super) fn apply_interrogator_event(
                     seq,
                     call_id: None,
                     kind: TuringTapeKind::Out,
-                    summary: format!("回答完成 · 引用 Acme 证据 {token_count} 项"),
+                    summary: match lang {
+                        UiLang::Zh => format!("回答完成 · 引用 Acme 证据 {token_count} 项"),
+                        UiLang::En => {
+                            format!("Answer complete · {token_count} Acme evidence citations")
+                        }
+                    },
                     detail: None,
                     status: "done".to_string(),
                 });
@@ -2672,7 +2988,9 @@ pub(super) fn apply_interrogator_event(
                 seq,
                 call_id: None,
                 kind: TuringTapeKind::Error,
-                summary: "EmbeddedAlan 状态提示".to_string(),
+                summary: lang
+                    .t("EmbeddedAlan 状态提示", "EmbeddedAlan status notice")
+                    .to_string(),
                 detail: Some(message.clone()),
                 status: "error".to_string(),
             });

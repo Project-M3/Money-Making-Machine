@@ -1,5 +1,6 @@
 use super::{FontRoles, MungerWorkbench, NavView, components::*, format::*, theme::*};
 use crate::{
+    i18n::UiLang,
     lake::{
         LakeAnnualRow, LakeDb, UniverseDrawerDetails, UniverseFilter, UniverseRow, UniverseSortBy,
         UniverseSummary,
@@ -24,10 +25,10 @@ pub enum UniverseSearchMode {
 }
 
 impl UniverseSearchMode {
-    pub fn label(self) -> &'static str {
+    pub fn label_for(self, lang: UiLang) -> &'static str {
         match self {
-            Self::Keyword => "关键词",
-            Self::Similar => "相似 Lookalike",
+            Self::Keyword => lang.t("关键词", "Keyword"),
+            Self::Similar => lang.t("相似 Lookalike", "Lookalike"),
         }
     }
 }
@@ -42,12 +43,21 @@ pub enum UniversePreset {
 }
 
 impl UniversePreset {
-    pub fn label(self) -> &'static str {
+    pub fn label_for(self, lang: UiLang) -> &'static str {
         match self {
-            Self::AllQuality => "全部质量池",
-            Self::HighRoicCompounders => "高 ROIC 复利 (>=20%)",
-            Self::LowSbcCashCows => "低 SBC 现金牛",
-            Self::StrikeZone => "击球区",
+            Self::AllQuality => lang.t("全部质量池", "All Quality"),
+            Self::HighRoicCompounders => lang.t("高 ROIC 复利 (>=20%)", "High ROIC (>=20%)"),
+            Self::LowSbcCashCows => lang.t("低 SBC 现金牛", "Low-SBC Cash Cows"),
+            Self::StrikeZone => lang.t("击球区", "Strike Zone"),
+        }
+    }
+
+    pub const fn id_slug(self) -> &'static str {
+        match self {
+            Self::AllQuality => "all-quality",
+            Self::HighRoicCompounders => "high-roic",
+            Self::LowSbcCashCows => "low-sbc",
+            Self::StrikeZone => "strike-zone",
         }
     }
 
@@ -452,7 +462,7 @@ fn universe_distance_color(row: &UniverseRow, strike_zone_ciks: &HashSet<String>
     }
 }
 
-fn format_sic_line(row: &UniverseRow) -> String {
+fn format_sic_line(row: &UniverseRow, lang: UiLang) -> String {
     match (
         row.sic,
         row.sic_description
@@ -462,8 +472,16 @@ fn format_sic_line(row: &UniverseRow) -> String {
     ) {
         (Some(sic), Some(desc)) => format!("{} · SIC {sic} ({desc})", row.exchange),
         (Some(sic), None) => format!("{} · SIC {sic}", row.exchange),
-        (None, Some(desc)) => format!("{} · {desc} (未分类SIC)", row.exchange),
-        (None, None) => format!("{} · 未分类SIC", row.exchange),
+        (None, Some(desc)) => format!(
+            "{} · {desc} ({})",
+            row.exchange,
+            lang.t("未分类SIC", "Unclassified SIC")
+        ),
+        (None, None) => format!(
+            "{} · {}",
+            row.exchange,
+            lang.t("未分类SIC", "Unclassified SIC")
+        ),
     }
 }
 
@@ -483,6 +501,7 @@ pub fn resolve_active_universe_row<'a>(
         .or_else(|| rows.first())
 }
 
+#[allow(dead_code)]
 pub(super) fn format_watch_promote_banner(
     ticker: &str,
     name: &str,
@@ -491,38 +510,93 @@ pub(super) fn format_watch_promote_banner(
     universe_reload_err: Option<&str>,
     universe_syncing: bool,
 ) -> (String, bool) {
+    format_watch_promote_banner_for(
+        ticker,
+        name,
+        disk_reload_err,
+        lake_refresh_err,
+        universe_reload_err,
+        universe_syncing,
+        UiLang::Zh,
+    )
+}
+
+pub(super) fn format_watch_promote_banner_for(
+    ticker: &str,
+    name: &str,
+    disk_reload_err: Option<&str>,
+    lake_refresh_err: Option<&str>,
+    universe_reload_err: Option<&str>,
+    universe_syncing: bool,
+    lang: UiLang,
+) -> (String, bool) {
     if let Some(err) = disk_reload_err {
         return (
-            format!("已写入 workbench/watchlist.json ({ticker})，但刷新自选池失败：{err}"),
+            match lang {
+                UiLang::Zh => {
+                    format!("已写入 workbench/watchlist.json ({ticker})，但刷新自选池失败：{err}")
+                }
+                UiLang::En => {
+                    format!(
+                        "Wrote workbench/watchlist.json ({ticker}), but failed to reload Circles: {err}"
+                    )
+                }
+            },
             true,
         );
     }
     if let Some(err) = lake_refresh_err {
         return (
-            format!(
-                "已写入 workbench/watchlist.json ({ticker})，但同步 DuckDB 观察标记失败：{err}"
-            ),
+            match lang {
+                UiLang::Zh => format!(
+                    "已写入 workbench/watchlist.json ({ticker})，但同步 DuckDB 观察标记失败：{err}"
+                ),
+                UiLang::En => format!(
+                    "Wrote workbench/watchlist.json ({ticker}), but failed to sync DuckDB watch flag: {err}"
+                ),
+            },
             true,
         );
     }
     if let Some(err) = universe_reload_err {
         return (
-            format!("已写入 workbench/watchlist.json ({ticker})，但重载全市场视图失败：{err}"),
+            match lang {
+                UiLang::Zh => {
+                    format!(
+                        "已写入 workbench/watchlist.json ({ticker})，但重载全市场视图失败：{err}"
+                    )
+                }
+                UiLang::En => {
+                    format!(
+                        "Wrote workbench/watchlist.json ({ticker}), but failed to reload Universe view: {err}"
+                    )
+                }
+            },
             true,
         );
     }
     if universe_syncing {
         return (
-            format!(
-                "已将 {ticker} ({name}) 写入观察池 [WATCH]；后台全市场同步完成后将刷新湖仓标记"
-            ),
+            match lang {
+                UiLang::Zh => format!(
+                    "已将 {ticker} ({name}) 写入观察池 [WATCH]；后台全市场同步完成后将刷新湖仓标记"
+                ),
+                UiLang::En => format!(
+                    "Added {ticker} ({name}) to Watch [WATCH]; lakehouse flags will refresh once background sync finishes"
+                ),
+            },
             false,
         );
     }
     (
-        format!(
-            "已将 {ticker} ({name}) 加入观察池 [WATCH]（已写入 workbench/watchlist.json），可在「总览」或 Dossier / Alan 中查看"
-        ),
+        match lang {
+            UiLang::Zh => format!(
+                "已将 {ticker} ({name}) 加入观察池 [WATCH]（已写入 workbench/watchlist.json），可在「总览」或 Dossier / Alan 中查看"
+            ),
+            UiLang::En => format!(
+                "Added {ticker} ({name}) to Watch [WATCH] (saved to workbench/watchlist.json). Open it in Overview, Dossier, or Alan."
+            ),
+        },
         false,
     )
 }
@@ -587,7 +661,12 @@ impl MungerWorkbench {
                         Ok(summary) => self.universe_summary = Some(summary),
                         Err(err) => {
                             self.clear_universe_drawer_details();
-                            self.universe_error = Some(format!("读取全市场湖仓摘要失败: {err:#}"));
+                            self.universe_error = Some(match self.lang {
+                                UiLang::Zh => format!("读取全市场湖仓摘要失败: {err:#}"),
+                                UiLang::En => {
+                                    format!("Failed to read Universe lakehouse summary: {err:#}")
+                                }
+                            });
                             return;
                         }
                     }
@@ -612,7 +691,10 @@ impl MungerWorkbench {
                             self.universe_similar_query_ms = None;
                             self.universe_rows.clear();
                             self.clear_universe_drawer_details();
-                            self.universe_error = Some(format!("混合语义相似搜索失败: {err:#}"));
+                            self.universe_error = Some(match self.lang {
+                                UiLang::Zh => format!("混合语义相似搜索失败: {err:#}"),
+                                UiLang::En => format!("Hybrid similarity search failed: {err:#}"),
+                            });
                         }
                     }
                     return;
@@ -638,14 +720,20 @@ impl MungerWorkbench {
                     }
                     Err(err) => {
                         self.clear_universe_drawer_details();
-                        self.universe_error = Some(format!("读取全市场湖仓失败: {err:#}"));
+                        self.universe_error = Some(match self.lang {
+                            UiLang::Zh => format!("读取全市场湖仓失败: {err:#}"),
+                            UiLang::En => format!("Failed to load Universe lakehouse: {err:#}"),
+                        });
                     }
                 }
             }
             Err(err) => {
                 self.universe_lake_present = self.paths.lake_db_path().exists();
                 self.clear_universe_drawer_details();
-                self.universe_error = Some(format!("打开 m3.duckdb 失败: {err:#}"));
+                self.universe_error = Some(match self.lang {
+                    UiLang::Zh => format!("打开 m3.duckdb 失败: {err:#}"),
+                    UiLang::En => format!("Failed to open m3.duckdb: {err:#}"),
+                });
             }
         }
     }
@@ -676,7 +764,12 @@ impl MungerWorkbench {
                     Ok(None) => self.clear_universe_drawer_details(),
                     Err(err) => {
                         self.clear_universe_drawer_details();
-                        self.universe_error = Some(format!("读取全市场湖仓详情失败: {err:#}"));
+                        self.universe_error = Some(match self.lang {
+                            UiLang::Zh => format!("读取全市场湖仓详情失败: {err:#}"),
+                            UiLang::En => {
+                                format!("Failed to read Universe drawer details: {err:#}")
+                            }
+                        });
                     }
                 }
             }
@@ -714,13 +807,19 @@ impl MungerWorkbench {
                 Ok(None) => self.clear_universe_drawer_details(),
                 Err(err) => {
                     self.clear_universe_drawer_details();
-                    self.universe_error = Some(format!("读取全市场湖仓详情失败: {err:#}"));
+                    self.universe_error = Some(match self.lang {
+                        UiLang::Zh => format!("读取全市场湖仓详情失败: {err:#}"),
+                        UiLang::En => format!("Failed to read Universe drawer details: {err:#}"),
+                    });
                 }
             },
             Ok(None) => {}
             Err(err) => {
                 self.clear_universe_drawer_details();
-                self.universe_error = Some(format!("打开 m3.duckdb 失败: {err:#}"));
+                self.universe_error = Some(match self.lang {
+                    UiLang::Zh => format!("打开 m3.duckdb 失败: {err:#}"),
+                    UiLang::En => format!("Failed to open m3.duckdb: {err:#}"),
+                });
             }
         }
     }
@@ -748,7 +847,12 @@ impl MungerWorkbench {
         if self.universe_syncing || self.syncing {
             if self.syncing {
                 self.banner = Some((
-                    "自选池正在后台同步中，请等待完成后再同步全美股 L0".into(),
+                    self.lang
+                        .t(
+                            "自选池正在后台同步中，请等待完成后再同步全美股 L0",
+                            "Circles sync is running; start US Universe L0 sync after it completes.",
+                        )
+                        .into(),
                     false,
                 ));
                 cx.notify();
@@ -756,10 +860,21 @@ impl MungerWorkbench {
             return;
         }
         self.universe_syncing = true;
-        self.universe_sync_progress =
-            Some("正在启动全美股 L0 同步（SEC EDGAR Bulk + 质量分层）…".into());
+        self.universe_sync_progress = Some(
+            self.lang
+                .t(
+                    "正在启动全美股 L0 同步（SEC EDGAR Bulk + 质量分层）…",
+                    "Starting US Universe L0 sync (SEC EDGAR Bulk + quality tiering)…",
+                )
+                .into(),
+        );
         self.banner = Some((
-            "正在后台同步全美股 L0 确定性湖仓（SEC companyfacts.zip + Top 400 报价）…".into(),
+            self.lang
+                .t(
+                    "正在后台同步全美股 L0 确定性湖仓（SEC companyfacts.zip + Top 400 报价）…",
+                    "Syncing US Universe L0 deterministic lakehouse (SEC companyfacts.zip + Top 400 quotes)…",
+                )
+                .into(),
             false,
         ));
 
@@ -803,7 +918,7 @@ impl MungerWorkbench {
                 self.universe_progress_rx = None;
                 self.universe_sync_progress = None;
                 self.reload_universe_from_lake();
-                self.banner = Some(Self::format_universe_sync_banner(&report));
+                self.banner = Some(Self::format_universe_sync_banner(&report, self.lang));
                 true
             }
             Ok(Err(err)) => {
@@ -811,7 +926,13 @@ impl MungerWorkbench {
                 self.universe_sync_rx = None;
                 self.universe_progress_rx = None;
                 self.universe_sync_progress = None;
-                self.banner = Some((format!("全美股 L0 同步失败：{err}"), true));
+                self.banner = Some((
+                    match self.lang {
+                        UiLang::Zh => format!("全美股 L0 同步失败：{err}"),
+                        UiLang::En => format!("US Universe L0 sync failed: {err}"),
+                    },
+                    true,
+                ));
                 true
             }
             Err(mpsc::TryRecvError::Empty) => dirty,
@@ -825,16 +946,31 @@ impl MungerWorkbench {
         }
     }
 
-    fn format_universe_sync_banner(report: &UniverseSyncReport) -> (String, bool) {
-        let base = format!(
-            "全美股 L0 同步完成 · 解析 {} 家 / 质量池 {} 家 / 报价 {}/{} 家",
-            report.parsed_companies,
-            report.quality_pool_count,
-            report.prices_succeeded,
-            report.prices_attempted
-        );
+    fn format_universe_sync_banner(report: &UniverseSyncReport, lang: UiLang) -> (String, bool) {
+        let base = match lang {
+            UiLang::Zh => format!(
+                "全美股 L0 同步完成 · 解析 {} 家 / 质量池 {} 家 / 报价 {}/{} 家",
+                report.parsed_companies,
+                report.quality_pool_count,
+                report.prices_succeeded,
+                report.prices_attempted
+            ),
+            UiLang::En => format!(
+                "US Universe L0 sync complete · parsed {} / quality {} / quotes {}/{}",
+                report.parsed_companies,
+                report.quality_pool_count,
+                report.prices_succeeded,
+                report.prices_attempted
+            ),
+        };
         match report.sic_warning.as_deref() {
-            Some(warn) => (format!("{base}（SIC 提示: {warn}）"), true),
+            Some(warn) => (
+                match lang {
+                    UiLang::Zh => format!("{base}（SIC 提示: {warn}）"),
+                    UiLang::En => format!("{base} (SIC note: {warn})"),
+                },
+                true,
+            ),
             None => (base, false),
         }
     }
@@ -884,7 +1020,7 @@ impl MungerWorkbench {
                 if !self.universe_syncing {
                     self.reload_universe_from_lake();
                 }
-                self.banner = Some(format_watch_promote_banner(
+                self.banner = Some(format_watch_promote_banner_for(
                     &row.ticker,
                     &row.name,
                     disk_reload_err.as_deref(),
@@ -893,10 +1029,17 @@ impl MungerWorkbench {
                         .then_some(self.universe_error.as_deref())
                         .flatten(),
                     self.universe_syncing,
+                    self.lang,
                 ));
             }
             Err(err) => {
-                self.banner = Some((format!("加入观察池失败 ({})：{err:#}", row.ticker), true));
+                self.banner = Some((
+                    match self.lang {
+                        UiLang::Zh => format!("加入观察池失败 ({})：{err:#}", row.ticker),
+                        UiLang::En => format!("Failed to add {} to Watch: {err:#}", row.ticker),
+                    },
+                    true,
+                ));
             }
         }
         cx.notify();
@@ -927,7 +1070,15 @@ impl MungerWorkbench {
             self.start_deep_research(&canonical, None, "manual", cx);
         } else {
             self.banner = Some((
-                format!("无法派发 {} 深研：请先完成观察池入池", row.ticker),
+                match self.lang {
+                    UiLang::Zh => format!("无法派发 {} 深研：请先完成观察池入池", row.ticker),
+                    UiLang::En => {
+                        format!(
+                            "Cannot dispatch {} research: promote to Watch first",
+                            row.ticker
+                        )
+                    }
+                },
                 true,
             ));
             cx.notify();
@@ -1031,8 +1182,9 @@ impl MungerWorkbench {
     }
 
     fn render_universe_summary_strip(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let sum = self.universe_summary.clone().unwrap_or_default();
-        let last_sync = fmt_time_cn(sum.last_sec_sync_ms.or(sum.last_price_sync_ms));
+        let last_sync = fmt_time_cn_for(sum.last_sec_sync_ms.or(sum.last_price_sync_ms), l);
 
         div()
             .h(px(40.))
@@ -1052,31 +1204,37 @@ impl MungerWorkbench {
                     .gap_3()
                     .min_w_0()
                     .child(journal_stat(
-                        "覆盖美股",
-                        format!(
-                            "{} (解析 {})",
-                            sum.total_companies, sum.parsed_financial_companies
-                        ),
+                        l.t("覆盖美股", "US Universe"),
+                        match l {
+                            UiLang::Zh => format!(
+                                "{} (解析 {})",
+                                sum.total_companies, sum.parsed_financial_companies
+                            ),
+                            UiLang::En => format!(
+                                "{} ({} parsed)",
+                                sum.total_companies, sum.parsed_financial_companies
+                            ),
+                        },
                         INK_HERO,
                         &self.fonts,
                     ))
                     .child(v_divider())
                     .child(journal_stat(
-                        "质量候选池",
+                        l.t("质量候选池", "Quality Pool"),
                         format!("{}", sum.quality_pool_count),
                         SKY_FG,
                         &self.fonts,
                     ))
                     .child(v_divider())
                     .child(journal_stat(
-                        "已估值",
+                        l.t("已估值", "Priced"),
                         format!("{}", sum.priced_count),
                         INK_PRIMARY,
                         &self.fonts,
                     ))
                     .child(v_divider())
                     .child(journal_stat(
-                        "击球区",
+                        l.t("击球区", "Strike Zone"),
                         format!("{}", sum.strike_zone_count),
                         if sum.strike_zone_count > 0 {
                             EMERALD_FG
@@ -1087,7 +1245,7 @@ impl MungerWorkbench {
                     ))
                     .child(v_divider())
                     .child(journal_stat(
-                        "上次同步",
+                        l.t("上次同步", "Last Sync"),
                         last_sync,
                         INK_SECONDARY,
                         &self.fonts,
@@ -1133,7 +1291,7 @@ impl MungerWorkbench {
                                 this.reload_universe_from_lake();
                                 cx.notify();
                             }))
-                            .child("刷新"),
+                            .child(l.t("刷新", "Refresh")),
                     )
                     .child(
                         div()
@@ -1162,23 +1320,30 @@ impl MungerWorkbench {
                                 this.start_universe_sync(false, cx);
                             }))
                             .child(if self.universe_syncing {
-                                "L0 同步中…"
+                                l.t("L0 同步中…", "Syncing L0…")
                             } else {
-                                "同步全美股 L0"
+                                l.t("同步全美股 L0", "Sync US L0")
                             }),
                     ),
             )
     }
 
     fn render_universe_filter_strip(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let search_border = if self.universe_state.search_focused {
             rgba(SKY_BORDER)
         } else {
             rgb(BORDER_PILL)
         };
         let search_placeholder = match self.universe_state.search_mode {
-            UniverseSearchMode::Keyword => "/ 搜索 Ticker / 公司名 / SIC…",
-            UniverseSearchMode::Similar => "/ 输入业务描述或 Ticker 找相似…",
+            UniverseSearchMode::Keyword => l.t(
+                "/ 搜索 Ticker / 公司名 / SIC…",
+                "/ Search ticker / company / SIC…",
+            ),
+            UniverseSearchMode::Similar => l.t(
+                "/ 输入业务描述或 Ticker 找相似…",
+                "/ Describe business or ticker for lookalikes…",
+            ),
         };
         let search_text = if self.universe_state.query.is_empty() {
             if self.universe_state.search_focused {
@@ -1214,7 +1379,7 @@ impl MungerWorkbench {
                         div()
                             .id(gpui::SharedString::from(format!(
                                 "univ-preset-{}",
-                                preset.label()
+                                preset.id_slug()
                             )))
                             .px_2p5()
                             .py_1()
@@ -1242,12 +1407,12 @@ impl MungerWorkbench {
                                 this.reload_universe_from_lake();
                                 cx.notify();
                             }))
-                            .child(preset.label())
+                            .child(preset.label_for(l))
                     }))
                     .child(v_divider())
                     .child(Self::render_toggle_chip(
                         "univ-toggle-fin",
-                        "剔除金融业",
+                        l.t("剔除金融业", "Excl. Financials"),
                         self.universe_state.exclude_financials,
                         true,
                         &self.fonts,
@@ -1259,7 +1424,7 @@ impl MungerWorkbench {
                     ))
                     .child(Self::render_toggle_chip(
                         "univ-toggle-5y",
-                        "5Y+ 完整财报",
+                        l.t("5Y+ 完整财报", "5Y+ Filings"),
                         self.universe_state.require_5y_history,
                         true,
                         &self.fonts,
@@ -1271,7 +1436,7 @@ impl MungerWorkbench {
                     ))
                     .child(Self::render_toggle_chip(
                         "univ-toggle-priced",
-                        "仅看报价池",
+                        l.t("仅看报价池", "Priced Only"),
                         self.universe_state.in_price_pool_only,
                         false,
                         &self.fonts,
@@ -1291,7 +1456,7 @@ impl MungerWorkbench {
                         seg_group()
                             .child(seg_tab(
                                 "univ-mode-keyword",
-                                UniverseSearchMode::Keyword.label(),
+                                UniverseSearchMode::Keyword.label_for(l),
                                 self.universe_state.search_mode == UniverseSearchMode::Keyword,
                                 Some((SKY_FG, SKY_BG)),
                                 false,
@@ -1305,7 +1470,7 @@ impl MungerWorkbench {
                             ))
                             .child(seg_tab(
                                 "univ-mode-similar",
-                                UniverseSearchMode::Similar.label(),
+                                UniverseSearchMode::Similar.label_for(l),
                                 self.universe_state.search_mode == UniverseSearchMode::Similar,
                                 Some((VIOLET_FG, VIOLET_BG)),
                                 false,
@@ -1393,7 +1558,7 @@ impl MungerWorkbench {
                                     this.reload_universe_from_lake();
                                     cx.notify();
                                 }))
-                                .child("× 重置"),
+                                .child(l.t("× 重置", "× Reset")),
                         )
                     }),
             )
@@ -1452,6 +1617,7 @@ impl MungerWorkbench {
     }
 
     fn render_universe_empty_state(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let sync_cli = "./apps/m3-desktop/m3 universe sync --full --prices-top 400";
 
         card_shell().p_6().flex().flex_col().gap_4().child(
@@ -1474,7 +1640,10 @@ impl MungerWorkbench {
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(rgb(INK_HERO))
-                                .child("全美股 L0 确定性湖仓尚未同步"),
+                                .child(l.t(
+                                    "全美股 L0 确定性湖仓尚未同步",
+                                    "US Universe L0 Lakehouse Not Synced Yet",
+                                )),
                         ),
                 )
                 .child(badge(
@@ -1491,7 +1660,10 @@ impl MungerWorkbench {
                 .text_size(px(13.))
                 .line_height(px(22.))
                 .text_color(rgb(INK_SECONDARY))
-                .child("点击「同步全美股 L0」或在终端运行 CLI，即可从 SEC EDGAR 官方全量归档（company_tickers_exchange.json + companyfacts.zip）拉取美股财报，使用与 m3 report 完全一致的 rust_decimal 引擎并行计算 5,000+ 公司护城河指标，并按价格方案 1 仅对 Top 400 质量候选池拉取免费日级股价。"),
+                .child(l.t(
+                    "点击「同步全美股 L0」或在终端运行 CLI，即可从 SEC EDGAR 官方全量归档（company_tickers_exchange.json + companyfacts.zip）拉取美股财报，使用与 m3 report 完全一致的 rust_decimal 引擎并行计算 5,000+ 公司护城河指标，并按价格方案 1 仅对 Top 400 质量候选池拉取免费日级股价。",
+                    "Click \"Sync US L0\" or run the CLI to ingest SEC EDGAR bulk archives (company_tickers_exchange.json + companyfacts.zip), compute moat metrics across 5,000+ US companies with the deterministic rust_decimal engine, and fetch daily prices for the Top 400 quality pool.",
+                )),
         )
         .when_some(self.universe_sync_progress.clone(), |d, msg| {
             d.child(
@@ -1505,7 +1677,10 @@ impl MungerWorkbench {
                     .font_family(self.fonts.mono_term.clone())
                     .text_xs()
                     .text_color(rgb(SKY_FG))
-                    .child(format!("同步进度：{msg}")),
+                    .child(match l {
+                        UiLang::Zh => format!("同步进度：{msg}"),
+                        UiLang::En => format!("Sync progress: {msg}"),
+                    }),
             )
         })
         .child(
@@ -1540,9 +1715,9 @@ impl MungerWorkbench {
                             this.start_universe_sync(true, cx);
                         }))
                         .child(if self.universe_syncing {
-                            "正在后台同步 SEC 湖仓…"
+                            l.t("正在后台同步 SEC 湖仓…", "Syncing SEC Lakehouse…")
                         } else {
-                            "立即同步全美股 L0"
+                            l.t("立即同步全美股 L0", "Sync US Universe L0 Now")
                         }),
                 )
                 .child(
@@ -1570,16 +1745,23 @@ impl MungerWorkbench {
                                 .text_color(rgb(INK_PRIMARY))
                                 .child(sync_cli),
                         )
-                        .child(kbd("复制", &self.fonts)),
+                        .child(kbd(l.t("复制", "Copy"), &self.fonts)),
                 ),
         )
     }
 
     fn render_universe_no_matches(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let hint = if self.universe_state.require_5y_history {
-            "当前芒格滤镜（含 5Y+ 完整财报）或搜索词下无匹配公司。可关闭「5Y+ 完整财报」或重置。"
+            l.t(
+                "当前芒格滤镜（含 5Y+ 完整财报）或搜索词下无匹配公司。可关闭「5Y+ 完整财报」或重置。",
+                "No companies match the active filters (including 5Y+ Filings) or search query. Try toggling off 5Y+ Filings or resetting.",
+            )
         } else {
-            "当前芒格滤镜或搜索词下无匹配公司。可放宽筛选条件或重置。"
+            l.t(
+                "当前芒格滤镜或搜索词下无匹配公司。可放宽筛选条件或重置。",
+                "No companies match the active filters or search query. Relax filters or reset.",
+            )
         };
         card_shell()
             .p_5()
@@ -1613,11 +1795,12 @@ impl MungerWorkbench {
                         this.reload_universe_from_lake();
                         cx.notify();
                     }))
-                    .child("重置全部滤镜"),
+                    .child(l.t("重置全部滤镜", "Reset All Filters")),
             )
     }
 
     fn render_universe_scatter_card(&self, selected_row: Option<&UniverseRow>) -> gpui::Div {
+        let l = self.lang;
         let model = build_scatter_model(
             &self.universe_rows,
             &self.universe_strike_zone_ciks,
@@ -1641,11 +1824,17 @@ impl MungerWorkbench {
                                 .text_xs()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(rgb(INK_HERO))
-                                .child("ROIC × 严苛 FCF 收益率散点矩阵"),
+                                .child(l.t(
+                                    "ROIC × 严苛 FCF 收益率散点矩阵",
+                                    "ROIC × Strict FCF Yield Scatter Matrix",
+                                )),
                         )
                         .when_some(model.as_ref(), |d, m| {
                             let clip_note = if m.clipped_count > 0 {
-                                format!(" · {} 家极端值贴边", m.clipped_count)
+                                match l {
+                                    UiLang::Zh => format!(" · {} 家极端值贴边", m.clipped_count),
+                                    UiLang::En => format!(" · {} clipped", m.clipped_count),
+                                }
                             } else {
                                 String::new()
                             };
@@ -1654,7 +1843,14 @@ impl MungerWorkbench {
                                     .font_family(self.fonts.mono_num.clone())
                                     .text_size(px(11.))
                                     .text_color(rgb(INK_MUTED))
-                                    .child(format!("含报价 {} 家{clip_note}", m.points.len())),
+                                    .child(match l {
+                                        UiLang::Zh => {
+                                            format!("含报价 {} 家{clip_note}", m.points.len())
+                                        }
+                                        UiLang::En => {
+                                            format!("{} priced{clip_note}", m.points.len())
+                                        }
+                                    }),
                             )
                         }),
                 )
@@ -1677,15 +1873,33 @@ impl MungerWorkbench {
                                     .font_family(self.fonts.mono_num.clone())
                                     .text_size(px(10.))
                                     .text_color(rgb(INK_HERO))
-                                    .child(format!(
-                                        "选中 {} · ROIC {roic_s} · FCF% {fcf_s}",
-                                        r.ticker
-                                    )),
+                                    .child(match l {
+                                        UiLang::Zh => format!(
+                                            "选中 {} · ROIC {roic_s} · FCF% {fcf_s}",
+                                            r.ticker
+                                        ),
+                                        UiLang::En => format!(
+                                            "Selected {} · ROIC {roic_s} · FCF% {fcf_s}",
+                                            r.ticker
+                                        ),
+                                    }),
                             )
                         })
-                        .child(Self::scatter_legend_dot(EMERALD_FG, "击球区", &self.fonts))
-                        .child(Self::scatter_legend_dot(SKY_FG, "观察池", &self.fonts))
-                        .child(Self::scatter_legend_dot(GOLD_FG, "候选池", &self.fonts)),
+                        .child(Self::scatter_legend_dot(
+                            EMERALD_FG,
+                            l.t("击球区", "Strike Zone"),
+                            &self.fonts,
+                        ))
+                        .child(Self::scatter_legend_dot(
+                            SKY_FG,
+                            l.t("观察池", "Watch"),
+                            &self.fonts,
+                        ))
+                        .child(Self::scatter_legend_dot(
+                            GOLD_FG,
+                            l.t("候选池", "Pool"),
+                            &self.fonts,
+                        )),
                 ),
         );
 
@@ -1703,7 +1917,10 @@ impl MungerWorkbench {
                     .font_family(self.fonts.ui.clone())
                     .text_xs()
                     .text_color(rgb(INK_MUTED))
-                    .child("当前筛选结果暂无同时具备 5Y ROIC 与日级报价的标的（可切换筛选或同步 Top 400 报价池）。"),
+                    .child(l.t(
+                        "当前筛选结果暂无同时具备 5Y ROIC 与日级报价的标的（可切换筛选或同步 Top 400 报价池）。",
+                        "No filtered companies have both 5Y ROIC and daily quotes yet (adjust filters or sync Top 400 quotes).",
+                    )),
             );
         };
 
@@ -1925,16 +2142,47 @@ impl MungerWorkbench {
         selected_cik: Option<&str>,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        let l = self.lang;
         let headers: &[(&str, f32, bool, UniverseSortBy)] = &[
-            ("标的 / 交易所·SIC", 0., false, UniverseSortBy::Ticker),
+            (
+                l.t("标的 / 交易所·SIC", "Ticker / Exchange · SIC"),
+                0.,
+                false,
+                UniverseSortBy::Ticker,
+            ),
             ("5Y ROIC", 58., true, UniverseSortBy::Roic5yAvg),
-            ("严苛 FCF%", 64., true, UniverseSortBy::StrictFcfYield),
-            ("3Y 股本Δ", 62., true, UniverseSortBy::ShareChange3y),
+            (
+                l.t("严苛 FCF%", "Strict FCF%"),
+                64.,
+                true,
+                UniverseSortBy::StrictFcfYield,
+            ),
+            (
+                l.t("3Y 股本Δ", "3Y Shrs Δ"),
+                62.,
+                true,
+                UniverseSortBy::ShareChange3y,
+            ),
             ("SBC/OCF", 58., true, UniverseSortBy::SbcToOcf),
-            ("现价", 62., true, UniverseSortBy::LatestPrice),
-            ("击球价", 62., true, UniverseSortBy::StrikePrice),
-            ("距击球", 62., true, UniverseSortBy::DistanceToStrike),
-            ("预警", 42., true, UniverseSortBy::WarningsCount),
+            (l.t("现价", "Price"), 62., true, UniverseSortBy::LatestPrice),
+            (
+                l.t("击球价", "Strike"),
+                62.,
+                true,
+                UniverseSortBy::StrikePrice,
+            ),
+            (
+                l.t("距击球", "Dist."),
+                62.,
+                true,
+                UniverseSortBy::DistanceToStrike,
+            ),
+            (
+                l.t("预警", "Warn"),
+                42.,
+                true,
+                UniverseSortBy::WarningsCount,
+            ),
         ];
 
         let quality_sorted = self.universe_state.sort_by == UniverseSortBy::QualityScore;
@@ -1970,17 +2218,26 @@ impl MungerWorkbench {
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(INK_HERO))
-                                    .child(format!(
-                                        "全市场筛选榜单 ({} 家)",
-                                        self.universe_rows.len()
-                                    )),
+                                    .child(match l {
+                                        UiLang::Zh => format!(
+                                            "全市场筛选榜单 ({} 家)",
+                                            self.universe_rows.len()
+                                        ),
+                                        UiLang::En => format!(
+                                            "Screened Universe ({} companies)",
+                                            self.universe_rows.len()
+                                        ),
+                                    }),
                             )
                             .child(
                                 div()
                                     .font_family(self.fonts.mono_term.clone())
                                     .text_size(px(10.))
                                     .text_color(rgb(INK_MUTED))
-                                    .child("点击列头排序 · 点击行右侧下钻 5Y 财报"),
+                                    .child(l.t(
+                                        "点击列头排序 · 点击行右侧下钻 5Y 财报",
+                                        "Click headers to sort · Select row for 5Y financials",
+                                    )),
                             ),
                     )
                     .child(
@@ -2008,7 +2265,10 @@ impl MungerWorkbench {
                                 this.reload_universe_from_lake();
                                 cx.notify();
                             }))
-                            .child(format!("按质量分{quality_arrow}")),
+                            .child(match l {
+                                UiLang::Zh => format!("按质量分{quality_arrow}"),
+                                UiLang::En => format!("By Quality{quality_arrow}"),
+                            }),
                     ),
             )
             .child(
@@ -2196,7 +2456,7 @@ impl MungerWorkbench {
                             })
                             .when(row.sic.is_none(), |d| {
                                 d.child(badge(
-                                    "未分类".into(),
+                                    self.lang.t("未分类", "Unclassified").into(),
                                     SLATE_FG,
                                     SLATE_BG,
                                     SLATE_BORDER,
@@ -2211,7 +2471,7 @@ impl MungerWorkbench {
                             .text_size(px(10.))
                             .text_color(rgb(INK_MUTED))
                             .truncate()
-                            .child(format_sic_line(row)),
+                            .child(format_sic_line(row, self.lang)),
                     ),
             )
             .child(Self::table_num_cell(roic_str, 58., roic_col, &self.fonts))
@@ -2333,7 +2593,9 @@ impl MungerWorkbench {
                                     .gap_1p5()
                                     .when(row.is_financial, |d| {
                                         d.child(badge(
-                                            "金融业口径预警".into(),
+                                            self.lang
+                                                .t("金融业口径预警", "Financials Accounting Flag")
+                                                .into(),
                                             ORANGE_FG,
                                             ORANGE_BG,
                                             ORANGE_BORDER,
@@ -2342,7 +2604,7 @@ impl MungerWorkbench {
                                     })
                                     .when(row.sic.is_none(), |d| {
                                         d.child(badge(
-                                            "未分类SIC".into(),
+                                            self.lang.t("未分类SIC", "Unclassified SIC").into(),
                                             SLATE_FG,
                                             SLATE_BG,
                                             SLATE_BORDER,
@@ -2352,7 +2614,10 @@ impl MungerWorkbench {
                                     .when_some(live_bkt, |d, bkt| {
                                         let (fg, bg, br) = bucket_colors(bkt);
                                         d.child(badge(
-                                            format!("已入池 · {}", bkt.code()),
+                                            match self.lang {
+                                                UiLang::Zh => format!("已入池 · {}", bkt.code()),
+                                                UiLang::En => format!("In Circle · {}", bkt.code()),
+                                            },
                                             fg,
                                             bg,
                                             br,
@@ -2374,7 +2639,7 @@ impl MungerWorkbench {
                             .font_family(self.fonts.mono_term.clone())
                             .text_size(px(10.))
                             .text_color(rgb(INK_MUTED))
-                            .child(format_sic_line(row)),
+                            .child(format_sic_line(row, self.lang)),
                     ),
             )
             .child(if live_bkt.is_some() {
@@ -2404,7 +2669,7 @@ impl MungerWorkbench {
                                 this.select_company(&ticker_dossier, Some(NavView::Dossier));
                                 cx.notify();
                             }))
-                            .child("打开研报 Dossier →"),
+                            .child(self.lang.t("打开研报 Dossier →", "Open Dossier →")),
                     )
                     .child(
                         div()
@@ -2428,7 +2693,7 @@ impl MungerWorkbench {
                                 let _ = &ticker_alan;
                                 this.dispatch_universe_company_research(&row_for_research, cx);
                             }))
-                            .child("派 Alan 深研"),
+                            .child(self.lang.t("派 Alan 深研", "Ask Alan")),
                     )
             } else {
                 let row_for_research = row.clone();
@@ -2457,7 +2722,7 @@ impl MungerWorkbench {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.add_universe_company_to_watch(&row_for_add, cx);
                             }))
-                            .child("加入观察池 (WATCH)"),
+                            .child(self.lang.t("加入观察池 (WATCH)", "Add to Watch (WATCH)")),
                     )
                     .child(
                         div()
@@ -2482,7 +2747,10 @@ impl MungerWorkbench {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.dispatch_universe_company_research(&row_for_research, cx);
                             }))
-                            .child("入池并派 Alan 深研 · Deep Research"),
+                            .child(self.lang.t(
+                                "入池并派 Alan 深研 · Deep Research",
+                                "Add & Dispatch Alan Deep Research",
+                            )),
                     )
             })
             .child(
@@ -2508,12 +2776,15 @@ impl MungerWorkbench {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.find_similar_for_company(&ticker_similar, cx);
                     }))
-                    .child("找相似公司 · Lookalike"),
+                    .child(
+                        self.lang
+                            .t("找相似公司 · Lookalike", "Find Similar · Lookalike"),
+                    ),
             )
             .child(
                 prop_section("5Y DETERMINISTIC SNAPSHOT", &self.fonts)
                     .child(kv_line(
-                        "现价 / 击球价",
+                        self.lang.t("现价 / 击球价", "Price / Strike"),
                         format!(
                             "{} / {}",
                             fmt_price(row.latest_price, "USD"),
@@ -2523,13 +2794,13 @@ impl MungerWorkbench {
                         &self.fonts,
                     ))
                     .child(kv_line(
-                        "距击球价",
+                        self.lang.t("距击球价", "Dist. to Strike"),
                         dist_txt,
                         universe_distance_color(row, &self.universe_strike_zone_ciks),
                         &self.fonts,
                     ))
                     .child(kv_line(
-                        "严苛 FCF 收益率",
+                        self.lang.t("严苛 FCF 收益率", "Strict FCF Yield"),
                         fcf_txt,
                         if fcf_pol < 0 {
                             CORAL_FG
@@ -2541,7 +2812,7 @@ impl MungerWorkbench {
                         &self.fonts,
                     ))
                     .child(kv_line(
-                        "最新严苛 OE",
+                        self.lang.t("最新严苛 OE", "Latest Strict OE"),
                         row.strict_owner_earnings
                             .map(|oe| fmt_money_compact(oe, "USD"))
                             .unwrap_or_else(|| "—".into()),
@@ -2553,16 +2824,21 @@ impl MungerWorkbench {
                         &self.fonts,
                     ))
                     .child(kv_line("5Y ROIC", roic_txt, INK_HERO, &self.fonts))
-                    .child(kv_line("5Y 毛利率", gm_txt, INK_PRIMARY, &self.fonts))
                     .child(kv_line(
-                        "3Y 股本变化",
+                        self.lang.t("5Y 毛利率", "5Y Gross Margin"),
+                        gm_txt,
+                        INK_PRIMARY,
+                        &self.fonts,
+                    ))
+                    .child(kv_line(
+                        self.lang.t("3Y 股本变化", "3Y Share Change"),
                         share_txt,
                         share_delta_color(row.share_change_3y_pct, share_pol),
                         &self.fonts,
                     ))
                     .child(kv_line("SBC / OCF", sbc_txt, INK_SECONDARY, &self.fonts))
                     .child(kv_line(
-                        "净负债 / 严苛 OE",
+                        self.lang.t("净负债 / 严苛 OE", "Net Debt / Strict OE"),
                         row.net_debt_to_oe
                             .map(|v| format!("{v:.2}x"))
                             .unwrap_or_else(|| "—".into()),
@@ -2570,7 +2846,7 @@ impl MungerWorkbench {
                         &self.fonts,
                     ))
                     .child(kv_line(
-                        "质量综合分",
+                        self.lang.t("质量综合分", "Quality Score"),
                         format!("{:.1}", row.quality_score),
                         SKY_FG,
                         &self.fonts,
@@ -2584,6 +2860,7 @@ impl MungerWorkbench {
         if !warnings.is_empty() {
             drawer = drawer.child(Self::render_universe_drawer_warnings(
                 &warnings,
+                self.lang,
                 &self.fonts,
             ));
         }
@@ -2615,7 +2892,10 @@ impl MungerWorkbench {
         Some(
             prop_section(&format!("SIC PEERS · N={}", peers.peer_count), &self.fonts)
                 .child(kv_line(
-                    "同业 ROIC / 毛利 / FCF 分位",
+                    self.lang.t(
+                        "同业 ROIC / 毛利 / FCF 分位",
+                        "Peer ROIC / Margin / FCF Pct",
+                    ),
                     format!("{roic_p} / {gm_p} / {fcf_p}"),
                     SKY_FG,
                     &self.fonts,
@@ -2648,40 +2928,49 @@ impl MungerWorkbench {
         )
     }
 
-    fn render_universe_drawer_warnings(warnings: &[WarningFlag], fonts: &FontRoles) -> gpui::Div {
-        prop_section(&format!("WARNINGS · {} 项预警", warnings.len()), fonts).children(
-            warnings.iter().map(|w| {
-                let (fg, bg, br) = match w.severity {
-                    WarningSeverity::Red => (CORAL_FG, CORAL_BG, CORAL_BORDER),
-                    WarningSeverity::Amber => (GOLD_FG, GOLD_BG, GOLD_BORDER),
-                    WarningSeverity::Info => (SLATE_FG, SLATE_BG, SLATE_BORDER),
-                };
-                div()
-                    .p_2()
-                    .rounded_sm()
-                    .bg(rgba(bg))
-                    .border_1()
-                    .border_color(rgba(br))
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .child(
-                        div()
-                            .font_family(fonts.ui.clone())
-                            .text_size(px(11.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(rgb(fg))
-                            .child(w.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .font_family(fonts.ui.clone())
-                            .text_size(px(10.))
-                            .text_color(rgb(INK_PRIMARY))
-                            .child(w.detail.clone()),
-                    )
-            }),
+    fn render_universe_drawer_warnings(
+        warnings: &[WarningFlag],
+        lang: UiLang,
+        fonts: &FontRoles,
+    ) -> gpui::Div {
+        prop_section(
+            &match lang {
+                UiLang::Zh => format!("WARNINGS · {} 项预警", warnings.len()),
+                UiLang::En => format!("WARNINGS · {} Flags", warnings.len()),
+            },
+            fonts,
         )
+        .children(warnings.iter().map(|w| {
+            let (fg, bg, br) = match w.severity {
+                WarningSeverity::Red => (CORAL_FG, CORAL_BG, CORAL_BORDER),
+                WarningSeverity::Amber => (GOLD_FG, GOLD_BG, GOLD_BORDER),
+                WarningSeverity::Info => (SLATE_FG, SLATE_BG, SLATE_BORDER),
+            };
+            div()
+                .p_2()
+                .rounded_sm()
+                .bg(rgba(bg))
+                .border_1()
+                .border_color(rgba(br))
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(
+                    div()
+                        .font_family(fonts.ui.clone())
+                        .text_size(px(11.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(rgb(fg))
+                        .child(w.title.clone()),
+                )
+                .child(
+                    div()
+                        .font_family(fonts.ui.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(INK_PRIMARY))
+                        .child(w.detail.clone()),
+                )
+        }))
     }
 
     fn render_universe_drawer_provenance(
@@ -2696,55 +2985,69 @@ impl MungerWorkbench {
             .unwrap_or("—");
         let peers_cli = format!("./apps/m3-desktop/m3 universe peers {}", row.ticker);
 
-        prop_section("PROVENANCE · XBRL 溯源", &self.fonts)
-            .child(kv_line("CIK", row.cik.clone(), INK_SECONDARY, &self.fonts))
-            .child(kv_line(
-                "最近财报",
-                row.latest_filing_end.clone().unwrap_or_else(|| "—".into()),
-                INK_SECONDARY,
-                &self.fonts,
-            ))
-            .child(kv_line(
-                "年报年数",
-                format!("{} 年", row.years_of_data),
-                INK_SECONDARY,
-                &self.fonts,
-            ))
-            .child(kv_line(
-                "RAW_SHA256",
-                sha_short.to_owned(),
-                INK_MUTED,
-                &self.fonts,
-            ))
-            .child(
-                div()
-                    .id(gpui::SharedString::from(format!(
-                        "univ-copy-peers-cli-{}",
-                        row.cik
-                    )))
-                    .mt_1()
-                    .px_2p5()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(BG_WELL))
-                    .border_1()
-                    .border_color(rgb(BORDER_PILL))
-                    .hover(|s| s.bg(rgb(BG_HOVER)))
-                    .cursor_pointer()
-                    .font_family(self.fonts.mono_term.clone())
-                    .text_size(px(10.))
-                    .text_color(rgb(INK_SECONDARY))
-                    .truncate()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.copy_cli_command(peers_cli.clone(), "universe peers", cx);
-                        cx.notify();
-                    }))
-                    .child(format!("复制 CLI: m3 universe peers {}", row.ticker)),
-            )
+        prop_section(
+            self.lang
+                .t("PROVENANCE · XBRL 溯源", "PROVENANCE · XBRL Trace"),
+            &self.fonts,
+        )
+        .child(kv_line("CIK", row.cik.clone(), INK_SECONDARY, &self.fonts))
+        .child(kv_line(
+            self.lang.t("最近财报", "Latest Filing"),
+            row.latest_filing_end.clone().unwrap_or_else(|| "—".into()),
+            INK_SECONDARY,
+            &self.fonts,
+        ))
+        .child(kv_line(
+            self.lang.t("年报年数", "Annual Years"),
+            match self.lang {
+                UiLang::Zh => format!("{} 年", row.years_of_data),
+                UiLang::En => format!("{} yr", row.years_of_data),
+            },
+            INK_SECONDARY,
+            &self.fonts,
+        ))
+        .child(kv_line(
+            "RAW_SHA256",
+            sha_short.to_owned(),
+            INK_MUTED,
+            &self.fonts,
+        ))
+        .child(
+            div()
+                .id(gpui::SharedString::from(format!(
+                    "univ-copy-peers-cli-{}",
+                    row.cik
+                )))
+                .mt_1()
+                .px_2p5()
+                .py_1()
+                .rounded_sm()
+                .bg(rgb(BG_WELL))
+                .border_1()
+                .border_color(rgb(BORDER_PILL))
+                .hover(|s| s.bg(rgb(BG_HOVER)))
+                .cursor_pointer()
+                .font_family(self.fonts.mono_term.clone())
+                .text_size(px(10.))
+                .text_color(rgb(INK_SECONDARY))
+                .truncate()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_cli_command(peers_cli.clone(), "universe peers", cx);
+                    cx.notify();
+                }))
+                .child(match self.lang {
+                    UiLang::Zh => format!("复制 CLI: m3 universe peers {}", row.ticker),
+                    UiLang::En => format!("Copy CLI: m3 universe peers {}", row.ticker),
+                }),
+        )
     }
 
     fn render_universe_annuals_table(&self, target_cik: &str) -> gpui::Div {
-        let mut sec = prop_section("ANNUAL METRICS · 5Y 底表", &self.fonts);
+        let l = self.lang;
+        let mut sec = prop_section(
+            l.t("ANNUAL METRICS · 5Y 底表", "ANNUAL METRICS · 5Y Ledger"),
+            &self.fonts,
+        );
         let recent: Vec<&LakeAnnualRow> = self
             .universe_selected_annuals
             .iter()
@@ -2758,7 +3061,7 @@ impl MungerWorkbench {
                     .font_family(self.fonts.ui.clone())
                     .text_xs()
                     .text_color(rgb(INK_MUTED))
-                    .child("暂无年度明细行"),
+                    .child(l.t("暂无年度明细行", "No annual rows yet")),
             );
         }
         let recent_len = recent.len();
@@ -2772,11 +3075,29 @@ impl MungerWorkbench {
             .font_family(self.fonts.mono_term.clone())
             .text_size(px(10.))
             .text_color(rgb(INK_MUTED))
-            .child(div().w(px(48.)).flex_shrink_0().child("财年"))
-            .child(div().w(px(54.)).flex_shrink_0().text_right().child("营收"))
-            .child(div().w(px(46.)).flex_shrink_0().text_right().child("毛利%"))
+            .child(div().w(px(48.)).flex_shrink_0().child(l.t("财年", "FY")))
+            .child(
+                div()
+                    .w(px(54.))
+                    .flex_shrink_0()
+                    .text_right()
+                    .child(l.t("营收", "Rev")),
+            )
+            .child(
+                div()
+                    .w(px(46.))
+                    .flex_shrink_0()
+                    .text_right()
+                    .child(l.t("毛利%", "GM%")),
+            )
             .child(div().w(px(46.)).flex_shrink_0().text_right().child("ROIC"))
-            .child(div().flex_1().min_w_0().text_right().child("严苛OE"));
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_right()
+                    .child(l.t("严苛OE", "Strict OE")),
+            );
 
         let mut rows_box = div()
             .rounded_sm()
@@ -2869,13 +3190,17 @@ impl MungerWorkbench {
     }
 
     fn render_universe_similar_prompt(&self) -> gpui::Div {
+        let l = self.lang;
         card_shell()
             .p_5()
             .flex()
             .flex_col()
             .gap_3()
             .child(section_header(
-                "混合语义相似搜索 · Lookalike Discovery",
+                l.t(
+                    "混合语义相似搜索 · Lookalike Discovery",
+                    "Hybrid Semantic Search · Lookalike Discovery",
+                ),
                 "L1 SQL HARD FILTER × LATENT COSINE × BM25".into(),
                 &self.fonts,
             ))
@@ -2885,20 +3210,30 @@ impl MungerWorkbench {
                     .text_xs()
                     .line_height(px(20.))
                     .text_color(rgb(INK_SECONDARY))
-                    .child("在右上角搜索框输入商业模式关键词（例如 \"recurring industrial CAD subscription\"）或直接输入美股 Ticker（如 ADSK），也可在右侧详情抽屉点击「找相似公司 · Lookalike」。前置叠加当前左侧芒格财务硬过滤条件（剔除金融 / 报价池 / ROIC / SBC），零大模型 Token 毫秒级返回可溯源相似标的。"),
+                    .child(l.t(
+                        "在右上角搜索框输入商业模式关键词（例如 \"recurring industrial CAD subscription\"）或直接输入美股 Ticker（如 ADSK），也可在右侧详情抽屉点击「找相似公司 · Lookalike」。前置叠加当前左侧芒格财务硬过滤条件（剔除金融 / 报价池 / ROIC / SBC），零大模型 Token 毫秒级返回可溯源相似标的。",
+                        "Enter business keywords (e.g., \"recurring industrial CAD subscription\") or a US ticker (e.g., ADSK) above, or click \"Find Similar · Lookalike\" in the drawer. Applies active financial hard filters (Excl. Financials / Priced / ROIC / SBC) and returns traceable lookalikes in milliseconds with 0 LLM tokens.",
+                    )),
             )
     }
 
     fn render_universe_similar_empty(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let l1_chunks = self
             .inbox_summary
             .as_ref()
             .map(|s| s.doc_chunks_count)
             .unwrap_or(0);
         let hint = if l1_chunks == 0 {
-            "本地 L1 语义索引片段尚为空（doc_chunks=0）。请先到「简报收件箱」点击「追平事件流」或运行 `m3 events catchup --bootstrap` 构建文本索引。"
+            l.t(
+                "本地 L1 语义索引片段尚为空（doc_chunks=0）。请先到「简报收件箱」点击「追平事件流」或运行 `m3 events catchup --bootstrap` 构建文本索引。",
+                "Local L1 semantic index is empty (doc_chunks=0). Open Inbox and click Catch-Up or run `m3 events catchup --bootstrap` to build text chunks.",
+            )
         } else {
-            "当前相似搜索或财务硬过滤条件无匹配公司，可放宽过滤条件或更换关键词。"
+            l.t(
+                "当前相似搜索或财务硬过滤条件无匹配公司，可放宽过滤条件或更换关键词。",
+                "No companies match this similarity query and financial hard filters. Relax filters or adjust keywords.",
+            )
         };
         card_shell()
             .p_5()
@@ -2936,7 +3271,7 @@ impl MungerWorkbench {
                                     this.switch_view(NavView::Inbox);
                                     this.start_l1_catchup(true, cx);
                                 }))
-                                .child("追平 L1 文本索引"),
+                                .child(l.t("追平 L1 文本索引", "Build L1 Text Index")),
                         )
                     })
                     .child(
@@ -2959,7 +3294,7 @@ impl MungerWorkbench {
                                 this.reload_universe_from_lake();
                                 cx.notify();
                             }))
-                            .child("返回关键词筛选"),
+                            .child(l.t("返回关键词筛选", "Back to Keyword Screen")),
                     ),
             )
     }
@@ -2969,22 +3304,36 @@ impl MungerWorkbench {
         selected_cik: Option<&str>,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        let l = self.lang;
         let elapsed = self
             .universe_similar_query_ms
             .map(|ms| format!("{ms}ms"))
             .unwrap_or_else(|| "—".into());
-        let subtitle = format!(
-            "命中 {} 家 · 查询 {} · 0 Flagship Token",
-            self.universe_similar_hits.len(),
-            elapsed
-        );
+        let subtitle = match l {
+            UiLang::Zh => format!(
+                "命中 {} 家 · 查询 {} · 0 Flagship Token",
+                self.universe_similar_hits.len(),
+                elapsed
+            ),
+            UiLang::En => format!(
+                "{} hits · {elapsed} · 0 Flagship Tokens",
+                self.universe_similar_hits.len()
+            ),
+        };
 
         div()
             .flex()
             .flex_col()
             .gap_3()
             .child(card_shell().p_4().child(section_header(
-                &format!("Lookalike 相似公司 · {}", self.universe_state.query.trim()),
+                &match l {
+                    UiLang::Zh => {
+                        format!("Lookalike 相似公司 · {}", self.universe_state.query.trim())
+                    }
+                    UiLang::En => {
+                        format!("Lookalike Companies · {}", self.universe_state.query.trim())
+                    }
+                },
                 subtitle,
                 &self.fonts,
             )))
@@ -3088,7 +3437,10 @@ impl MungerWorkbench {
                             .items_center()
                             .gap_2()
                             .child(badge(
-                                format!("综合 {:.0}%", hit.score * 100.0),
+                                match self.lang {
+                                    UiLang::Zh => format!("综合 {:.0}%", hit.score * 100.0),
+                                    UiLang::En => format!("Score {:.0}%", hit.score * 100.0),
+                                },
                                 VIOLET_FG,
                                 VIOLET_BG,
                                 VIOLET_BORDER,
@@ -3099,12 +3451,20 @@ impl MungerWorkbench {
                                     .font_family(self.fonts.mono_num.clone())
                                     .text_size(px(10.))
                                     .text_color(rgb(INK_MUTED))
-                                    .child(format!(
-                                        "语义 {:.0}% · BM25 {:.2} · {} 片段",
-                                        hit.semantic_score * 100.0,
-                                        hit.lexical_score,
-                                        hit.matched_chunk_count
-                                    )),
+                                    .child(match self.lang {
+                                        UiLang::Zh => format!(
+                                            "语义 {:.0}% · BM25 {:.2} · {} 片段",
+                                            hit.semantic_score * 100.0,
+                                            hit.lexical_score,
+                                            hit.matched_chunk_count
+                                        ),
+                                        UiLang::En => format!(
+                                            "Semantic {:.0}% · BM25 {:.2} · {} chunks",
+                                            hit.semantic_score * 100.0,
+                                            hit.lexical_score,
+                                            hit.matched_chunk_count
+                                        ),
+                                    }),
                             ),
                     ),
             )
@@ -3136,7 +3496,11 @@ impl MungerWorkbench {
                                     .text_color(rgb(INK_SECONDARY))
                                     .child(format!("SBC/OCF {sbc_s}")),
                             )
-                            .child(div().text_color(rgb(INK_MUTED)).child(format_sic_line(row))),
+                            .child(
+                                div()
+                                    .text_color(rgb(INK_MUTED))
+                                    .child(format_sic_line(row, self.lang)),
+                            ),
                     )
                     .child(if live_bkt.is_some() {
                         div()
@@ -3159,7 +3523,7 @@ impl MungerWorkbench {
                                 cx.stop_propagation();
                                 cx.notify();
                             }))
-                            .child("打开 Dossier →")
+                            .child(self.lang.t("打开 Dossier →", "Open Dossier →"))
                     } else {
                         div()
                             .id(gpui::SharedString::from(format!(
@@ -3180,7 +3544,7 @@ impl MungerWorkbench {
                                 this.add_universe_company_to_watch(&row_watch, cx);
                                 cx.stop_propagation();
                             }))
-                            .child("+ 入观察池")
+                            .child(self.lang.t("+ 入观察池", "+ Add to Watch"))
                     }),
             )
             .children(hit.evidence.iter().take(2).enumerate().map(|(e_idx, ev)| {

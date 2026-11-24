@@ -7,6 +7,7 @@ mod format;
 mod inbox;
 mod journal;
 mod palette;
+mod settings;
 mod shell;
 #[cfg(test)]
 mod tests;
@@ -15,13 +16,17 @@ mod themes;
 mod universe;
 
 use agent::{DeepResearchPerspectiveUi, ParsedResearchMemo, default_deep_research_perspectives};
-use format::{build_alan_interrogation_prompt, filter_palette_items, filter_reports_for_basket};
+use format::{
+    build_alan_interrogation_prompt_for, filter_palette_items, filter_reports_for_basket,
+};
 use inbox::{InboxFilter, InboxViewState};
 
 use crate::{
     alan_interrogator::{AcmeEvidenceToken, M3InterrogatorHandle, TuringTapeEntry},
-    budget::ThemesFile,
+    app_config,
+    budget::{self, BudgetConfig, ThemesFile},
     events::EventCatchupReport,
+    i18n::UiLang,
     lake::{LakeAnnualRow, PeerComparison, UniverseRow, UniverseSummary},
     lake_l1::{L1Summary, SignalInboxRow, SignalStatus, SimilarCompanyHit},
     lake_l2::{BudgetStatusReport, ResearchRunRow},
@@ -58,6 +63,7 @@ pub enum NavView {
     Agent,
     Journal,
     Universe,
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,12 +103,20 @@ pub enum ChartTimeframe {
 }
 
 impl ChartTimeframe {
-    fn label(&self) -> &'static str {
-        match self {
-            ChartTimeframe::FiveYearWeekly => "5Y 周K",
-            ChartTimeframe::ThreeYearWeekly => "3Y 周K",
-            ChartTimeframe::OneYearDaily => "1Y 日K",
+    fn label_for(&self, lang: UiLang) -> &'static str {
+        match (self, lang) {
+            (ChartTimeframe::FiveYearWeekly, UiLang::Zh) => "5Y 周K",
+            (ChartTimeframe::FiveYearWeekly, UiLang::En) => "5Y Wk",
+            (ChartTimeframe::ThreeYearWeekly, UiLang::Zh) => "3Y 周K",
+            (ChartTimeframe::ThreeYearWeekly, UiLang::En) => "3Y Wk",
+            (ChartTimeframe::OneYearDaily, UiLang::Zh) => "1Y 日K",
+            (ChartTimeframe::OneYearDaily, UiLang::En) => "1Y Day",
         }
+    }
+
+    #[allow(dead_code)]
+    fn label(&self) -> &'static str {
+        self.label_for(UiLang::Zh)
     }
 }
 
@@ -114,12 +128,20 @@ pub enum StatusQuickFilter {
 }
 
 impl StatusQuickFilter {
-    fn label(&self) -> &'static str {
-        match self {
-            StatusQuickFilter::All => "全部",
-            StatusQuickFilter::StrikeOnly => "击球区",
-            StatusQuickFilter::WarnedOnly => "红灯",
+    fn label_for(&self, lang: UiLang) -> &'static str {
+        match (self, lang) {
+            (StatusQuickFilter::All, UiLang::Zh) => "全部",
+            (StatusQuickFilter::All, UiLang::En) => "All",
+            (StatusQuickFilter::StrikeOnly, UiLang::Zh) => "击球区",
+            (StatusQuickFilter::StrikeOnly, UiLang::En) => "Strike Zone",
+            (StatusQuickFilter::WarnedOnly, UiLang::Zh) => "红灯",
+            (StatusQuickFilter::WarnedOnly, UiLang::En) => "Warnings",
         }
+    }
+
+    #[allow(dead_code)]
+    fn label(&self) -> &'static str {
+        self.label_for(UiLang::Zh)
     }
 }
 
@@ -165,6 +187,8 @@ pub enum PaletteAction {
     ApplyUpdate,
     SwitchUpdateChannel(ReleaseChannel),
     RestartApp,
+    OpenSettings,
+    SetLanguage(UiLang),
 }
 
 #[derive(Debug, Clone)]
@@ -178,11 +202,13 @@ pub struct PaletteItem {
 }
 
 pub struct MungerWorkbench {
+    lang: UiLang,
     paths: WorkspacePaths,
     fonts: FontRoles,
     focus_handle: FocusHandle,
     reports: Vec<MungerReport>,
     journal: DecisionJournal,
+    budget_config: BudgetConfig,
     benchmark: Option<PriceSnapshot>,
     sync_status: Option<SyncStatusFile>,
     benchmark_symbol: String,
@@ -299,7 +325,11 @@ impl MungerWorkbench {
                 (cached_notice, passive_rx)
             };
 
+        let initial_lang = app_config::read_ui_language();
+        let initial_budget = budget::load_budget_config(&paths).unwrap_or_default();
+
         let mut wb = Self {
+            lang: initial_lang,
             focus_handle: cx.focus_handle(),
             fonts,
             reports: Vec::new(),
@@ -314,6 +344,7 @@ impl MungerWorkbench {
                 positions: Vec::new(),
                 entries: Vec::new(),
             },
+            budget_config: initial_budget,
             benchmark: None,
             sync_status: None,
             benchmark_symbol: "^GSPC".into(),
@@ -438,9 +469,16 @@ impl MungerWorkbench {
                 }
             }
             Err(err) => {
-                self.banner = Some((format!("加载计算报告失败: {err:#}"), true));
+                self.banner = Some((
+                    format!(
+                        "{}: {err:#}",
+                        self.lang.t("加载计算报告失败", "Failed to load reports")
+                    ),
+                    true,
+                ));
             }
         }
+        self.budget_config = budget::load_budget_config(&self.paths).unwrap_or_default();
         if let Ok(j) = store::load_journal(&self.paths) {
             self.journal = j;
         }
@@ -531,7 +569,12 @@ impl MungerWorkbench {
         let ticker = self.selected_ticker.clone();
         if ticker.trim().is_empty() {
             self.banner = Some((
-                "当前能力圈为空，请先从「全市场雷达」或「简报收件箱」添加标的".into(),
+                self.lang
+                    .t(
+                        "当前能力圈为空，请先从「全市场雷达」或「简报收件箱」添加标的",
+                        "Your Circle is empty — add a company from Universe Radar or Briefing Inbox first",
+                    )
+                    .into(),
                 false,
             ));
             cx.notify();
@@ -556,12 +599,177 @@ impl MungerWorkbench {
         cx.notify();
     }
 
+    pub fn set_language(&mut self, lang: UiLang, cx: &mut Context<Self>) {
+        if let Err(err) = app_config::write_ui_language(lang) {
+            self.banner = Some((
+                format!(
+                    "{}: {err:#}",
+                    self.lang
+                        .t("保存语言设置失败", "Failed to save language preference")
+                ),
+                true,
+            ));
+            cx.notify();
+            return;
+        }
+        self.lang = lang;
+        cx.set_menus(crate::build_app_menus(lang));
+        self.banner = Some((
+            lang.t(
+                "已切换界面语言为中文",
+                "Interface language switched to English",
+            )
+            .into(),
+            false,
+        ));
+        cx.notify();
+    }
+
+    pub(super) fn prompt_choose_workspace(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(
+                self.lang
+                    .t(
+                        "选择或新建 M3 工作区目录",
+                        "Select or Create M3 Workspace Directory",
+                    )
+                    .into(),
+            ),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(dir) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |this, cx| this.switch_workspace_to(&dir, cx));
+            }
+        })
+        .detach();
+    }
+
+    pub(super) fn switch_workspace_to(&mut self, dir: &std::path::Path, cx: &mut Context<Self>) {
+        match app_config::ensure_initialized_workspace(dir)
+            .and_then(|canon| app_config::write_workspace_root(&canon))
+        {
+            Ok(canonical) => {
+                if let Some(handle) = self.alan_handle.take() {
+                    handle.shutdown();
+                }
+                self.paths = WorkspacePaths::from_root(canonical.clone());
+                self.selected_ticker.clear();
+                self.reload_from_disk();
+                self.reload_themes_from_disk();
+                self.reload_universe_from_lake();
+                self.reload_inbox_from_lake();
+                self.reload_budget_from_lake();
+                self.banner = Some((
+                    format!(
+                        "{}: {}",
+                        self.lang.t("已切换工作区至", "Switched workspace to"),
+                        canonical.display()
+                    ),
+                    false,
+                ));
+            }
+            Err(err) => {
+                self.banner = Some((
+                    format!(
+                        "{}: {err:#}",
+                        self.lang.t("切换工作区失败", "Failed to switch workspace")
+                    ),
+                    true,
+                ));
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn reset_workspace_to_default(&mut self, cx: &mut Context<Self>) {
+        let res = app_config::clear_workspace_root()
+            .and_then(|()| app_config::default_workspace_dir())
+            .and_then(|dir| app_config::ensure_initialized_workspace(&dir));
+        match res {
+            Ok(canonical) => {
+                if let Some(handle) = self.alan_handle.take() {
+                    handle.shutdown();
+                }
+                self.paths = WorkspacePaths::from_root(canonical.clone());
+                self.selected_ticker.clear();
+                self.reload_from_disk();
+                self.reload_themes_from_disk();
+                self.reload_universe_from_lake();
+                self.reload_inbox_from_lake();
+                self.reload_budget_from_lake();
+                self.banner = Some((
+                    format!(
+                        "{}: {}",
+                        self.lang.t(
+                            "已恢复默认空白工作区",
+                            "Reset to default standalone workspace"
+                        ),
+                        canonical.display()
+                    ),
+                    false,
+                ));
+            }
+            Err(err) => {
+                self.banner = Some((
+                    format!(
+                        "{}: {err:#}",
+                        self.lang
+                            .t("恢复默认工作区失败", "Failed to reset workspace")
+                    ),
+                    true,
+                ));
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn update_budget_config(
+        &mut self,
+        f: impl FnOnce(&mut BudgetConfig),
+        cx: &mut Context<Self>,
+    ) {
+        let mut next = self.budget_config.clone();
+        f(&mut next);
+        match budget::save_budget_config(&self.paths, &next) {
+            Ok(()) => {
+                self.budget_config = next;
+                self.reload_budget_from_lake();
+                self.banner = Some((
+                    self.lang
+                        .t(
+                            "已保存 AI 预算配置到 workbench/budget.json",
+                            "Saved AI budget configuration to workbench/budget.json",
+                        )
+                        .into(),
+                    false,
+                ));
+            }
+            Err(err) => {
+                self.banner = Some((
+                    format!(
+                        "{}: {err:#}",
+                        self.lang
+                            .t("保存预算配置失败", "Failed to save budget config")
+                    ),
+                    true,
+                ));
+            }
+        }
+        cx.notify();
+    }
+
     pub fn show_about_notice(&mut self, cx: &mut Context<Self>) {
         self.banner = Some((
             format!(
-                "Project M3 v{} ({}) · Apache-2.0 · 工作区：{}",
+                "Project M3 v{} ({}) · Apache-2.0 · {}: {}",
                 update::current_binary_version(),
                 self.update_channel.as_str(),
+                self.lang.t("工作区", "Workspace"),
                 self.paths.repo_root.display()
             ),
             false,
@@ -616,7 +824,10 @@ impl MungerWorkbench {
             return;
         }
         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-        self.banner = Some((format!("已拷贝：{text}"), false));
+        self.banner = Some((
+            format!("{}: {text}", self.lang.t("已拷贝", "Copied")),
+            false,
+        ));
         cx.notify();
     }
 
@@ -718,16 +929,30 @@ impl MungerWorkbench {
             Ok(_) => {
                 self.reload_from_disk();
                 self.banner = Some((
-                    format!(
-                        "已将 {ticker} 分拣至 [{} · {}]（已写入 workbench/watchlist.json）",
-                        target.code(),
-                        target.short_label()
-                    ),
+                    match self.lang {
+                        UiLang::Zh => format!(
+                            "已将 {ticker} 分拣至 [{} · {}]（已写入 workbench/watchlist.json）",
+                            target.code(),
+                            target.short_label_for(UiLang::Zh)
+                        ),
+                        UiLang::En => format!(
+                            "Moved {ticker} to [{} · {}] (saved to workbench/watchlist.json)",
+                            target.code(),
+                            target.short_label_for(UiLang::En)
+                        ),
+                    },
                     false,
                 ));
             }
             Err(err) => {
-                self.banner = Some((format!("切换能力圈分组失败: {err:#}"), true));
+                self.banner = Some((
+                    format!(
+                        "{}: {err:#}",
+                        self.lang
+                            .t("切换能力圈分组失败", "Failed to update Circle tier")
+                    ),
+                    true,
+                ));
             }
         }
         cx.notify();
@@ -737,7 +962,12 @@ impl MungerWorkbench {
         if self.syncing || self.universe_syncing {
             if self.universe_syncing {
                 self.banner = Some((
-                    "全美股 L0 正在后台同步中，请等待完成后再同步自选池".into(),
+                    self.lang
+                        .t(
+                            "全美股 L0 正在后台同步中，请等待完成后再同步自选池",
+                            "US L0 lakehouse is syncing in background; wait until it finishes",
+                        )
+                        .into(),
                     false,
                 ));
                 cx.notify();
@@ -746,7 +976,12 @@ impl MungerWorkbench {
         }
         self.syncing = true;
         self.banner = Some((
-            "正在同步 SEC EDGAR 财报、公开股价与 K 线历史…".into(),
+            self.lang
+                .t(
+                    "正在同步 SEC EDGAR 财报、公开股价与 K 线历史…",
+                    "Syncing SEC EDGAR filings, market quotes, and price history…",
+                )
+                .into(),
             false,
         ));
         let root = self.paths.repo_root.clone();
@@ -787,12 +1022,26 @@ impl MungerWorkbench {
                 self.reload_from_disk();
                 if failed.is_empty() {
                     self.banner = Some((
-                        format!("同步完成 · 已更新 {} 家标的", status.tickers.len()),
+                        match self.lang {
+                            UiLang::Zh => {
+                                format!("同步完成 · 已更新 {} 家标的", status.tickers.len())
+                            }
+                            UiLang::En => {
+                                format!("Sync complete · updated {} holdings", status.tickers.len())
+                            }
+                        },
                         false,
                     ));
                 } else {
                     self.banner = Some((
-                        format!("部分标的同步异常（已保留旧缓存）：{}", failed.join(", ")),
+                        format!(
+                            "{}: {}",
+                            self.lang.t(
+                                "部分标的同步异常（已保留旧缓存）",
+                                "Partial sync errors (cached data preserved)"
+                            ),
+                            failed.join(", ")
+                        ),
                         true,
                     ));
                 }
@@ -801,7 +1050,10 @@ impl MungerWorkbench {
             Ok(Err(err)) => {
                 self.syncing = false;
                 self.sync_rx = None;
-                self.banner = Some((format!("同步失败：{err}"), true));
+                self.banner = Some((
+                    format!("{}: {err}", self.lang.t("同步失败", "Sync failed")),
+                    true,
+                ));
                 true
             }
             Err(mpsc::TryRecvError::Empty) => dirty,
@@ -816,7 +1068,15 @@ impl MungerWorkbench {
     pub fn start_update_check(&mut self, notify_when_up_to_date: bool, cx: &mut Context<Self>) {
         if self.update_checking || self.update_applying {
             if notify_when_up_to_date {
-                self.banner = Some(("正在后台检查或应用更新，请稍候…".into(), false));
+                self.banner = Some((
+                    self.lang
+                        .t(
+                            "正在后台检查或应用更新，请稍候…",
+                            "Update check or install already in progress…",
+                        )
+                        .into(),
+                    false,
+                ));
                 cx.notify();
             }
             return;
@@ -824,7 +1084,15 @@ impl MungerWorkbench {
         self.update_checking = true;
         if notify_when_up_to_date {
             self.banner = Some((
-                format!("正在检查 {} 通道更新…", self.update_channel.as_str()),
+                match self.lang {
+                    UiLang::Zh => format!("正在检查 {} 通道更新…", self.update_channel.as_str()),
+                    UiLang::En => {
+                        format!(
+                            "Checking {} channel for updates…",
+                            self.update_channel.as_str()
+                        )
+                    }
+                },
                 false,
             ));
         }
@@ -845,16 +1113,27 @@ impl MungerWorkbench {
 
     pub fn start_update_apply(&mut self, cx: &mut Context<Self>) {
         if self.update_applying || self.update_checking {
-            self.banner = Some(("正在处理更新任务，请稍候…".into(), false));
+            self.banner = Some((
+                self.lang
+                    .t("正在处理更新任务，请稍候…", "Update task already running…")
+                    .into(),
+                false,
+            ));
             cx.notify();
             return;
         }
         self.update_applying = true;
         self.banner = Some((
-            format!(
-                "正在从 {} 通道下载并校验 M3 更新…",
-                self.update_channel.as_str()
-            ),
+            match self.lang {
+                UiLang::Zh => format!(
+                    "正在从 {} 通道下载并校验 M3 更新…",
+                    self.update_channel.as_str()
+                ),
+                UiLang::En => format!(
+                    "Downloading and verifying M3 update from {} channel…",
+                    self.update_channel.as_str()
+                ),
+            },
             false,
         ));
         let target_channel = self.update_channel;
@@ -880,7 +1159,13 @@ impl MungerWorkbench {
                 self.start_update_check(true, cx);
             }
             Err(err) => {
-                self.banner = Some((format!("切换更新通道失败：{err:#}"), true));
+                self.banner = Some((
+                    format!(
+                        "{}: {err:#}",
+                        self.lang.t("切换更新通道失败", "Failed to switch channel")
+                    ),
+                    true,
+                ));
                 cx.notify();
             }
         }
@@ -897,19 +1182,36 @@ impl MungerWorkbench {
             Ok(bundle) if bundle.exists() => match update::install::relaunch_app_bundle(&bundle) {
                 Ok(()) => cx.quit(),
                 Err(err) => {
-                    self.banner = Some((format!("重启 M3.app 失败：{err:#}"), true));
+                    self.banner = Some((
+                        format!(
+                            "{}: {err:#}",
+                            self.lang.t("重启 M3.app 失败", "Failed to relaunch M3.app")
+                        ),
+                        true,
+                    ));
                     cx.notify();
                 }
             },
             Ok(bundle) => {
                 self.banner = Some((
-                    format!("未找到已安装的 M3.app（{}）", bundle.display()),
+                    format!(
+                        "{} ({})",
+                        self.lang
+                            .t("未找到已安装的 M3.app", "Installed M3.app not found"),
+                        bundle.display()
+                    ),
                     true,
                 ));
                 cx.notify();
             }
             Err(err) => {
-                self.banner = Some((format!("定位 M3.app 失败：{err:#}"), true));
+                self.banner = Some((
+                    format!(
+                        "{}: {err:#}",
+                        self.lang.t("定位 M3.app 失败", "Failed to locate M3.app")
+                    ),
+                    true,
+                ));
                 cx.notify();
             }
         }
@@ -952,20 +1254,32 @@ impl MungerWorkbench {
                         };
                         self.update_notice = Some(notice);
                         self.banner = Some((
-                            format!(
-                                "发现可用更新 v{}（{}），点击更新按钮立即安装",
-                                report.target_version, report.channel
-                            ),
+                            match self.lang {
+                                UiLang::Zh => format!(
+                                    "发现可用更新 v{}（{}），点击更新按钮立即安装",
+                                    report.target_version, report.channel
+                                ),
+                                UiLang::En => format!(
+                                    "Update available: v{} ({}) — click Update to install",
+                                    report.target_version, report.channel
+                                ),
+                            },
                             false,
                         ));
                     } else {
                         self.update_notice = None;
                         if notify_up_to_date {
                             self.banner = Some((
-                                format!(
-                                    "当前已是 {} 通道最新版本 (v{})",
-                                    report.channel, report.current_version
-                                ),
+                                match self.lang {
+                                    UiLang::Zh => format!(
+                                        "当前已是 {} 通道最新版本 (v{})",
+                                        report.channel, report.current_version
+                                    ),
+                                    UiLang::En => format!(
+                                        "Up to date on {} channel (v{})",
+                                        report.channel, report.current_version
+                                    ),
+                                },
                                 false,
                             ));
                         }
@@ -975,7 +1289,13 @@ impl MungerWorkbench {
                 Ok(Err(err)) => {
                     self.update_checking = false;
                     if notify_up_to_date {
-                        self.banner = Some((format!("检查更新失败：{err}"), true));
+                        self.banner = Some((
+                            format!(
+                                "{}: {err}",
+                                self.lang.t("检查更新失败", "Update check failed")
+                            ),
+                            true,
+                        ));
                     }
                     dirty = true;
                 }
@@ -1000,15 +1320,29 @@ impl MungerWorkbench {
                     if report.updated {
                         self.update_applied_version = Some(report.target_version.clone());
                         self.banner = Some((
-                            format!(
-                                "已安装 M3 v{}（{}），点击「重启」以生效",
-                                report.target_version, report.channel
-                            ),
+                            match self.lang {
+                                UiLang::Zh => format!(
+                                    "已安装 M3 v{}（{}），点击「重启」以生效",
+                                    report.target_version, report.channel
+                                ),
+                                UiLang::En => format!(
+                                    "Installed M3 v{} ({}) — click Restart to apply",
+                                    report.target_version, report.channel
+                                ),
+                            },
                             false,
                         ));
                     } else {
                         self.banner = Some((
-                            format!("当前已是最新版本 (v{})", report.current_version),
+                            match self.lang {
+                                UiLang::Zh => {
+                                    format!("当前已是最新版本 (v{})", report.current_version)
+                                }
+                                UiLang::En => format!(
+                                    "Already running the latest version (v{})",
+                                    report.current_version
+                                ),
+                            },
                             false,
                         ));
                     }
@@ -1016,7 +1350,13 @@ impl MungerWorkbench {
                 }
                 Ok(Err(err)) => {
                     self.update_applying = false;
-                    self.banner = Some((format!("安装更新失败：{err}"), true));
+                    self.banner = Some((
+                        format!(
+                            "{}: {err}",
+                            self.lang.t("安装更新失败", "Update install failed")
+                        ),
+                        true,
+                    ));
                     dirty = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
@@ -1052,18 +1392,33 @@ impl MungerWorkbench {
             Ok(_) => {
                 self.reload_from_disk();
                 self.banner = Some((
-                    format!(
-                        "已保存 {} 假设 · {}x · 目标 {}% · 增速 {}%",
-                        rep.ticker,
-                        self.sandbox_multiple,
-                        self.sandbox_target_return,
-                        self.sandbox_expected_growth
-                    ),
+                    match self.lang {
+                        UiLang::Zh => format!(
+                            "已保存 {} 假设 · {}x · 目标 {}% · 增速 {}%",
+                            rep.ticker,
+                            self.sandbox_multiple,
+                            self.sandbox_target_return,
+                            self.sandbox_expected_growth
+                        ),
+                        UiLang::En => format!(
+                            "Saved {} assumptions · {}x · target {}% · growth {}%",
+                            rep.ticker,
+                            self.sandbox_multiple,
+                            self.sandbox_target_return,
+                            self.sandbox_expected_growth
+                        ),
+                    },
                     false,
                 ));
             }
             Err(err) => {
-                self.banner = Some((format!("保存假设失败: {err:#}"), true));
+                self.banner = Some((
+                    format!(
+                        "{}: {err:#}",
+                        self.lang.t("保存假设失败", "Failed to save assumptions")
+                    ),
+                    true,
+                ));
             }
         }
     }
@@ -1082,7 +1437,10 @@ impl MungerWorkbench {
 
     fn copy_cli_command(&mut self, cmd: String, label: &str, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(cmd.clone()));
-        self.banner = Some((format!("已复制 ({label}): {cmd}"), false));
+        self.banner = Some((
+            format!("{} ({label}): {cmd}", self.lang.t("已复制", "Copied")),
+            false,
+        ));
     }
 
     fn toggle_sort(&mut self, col: SortCol) {
@@ -1516,7 +1874,8 @@ impl MungerWorkbench {
                         .find(|r| r.ticker == ticker)
                         .map(|r| (r.name.clone(), r.bucket))
                         .unwrap_or_else(|| (ticker.clone(), Bucket::Watch));
-                    let prompt = build_alan_interrogation_prompt(&ticker, &name, bucket);
+                    let prompt =
+                        build_alan_interrogation_prompt_for(&ticker, &name, bucket, self.lang);
                     self.copy_cli_command(prompt, &format!("Alan Prompt {ticker}"), cx);
                     cx.stop_propagation();
                     cx.notify();
@@ -1611,6 +1970,13 @@ impl MungerWorkbench {
                 }
                 _ => {}
             },
+            NavView::Settings => {
+                if key == "escape" {
+                    self.switch_view(NavView::Inbox);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }
         }
     }
 }
@@ -1668,6 +2034,7 @@ impl Render for MungerWorkbench {
                                     let content = match self.active_view {
                                         NavView::Baskets => self.render_baskets_view(cx),
                                         NavView::Journal => self.render_themes_and_journal_view(cx),
+                                        NavView::Settings => self.render_settings_view(cx),
                                         NavView::Inbox
                                         | NavView::Dossier
                                         | NavView::Agent

@@ -288,7 +288,11 @@ pub(super) fn ratio_bar(
         )
 }
 
-pub(super) fn roic_sparkline(rows: &[AnnualMetricRow], fonts: &FontRoles) -> gpui::Div {
+pub(super) fn roic_sparkline_for(
+    rows: &[AnnualMetricRow],
+    lang: crate::i18n::UiLang,
+    fonts: &FontRoles,
+) -> gpui::Div {
     let slice: Vec<&AnnualMetricRow> = rows
         .iter()
         .rev()
@@ -319,14 +323,17 @@ pub(super) fn roic_sparkline(rows: &[AnnualMetricRow], fonts: &FontRoles) -> gpu
                         .font_family(fonts.ui.clone())
                         .text_xs()
                         .text_color(rgb(INK_MUTED))
-                        .child("历年 ROIC 走势（15% 基准）"),
+                        .child(lang.t(
+                            "历年 ROIC 走势（15% 基准）",
+                            "Annual ROIC Trend (15% Hurdle)",
+                        )),
                 )
                 .child(
                     div()
                         .font_family(fonts.mono_num.clone())
                         .text_xs()
                         .text_color(rgb(INK_SECONDARY))
-                        .child(format!("峰值 {:.0}%", max_roic)),
+                        .child(format!("{} {:.0}%", lang.t("峰值", "Peak"), max_roic)),
                 ),
         )
         .child(
@@ -351,7 +358,7 @@ pub(super) fn roic_sparkline(rows: &[AnnualMetricRow], fonts: &FontRoles) -> gpu
                             (h, col, format!("{v:.0}%"), true)
                         }
                         Some(v) => (4.0, CORAL_FG, format!("{v:.0}%"), true),
-                        None => (4.0, INK_MUTED, "净现".into(), false),
+                        None => (4.0, INK_MUTED, lang.t("净现", "NetCash").into(), false),
                     };
                     let fy_short = r.label.replace("FY20", "'");
                     div()
@@ -613,7 +620,16 @@ pub(super) fn prose_block(title: &str, body: &str, fonts: &FontRoles) -> gpui::D
         )
 }
 
+#[allow(dead_code)]
 pub(super) fn render_warning_panel(warnings: &[WarningFlag], fonts: &FontRoles) -> gpui::Div {
+    render_warning_panel_for(warnings, crate::i18n::UiLang::Zh, fonts)
+}
+
+pub(super) fn render_warning_panel_for(
+    warnings: &[WarningFlag],
+    lang: crate::i18n::UiLang,
+    fonts: &FontRoles,
+) -> gpui::Div {
     div()
         .flex()
         .flex_col()
@@ -625,9 +641,9 @@ pub(super) fn render_warning_panel(warnings: &[WarningFlag], fonts: &FontRoles) 
                 WarningSeverity::Info => (SLATE_FG, SLATE_BG, SLATE_BORDER),
             };
             let sev_label = match w.severity {
-                WarningSeverity::Red => "红灯预警",
-                WarningSeverity::Amber => "黄灯关注",
-                WarningSeverity::Info => "提示",
+                WarningSeverity::Red => lang.t("红灯预警", "Red Flag"),
+                WarningSeverity::Amber => lang.t("黄灯关注", "Watch Flag"),
+                WarningSeverity::Info => lang.t("提示", "Info"),
             };
             div()
                 .rounded_md()

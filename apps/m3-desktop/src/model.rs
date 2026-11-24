@@ -199,21 +199,43 @@ impl Bucket {
         }
     }
 
-    pub fn short_label(&self) -> &'static str {
-        match self {
-            Bucket::Core => "核心击球",
-            Bucket::Watch => "待审讯",
-            Bucket::Out => "看懂否决",
-            Bucket::TooHard => "能力圈外",
+    pub fn short_label_for(&self, lang: crate::i18n::UiLang) -> &'static str {
+        match (self, lang) {
+            (Bucket::Core, crate::i18n::UiLang::Zh) => "核心击球",
+            (Bucket::Core, crate::i18n::UiLang::En) => "Core Strike",
+            (Bucket::Watch, crate::i18n::UiLang::Zh) => "待审讯",
+            (Bucket::Watch, crate::i18n::UiLang::En) => "Watch",
+            (Bucket::Out, crate::i18n::UiLang::Zh) => "看懂否决",
+            (Bucket::Out, crate::i18n::UiLang::En) => "Pass / Out",
+            (Bucket::TooHard, crate::i18n::UiLang::Zh) => "能力圈外",
+            (Bucket::TooHard, crate::i18n::UiLang::En) => "Too Hard",
         }
     }
 
-    pub fn description(&self) -> &'static str {
-        match self {
-            Bucket::Core => "能力圈内确认的好生意 · 耐心等待击球价重仓",
-            Bucket::Watch => "待审讯收件箱 · 完成财报体检与费曼答辩后再分拣进能力圈",
-            Bucket::Out => "商业逻辑看懂，但护城河 / 文化 / 资本配置不够好 · 明确说不",
-            Bucket::TooHard => "未来 5–10 年现金流无法可靠估算 · 永久入馆防 FOMO",
+    pub fn description_for(&self, lang: crate::i18n::UiLang) -> &'static str {
+        match (self, lang) {
+            (Bucket::Core, crate::i18n::UiLang::Zh) => "能力圈内确认的好生意 · 耐心等待击球价重仓",
+            (Bucket::Core, crate::i18n::UiLang::En) => {
+                "Verified compounders inside your Circle · wait patiently for strike price"
+            }
+            (Bucket::Watch, crate::i18n::UiLang::Zh) => {
+                "待审讯收件箱 · 完成财报体检与费曼答辩后再分拣进能力圈"
+            }
+            (Bucket::Watch, crate::i18n::UiLang::En) => {
+                "Under study · complete accounting triage and Alan interrogation before sorting"
+            }
+            (Bucket::Out, crate::i18n::UiLang::Zh) => {
+                "商业逻辑看懂，但护城河 / 文化 / 资本配置不够好 · 明确说不"
+            }
+            (Bucket::Out, crate::i18n::UiLang::En) => {
+                "Understood clearly, rejected on moat, culture, or capital allocation"
+            }
+            (Bucket::TooHard, crate::i18n::UiLang::Zh) => {
+                "未来 5–10 年现金流无法可靠估算 · 永久入馆防 FOMO"
+            }
+            (Bucket::TooHard, crate::i18n::UiLang::En) => {
+                "5–10Y cash flows unforecastable · archived permanently against FOMO"
+            }
         }
     }
 
@@ -508,16 +530,26 @@ pub enum StrikeZoneStatus {
 }
 
 impl StrikeZoneStatus {
-    pub fn label(&self) -> &'static str {
-        match self {
-            StrikeZoneStatus::InStrikeZone => "击球区",
-            StrikeZoneStatus::NearStrikeZone => "接近击球",
-            StrikeZoneStatus::Wait => "耐心等待",
-            StrikeZoneStatus::WarningBlocked => "财报预警",
-            StrikeZoneStatus::Out => "已否决",
-            StrikeZoneStatus::TooHard => "Too Hard",
-            StrikeZoneStatus::NoFinancials => "待录财报",
+    pub fn label_for(&self, lang: crate::i18n::UiLang) -> &'static str {
+        match (self, lang) {
+            (StrikeZoneStatus::InStrikeZone, crate::i18n::UiLang::Zh) => "击球区",
+            (StrikeZoneStatus::InStrikeZone, crate::i18n::UiLang::En) => "Strike Zone",
+            (StrikeZoneStatus::NearStrikeZone, crate::i18n::UiLang::Zh) => "接近击球",
+            (StrikeZoneStatus::NearStrikeZone, crate::i18n::UiLang::En) => "Near Strike",
+            (StrikeZoneStatus::Wait, crate::i18n::UiLang::Zh) => "耐心等待",
+            (StrikeZoneStatus::Wait, crate::i18n::UiLang::En) => "Wait",
+            (StrikeZoneStatus::WarningBlocked, crate::i18n::UiLang::Zh) => "财报预警",
+            (StrikeZoneStatus::WarningBlocked, crate::i18n::UiLang::En) => "Warning",
+            (StrikeZoneStatus::Out, crate::i18n::UiLang::Zh) => "已否决",
+            (StrikeZoneStatus::Out, crate::i18n::UiLang::En) => "Out",
+            (StrikeZoneStatus::TooHard, _) => "Too Hard",
+            (StrikeZoneStatus::NoFinancials, crate::i18n::UiLang::Zh) => "待录财报",
+            (StrikeZoneStatus::NoFinancials, crate::i18n::UiLang::En) => "No Financials",
         }
+    }
+
+    pub fn label(&self) -> &'static str {
+        self.label_for(crate::i18n::UiLang::Zh)
     }
 }
 

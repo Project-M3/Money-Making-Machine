@@ -1,6 +1,8 @@
 use super::{
-    MungerWorkbench, NavView, components::*, format::*, inbox::budget_watermark_summary, theme::*,
+    MungerWorkbench, NavView, components::*, format::*, inbox::budget_watermark_summary_for,
+    theme::*,
 };
+use crate::i18n::UiLang;
 use crate::model::{Bucket, MungerReport};
 use crate::update;
 use gpui::{
@@ -30,7 +32,7 @@ pub(super) struct SidebarDockNotice {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn resolve_sidebar_dock_notice_from(
+pub(super) fn resolve_sidebar_dock_notice_for(
     banner: Option<&(String, bool)>,
     universe_syncing: bool,
     universe_progress: Option<&str>,
@@ -41,6 +43,7 @@ pub(super) fn resolve_sidebar_dock_notice_from(
     themes_syncing: bool,
     update_checking: bool,
     update_applying: bool,
+    lang: UiLang,
 ) -> Option<SidebarDockNotice> {
     if let Some((msg, true)) = banner {
         return Some(SidebarDockNotice {
@@ -54,7 +57,12 @@ pub(super) fn resolve_sidebar_dock_notice_from(
     if update_applying {
         return Some(SidebarDockNotice {
             tag: "UPDATING",
-            message: "正在下载并校验新版 M3.app…".to_owned(),
+            message: lang
+                .t(
+                    "正在下载并校验新版 M3.app…",
+                    "Downloading and verifying M3.app update…",
+                )
+                .to_owned(),
             dot_color: SKY_FG,
             border_color: SKY_BORDER,
             dismissible: false,
@@ -63,7 +71,9 @@ pub(super) fn resolve_sidebar_dock_notice_from(
     if update_checking {
         let message = match banner {
             Some((msg, false)) => msg.clone(),
-            _ => "正在检查新版本…".to_owned(),
+            _ => lang
+                .t("正在检查新版本…", "Checking for updates…")
+                .to_owned(),
         };
         return Some(SidebarDockNotice {
             tag: "UPDATE",
@@ -78,7 +88,12 @@ pub(super) fn resolve_sidebar_dock_notice_from(
             tag: "LAKE SYNC",
             message: universe_progress
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or("正在后台同步全美股 L0 确定性湖仓…")
+                .unwrap_or_else(|| {
+                    lang.t(
+                        "正在后台同步全美股 L0 确定性湖仓…",
+                        "Syncing US L0 deterministic lakehouse…",
+                    )
+                })
                 .to_owned(),
             dot_color: SKY_FG,
             border_color: SKY_BORDER,
@@ -90,7 +105,7 @@ pub(super) fn resolve_sidebar_dock_notice_from(
             tag: "CATCH-UP",
             message: inbox_progress
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or("正在追平 SEC 事件流…")
+                .unwrap_or_else(|| lang.t("正在追平 SEC 事件流…", "Catching up L1 SEC event feed…"))
                 .to_owned(),
             dot_color: SKY_FG,
             border_color: SKY_BORDER,
@@ -100,7 +115,12 @@ pub(super) fn resolve_sidebar_dock_notice_from(
     if deep_research_running {
         return Some(SidebarDockNotice {
             tag: "ALAN L2",
-            message: "4 视角并行深研运行中…".to_owned(),
+            message: lang
+                .t(
+                    "4 视角并行深研运行中…",
+                    "Running 4-perspective Deep Research…",
+                )
+                .to_owned(),
             dot_color: VIOLET_FG,
             border_color: VIOLET_BORDER,
             dismissible: false,
@@ -109,7 +129,12 @@ pub(super) fn resolve_sidebar_dock_notice_from(
     if syncing {
         return Some(SidebarDockNotice {
             tag: "SYNCING",
-            message: "正在同步核心池行情与财务档案…".to_owned(),
+            message: lang
+                .t(
+                    "正在同步核心池行情与财务档案…",
+                    "Syncing Circle quotes and SEC financials…",
+                )
+                .to_owned(),
             dot_color: EMERALD_FG,
             border_color: EMERALD_BORDER,
             dismissible: false,
@@ -118,7 +143,12 @@ pub(super) fn resolve_sidebar_dock_notice_from(
     if themes_syncing {
         return Some(SidebarDockNotice {
             tag: "THEMES",
-            message: "正在同步商业原型主题图谱…".to_owned(),
+            message: lang
+                .t(
+                    "正在同步商业原型主题图谱…",
+                    "Syncing business archetype graph…",
+                )
+                .to_owned(),
             dot_color: SKY_FG,
             border_color: SKY_BORDER,
             dismissible: false,
@@ -136,8 +166,37 @@ pub(super) fn resolve_sidebar_dock_notice_from(
     None
 }
 
+#[allow(clippy::too_many_arguments, dead_code)]
+pub(super) fn resolve_sidebar_dock_notice_from(
+    banner: Option<&(String, bool)>,
+    universe_syncing: bool,
+    universe_progress: Option<&str>,
+    inbox_catching_up: bool,
+    inbox_progress: Option<&str>,
+    deep_research_running: bool,
+    syncing: bool,
+    themes_syncing: bool,
+    update_checking: bool,
+    update_applying: bool,
+) -> Option<SidebarDockNotice> {
+    resolve_sidebar_dock_notice_for(
+        banner,
+        universe_syncing,
+        universe_progress,
+        inbox_catching_up,
+        inbox_progress,
+        deep_research_running,
+        syncing,
+        themes_syncing,
+        update_checking,
+        update_applying,
+        UiLang::Zh,
+    )
+}
+
 impl MungerWorkbench {
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let unread_count = self
             .inbox_summary
             .as_ref()
@@ -146,28 +205,28 @@ impl MungerWorkbench {
         let nav_items = [
             (
                 NavView::Inbox,
-                "简报收件箱",
+                l.t("简报收件箱", "Briefing Inbox"),
                 "⌘1",
                 self.active_view == NavView::Inbox,
                 EMERALD_FG,
             ),
             (
                 NavView::Universe,
-                "全市场雷达",
+                l.t("全市场雷达", "Universe Radar"),
                 "⌘2",
                 self.active_view == NavView::Universe,
                 SKY_FG,
             ),
             (
                 NavView::Baskets,
-                "能力圈总览",
+                l.t("能力圈总览", "Circle"),
                 "⌘3",
                 self.active_view == NavView::Baskets && self.basket_filter.is_none(),
                 INK_HERO,
             ),
             (
                 NavView::Journal,
-                "主题与账本",
+                l.t("主题与账本", "Themes & Journal"),
                 "⌘4",
                 self.active_view == NavView::Journal,
                 GOLD_FG,
@@ -227,7 +286,7 @@ impl MungerWorkbench {
                                 .font_family(self.fonts.mono_term.clone())
                                 .text_size(px(11.))
                                 .text_color(rgb(INK_MUTED))
-                                .child("> 跳转 / 命令…"),
+                                .child(l.t("> 跳转 / 命令…", "> Jump / Command…")),
                         )
                         .child(kbd("⌘K", &self.fonts)),
                 ),
@@ -247,7 +306,7 @@ impl MungerWorkbench {
                             .text_size(px(11.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_MUTED))
-                            .child("工作台"),
+                            .child(l.t("工作台", "WORKBENCH")),
                     )
                     .children(nav_items.into_iter().map(
                         |(view, title, key, selected, rail_col)| {
@@ -340,7 +399,7 @@ impl MungerWorkbench {
                             .text_size(px(11.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_MUTED))
-                            .child("能力圈"),
+                            .child(l.t("能力圈", "CIRCLE")),
                     )
                     .children(Bucket::display_order().into_iter().map(|b| {
                         let members: Vec<&MungerReport> =
@@ -407,7 +466,7 @@ impl MungerWorkbench {
                                                     } else {
                                                         INK_MUTED
                                                     }))
-                                                    .child(b.short_label()),
+                                                    .child(b.short_label_for(l)),
                                             ),
                                     )
                                     .child(
@@ -490,11 +549,68 @@ impl MungerWorkbench {
                             }))
                     })),
             )
+            // Settings navigation row above the bottom dock
+            .child(
+                div()
+                    .px_2p5()
+                    .py_1p5()
+                    .border_t_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .child({
+                        let active = self.active_view == NavView::Settings;
+                        div()
+                            .id("nav-settings")
+                            .px_2()
+                            .py_1p5()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .when(active, |d| d.bg(rgba(RAIL_SELECTED)))
+                            .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                            .active(|s| s.bg(rgba(RAIL_ACTIVE)))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.switch_view(NavView::Settings);
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .w(px(5.))
+                                            .h(px(5.))
+                                            .rounded_full()
+                                            .bg(rgb(if active { INK_HERO } else { BORDER_STRONG })),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(self.fonts.ui.clone())
+                                            .text_xs()
+                                            .font_weight(if active {
+                                                gpui::FontWeight::SEMIBOLD
+                                            } else {
+                                                gpui::FontWeight::NORMAL
+                                            })
+                                            .text_color(rgb(if active {
+                                                INK_HERO
+                                            } else {
+                                                INK_SECONDARY
+                                            }))
+                                            .child(l.t("设置", "Settings")),
+                                    ),
+                            )
+                            .child(kbd("⌘,", &self.fonts))
+                    }),
+            )
             .child(self.render_sidebar_status_dock(cx))
     }
 
     fn resolve_sidebar_dock_notice(&self) -> Option<SidebarDockNotice> {
-        resolve_sidebar_dock_notice_from(
+        resolve_sidebar_dock_notice_for(
             self.banner.as_ref(),
             self.universe_syncing,
             self.universe_sync_progress.as_deref(),
@@ -505,10 +621,12 @@ impl MungerWorkbench {
             self.themes_syncing,
             self.update_checking,
             self.update_applying,
+            self.lang,
         )
     }
 
     fn render_sidebar_status_dock(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let notice = self.resolve_sidebar_dock_notice();
         let total_companies = self
             .universe_summary
@@ -516,13 +634,18 @@ impl MungerWorkbench {
             .map(|s| s.total_companies)
             .unwrap_or(0);
         let lake_label = if total_companies > 0 {
-            format!("L0 {total_companies} 家")
+            match l {
+                UiLang::Zh => format!("L0 {total_companies} 家"),
+                UiLang::En => format!("L0 {total_companies}"),
+            }
         } else {
-            "L0 未同步".to_owned()
+            l.t("L0 未同步", "L0 Unsynced").to_owned()
         };
-        let (budget_text, budget_col) = budget_watermark_summary(self.budget_report.as_ref());
+        let (budget_text, budget_col) =
+            budget_watermark_summary_for(self.budget_report.as_ref(), l);
         let budget_compact = budget_text
             .strip_prefix("本月 AI 预算 ")
+            .or_else(|| budget_text.strip_prefix("AI Budget "))
             .unwrap_or(&budget_text)
             .to_owned();
 
@@ -627,7 +750,7 @@ impl MungerWorkbench {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.restart_after_update(cx);
                 }))
-                .child(format!("重启 {short_ver}"))
+                .child(format!("{} {short_ver}", l.t("重启", "Restart")))
         } else if let Some(notice) = &self.update_notice {
             let short_ver = compact_sidebar_version_label(&notice.latest_version);
             div()
@@ -669,7 +792,7 @@ impl MungerWorkbench {
                     this.start_update_check(true, cx);
                 }))
                 .child(if self.update_checking {
-                    "检查更新中…".to_owned()
+                    l.t("检查更新中…", "Checking…").to_owned()
                 } else {
                     short_ver
                 })
@@ -742,13 +865,14 @@ impl MungerWorkbench {
     }
 
     pub(super) fn render_toolbar(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let bench_val = match &self.benchmark {
             Some(b) => format!("{:.2}", b.price),
             None => "—".into(),
         };
         let sync_label = match &self.sync_status {
-            Some(s) => fmt_time_cn(Some(s.synced_at_ms)),
-            None => "未同步".into(),
+            Some(s) => fmt_time_cn_for(Some(s.synced_at_ms), l),
+            None => l.t("未同步", "Unsynced").into(),
         };
         let selected_name = self
             .reports
@@ -758,14 +882,29 @@ impl MungerWorkbench {
             .unwrap_or_default();
 
         let breadcrumb = match self.active_view {
-            NavView::Inbox => "简报收件箱 · Event-Driven L1".to_owned(),
+            NavView::Inbox => l
+                .t(
+                    "简报收件箱 · Event-Driven L1",
+                    "Briefing Inbox · Event-Driven L1",
+                )
+                .to_owned(),
             NavView::Baskets => match (self.basket_filter, &self.circle_filter) {
                 (Some(b), Some(tag)) => {
-                    format!("能力圈总览 / {} ({}) / #{tag}", b.code(), b.short_label())
+                    format!(
+                        "{} / {} ({}) / #{tag}",
+                        l.t("能力圈总览", "Circle"),
+                        b.code(),
+                        b.short_label_for(l)
+                    )
                 }
-                (Some(b), None) => format!("能力圈总览 / {} ({})", b.code(), b.short_label()),
-                (None, Some(tag)) => format!("能力圈总览 / #{tag}"),
-                (None, None) => "能力圈总览".to_owned(),
+                (Some(b), None) => format!(
+                    "{} / {} ({})",
+                    l.t("能力圈总览", "Circle"),
+                    b.code(),
+                    b.short_label_for(l)
+                ),
+                (None, Some(tag)) => format!("{} / #{tag}", l.t("能力圈总览", "Circle")),
+                (None, None) => l.t("能力圈总览", "Circle Overview").to_owned(),
             },
             NavView::Dossier | NavView::Agent => {
                 if self.selected_ticker.is_empty() {
@@ -777,8 +916,24 @@ impl MungerWorkbench {
                     )
                 }
             }
-            NavView::Journal => "主题图谱与决策账本 · Themes & Journal".to_owned(),
-            NavView::Universe => "全市场雷达 · US Lakehouse L0/L1".to_owned(),
+            NavView::Journal => l
+                .t(
+                    "主题图谱与决策账本 · Themes & Journal",
+                    "Themes & Decision Journal",
+                )
+                .to_owned(),
+            NavView::Universe => l
+                .t(
+                    "全市场雷达 · US Lakehouse L0/L1",
+                    "Universe Radar · US Lakehouse L0/L1",
+                )
+                .to_owned(),
+            NavView::Settings => l
+                .t(
+                    "设置 · Preferences & Guardrails",
+                    "Settings · Preferences & Guardrails",
+                )
+                .to_owned(),
         };
 
         div()
@@ -870,7 +1025,11 @@ impl MungerWorkbench {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.restart_after_update(cx);
                                 }))
-                                .child(format!("已更新 v{ver} · 重启")),
+                                .child(format!(
+                                    "{} v{ver} · {}",
+                                    l.t("已更新", "Updated"),
+                                    l.t("重启", "Restart")
+                                )),
                         )
                     })
                     .when(
@@ -888,7 +1047,7 @@ impl MungerWorkbench {
                                     .font_family(self.fonts.mono_num.clone())
                                     .text_size(px(11.))
                                     .text_color(rgb(INK_MUTED))
-                                    .child("更新中…"),
+                                    .child(l.t("更新中…", "Updating…")),
                             )
                         },
                     )
@@ -1003,9 +1162,9 @@ impl MungerWorkbench {
                                         INK_PRIMARY
                                     }))
                                     .child(if self.syncing {
-                                        "同步中…"
+                                        l.t("同步中…", "Syncing…")
                                     } else {
-                                        "同步"
+                                        l.t("同步", "Sync")
                                     }),
                             )
                             .child(kbd("⌘R", &self.fonts)),
@@ -1014,17 +1173,30 @@ impl MungerWorkbench {
     }
 
     pub(super) fn render_statusline(&self) -> gpui::Div {
+        let l = self.lang;
         let (dot_col, legend) = if self.palette_open {
-            (SKY_FG, "↑/↓ 选择 · ↵ 执行 · esc 关闭命令面板")
+            (
+                SKY_FG,
+                l.t(
+                    "↑/↓ 选择 · ↵ 执行 · esc 关闭命令面板",
+                    "↑/↓ select · ↵ run · esc close palette",
+                ),
+            )
         } else {
             match self.active_view {
                 NavView::Inbox => (
                     EMERALD_FG,
-                    "j/k 移动 · ↵ 打开 · w 观察 · x TooHard · e 归档 · u 未读 · d Alan · r 追平 · ⌘K 命令",
+                    l.t(
+                        "j/k 移动 · ↵ 打开 · w 观察 · x TooHard · e 归档 · u 未读 · d Alan · r 追平 · ⌘K 命令",
+                        "j/k move · ↵ open · w watch · x too hard · e archive · u unread · d Alan · r catch-up · ⌘K commands",
+                    ),
                 ),
                 NavView::Baskets => (
                     EMERALD_FG,
-                    "v 列表/看板 · 1-4 切分组 · 0 全部 · j/k 移动 · ↵ 打开 · ⌘K 命令",
+                    l.t(
+                        "v 列表/看板 · 1-4 切分组 · 0 全部 · j/k 移动 · ↵ 打开 · ⌘K 命令",
+                        "v list/board · 1-4 tier · 0 all · j/k move · ↵ open · ⌘K commands",
+                    ),
                 ),
                 NavView::Dossier | NavView::Agent => (
                     if self.active_view == NavView::Agent {
@@ -1032,15 +1204,31 @@ impl MungerWorkbench {
                     } else {
                         EMERALD_FG
                     },
-                    "1 财报与活研报 · 2 Deep Research & Alan · 3 XBRL · t TTM/FY · j/k 换股 · p Prompt · c CLI · esc 返回",
+                    l.t(
+                        "1 财报与活研报 · 2 Deep Research & Alan · 3 XBRL · t TTM/FY · j/k 换股 · p Prompt · c CLI · esc 返回",
+                        "1 Financials & Memo · 2 Deep Research & Alan · 3 XBRL · t TTM/FY · j/k switch · p Prompt · c CLI · esc back",
+                    ),
                 ),
                 NavView::Journal => (
                     GOLD_FG,
-                    "s 同步主题图谱 · / 或 ⌘K 命令面板 · c 复制 journal CLI · esc 返回总览",
+                    l.t(
+                        "s 同步主题图谱 · / 或 ⌘K 命令面板 · c 复制 journal CLI · esc 返回总览",
+                        "s sync themes · / or ⌘K palette · c copy journal CLI · esc back to Circle",
+                    ),
                 ),
                 NavView::Universe => (
                     SKY_FG,
-                    "/ 搜索 · j/k 选择 · ↵ 打开已入池研报 · r 刷新 · ⌘K 命令 · esc 返回",
+                    l.t(
+                        "/ 搜索 · j/k 选择 · ↵ 打开已入池研报 · r 刷新 · ⌘K 命令 · esc 返回",
+                        "/ search · j/k select · ↵ open dossier · r refresh · ⌘K palette · esc back",
+                    ),
+                ),
+                NavView::Settings => (
+                    SKY_FG,
+                    l.t(
+                        "中/英双语即时切换 · 工作区目录 · 更新通道 · L2 预算护栏 · esc 返回",
+                        "Live Zh/En switch · Workspace · Updates · L2 Budget Guardrails · esc back",
+                    ),
                 ),
             }
         };

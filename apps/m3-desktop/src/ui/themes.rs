@@ -30,7 +30,13 @@ impl MungerWorkbench {
                 self.themes_error = None;
             }
             Err(err) => {
-                self.themes_error = Some(format!("读取 workbench/themes.json 失败：{err:#}"));
+                self.themes_error = Some(format!(
+                    "{}: {err:#}",
+                    self.lang.t(
+                        "读取 workbench/themes.json 失败",
+                        "Failed to read workbench/themes.json"
+                    )
+                ));
             }
         }
     }
@@ -39,7 +45,12 @@ impl MungerWorkbench {
         if self.themes_syncing || self.universe_syncing {
             if self.universe_syncing {
                 self.banner = Some((
-                    "全美股 L0 湖仓正在同步，请完成后再同步主题图谱".into(),
+                    self.lang
+                        .t(
+                            "全美股 L0 湖仓正在同步，请完成后再同步主题图谱",
+                            "US L0 lakehouse is syncing; wait until it finishes to sync themes",
+                        )
+                        .into(),
                     false,
                 ));
                 cx.notify();
@@ -49,11 +60,17 @@ impl MungerWorkbench {
         self.themes_syncing = true;
         self.themes_error = None;
         self.banner = Some((
-            "正在从 DuckDB 湖仓同步跨公司商业原型主题图谱…".into(),
+            self.lang
+                .t(
+                    "正在从 DuckDB 湖仓同步跨公司商业原型主题图谱…",
+                    "Syncing cross-company business archetype clusters from DuckDB…",
+                )
+                .into(),
             false,
         ));
 
         let root = self.paths.repo_root.clone();
+        let l = self.lang;
         let (tx, rx) = mpsc::channel();
         self.themes_sync_rx = Some(rx);
 
@@ -63,8 +80,16 @@ impl MungerWorkbench {
                 Ok(Some(db)) => db
                     .sync_and_load_themes(&paths)
                     .map_err(|e| format!("{e:#}")),
-                Ok(None) => Err("全美股湖仓尚未同步，请先运行 `m3 universe sync`".to_owned()),
-                Err(e) => Err(format!("打开 m3.duckdb 失败：{e:#}")),
+                Ok(None) => Err(l
+                    .t(
+                        "全美股湖仓尚未同步，请先运行 `m3 universe sync`",
+                        "US lakehouse not synced yet — run `m3 universe sync` first",
+                    )
+                    .to_owned()),
+                Err(e) => Err(format!(
+                    "{}: {e:#}",
+                    l.t("打开 m3.duckdb 失败", "Failed to open m3.duckdb")
+                )),
             };
             let _ = tx.send(res);
         });
@@ -81,11 +106,18 @@ impl MungerWorkbench {
                 self.themes_file = themes;
                 self.themes_error = None;
                 self.banner = Some((
-                    format!(
-                        "主题图谱已同步 · {} 个商业原型簇 / 覆盖 {} 家公司（保留人类批注）",
-                        self.themes_file.clusters.len(),
-                        self.themes_file.total_indexed_companies
-                    ),
+                    match self.lang {
+                        crate::i18n::UiLang::Zh => format!(
+                            "主题图谱已同步 · {} 个商业原型簇 / 覆盖 {} 家公司（保留人类批注）",
+                            self.themes_file.clusters.len(),
+                            self.themes_file.total_indexed_companies
+                        ),
+                        crate::i18n::UiLang::En => format!(
+                            "Themes synced · {} archetype clusters across {} companies (human notes preserved)",
+                            self.themes_file.clusters.len(),
+                            self.themes_file.total_indexed_companies
+                        ),
+                    },
                     false,
                 ));
                 true
@@ -93,7 +125,13 @@ impl MungerWorkbench {
             Ok(Err(err)) => {
                 self.themes_syncing = false;
                 self.themes_error = Some(err.clone());
-                self.banner = Some((format!("同步主题图谱失败：{err}"), true));
+                self.banner = Some((
+                    format!(
+                        "{}: {err}",
+                        self.lang.t("同步主题图谱失败", "Theme sync failed")
+                    ),
+                    true,
+                ));
                 true
             }
             Err(mpsc::TryRecvError::Empty) => {
@@ -148,10 +186,11 @@ impl MungerWorkbench {
     }
 
     pub(super) fn render_themes_section(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let updated_label = if self.themes_file.updated_at_ms > 0 {
-            fmt_time_cn(Some(self.themes_file.updated_at_ms))
+            fmt_time_cn_for(Some(self.themes_file.updated_at_ms), l)
         } else {
-            "未同步".into()
+            l.t("未同步", "Unsynced").into()
         };
         let total_clusters = self.themes_file.clusters.len();
         let indexed = self.themes_file.total_indexed_companies;
@@ -172,7 +211,8 @@ impl MungerWorkbench {
                     .items_center()
                     .gap_2p5()
                     .child(badge(
-                        "THEMES · 商业原型图谱".into(),
+                        l.t("THEMES · 商业原型图谱", "THEMES · Business Archetypes")
+                            .into(),
                         SKY_FG,
                         SKY_BG,
                         SKY_BORDER,
@@ -183,9 +223,10 @@ impl MungerWorkbench {
                             .font_family(self.fonts.ui.clone())
                             .text_xs()
                             .text_color(rgb(INK_MUTED))
-                            .child(
+                            .child(l.t(
                                 "workbench/themes.json · SIC + 隐空间聚类（保留人类 user_notes）",
-                            ),
+                                "workbench/themes.json · SIC + Latent Clustering (preserves user_notes)",
+                            )),
                     ),
             )
             .child(
@@ -194,21 +235,21 @@ impl MungerWorkbench {
                     .items_center()
                     .gap_3()
                     .child(journal_stat(
-                        "原型簇",
+                        l.t("原型簇", "Clusters"),
                         format!("{total_clusters}"),
                         INK_HERO,
                         &self.fonts,
                     ))
                     .child(v_divider())
                     .child(journal_stat(
-                        "索引公司",
+                        l.t("索引公司", "Indexed"),
                         format!("{indexed}"),
                         SKY_FG,
                         &self.fonts,
                     ))
                     .child(v_divider())
                     .child(journal_stat(
-                        "更新时间",
+                        l.t("更新时间", "Updated"),
                         updated_label,
                         INK_SECONDARY,
                         &self.fonts,
@@ -245,9 +286,9 @@ impl MungerWorkbench {
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child(if self.themes_syncing {
-                                        "同步中…"
+                                        l.t("同步中…", "Syncing…")
                                     } else {
-                                        "同步主题图谱"
+                                        l.t("同步主题图谱", "Sync Themes")
                                     }),
                             )
                             .child(kbd("s", &self.fonts)),
@@ -292,14 +333,20 @@ impl MungerWorkbench {
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(INK_HERO))
-                                    .child("尚无跨公司商业原型主题簇"),
+                                    .child(l.t(
+                                        "尚无跨公司商业原型主题簇",
+                                        "No cross-company archetype clusters yet",
+                                    )),
                             )
                             .child(
                                 div()
                                     .font_family(self.fonts.ui.clone())
                                     .text_xs()
                                     .text_color(rgb(INK_MUTED))
-                                    .child("点击右上角「同步主题图谱」或运行 CLI，从 DuckDB 湖仓生成主题聚类；已手写的 user_notes 将自动保留。"),
+                                    .child(l.t(
+                                        "点击右上角「同步主题图谱」或运行 CLI，从 DuckDB 湖仓生成主题聚类；已手写的 user_notes 将自动保留。",
+                                        "Click Sync Themes or run the CLI to generate archetype clusters from DuckDB; existing user_notes are preserved.",
+                                    )),
                             ),
                     )
                     .child(
@@ -342,10 +389,11 @@ impl MungerWorkbench {
         idx: usize,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        let l = self.lang;
         let median_roic = cluster
             .median_roic_5y_pct
-            .map(|r| format!("中位 ROIC {r:.1}%"))
-            .unwrap_or_else(|| "中位 ROIC —".into());
+            .map(|r| format!("{} {r:.1}%", l.t("中位 ROIC", "Med ROIC")))
+            .unwrap_or_else(|| format!("{} —", l.t("中位 ROIC", "Med ROIC")));
         let sic_txt = if cluster.sic_codes.is_empty() {
             "SIC —".into()
         } else {
@@ -387,7 +435,11 @@ impl MungerWorkbench {
                         ))
                         .when(cluster.strike_zone_count > 0, |d| {
                             d.child(badge(
-                                format!("{} 家击球区", cluster.strike_zone_count),
+                                format!(
+                                    "{} {}",
+                                    cluster.strike_zone_count,
+                                    l.t("家击球区", "in strike")
+                                ),
                                 EMERALD_FG,
                                 EMERALD_BG,
                                 EMERALD_BORDER,
@@ -403,7 +455,7 @@ impl MungerWorkbench {
                         .font_family(self.fonts.mono_num.clone())
                         .text_size(px(11.))
                         .text_color(rgb(INK_SECONDARY))
-                        .child(format!("{} 家", cluster.members.len()))
+                        .child(format!("{} {}", cluster.members.len(), l.t("家", "cos")))
                         .child("·")
                         .child(median_roic)
                         .child("·")
@@ -453,7 +505,11 @@ impl MungerWorkbench {
                     .text_xs()
                     .line_height(px(18.))
                     .text_color(rgb(GOLD_FG))
-                    .child(format!("人类批注 (user_notes)：{}", cluster.user_notes)),
+                    .child(format!(
+                        "{}: {}",
+                        l.t("人类批注 (user_notes)", "Human Notes (user_notes)"),
+                        cluster.user_notes
+                    )),
             );
         }
 

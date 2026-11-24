@@ -1,5 +1,6 @@
 //! Persistent macOS Application Support configuration for installed `M3.app` / `m3` CLI.
 
+use crate::i18n::UiLang;
 use crate::model::{DecisionJournal, WatchlistFile};
 use crate::store;
 use anyhow::{Context, Result, bail, ensure};
@@ -17,6 +18,8 @@ pub struct AppConfig {
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<UiLang>,
 }
 
 impl Default for AppConfig {
@@ -24,6 +27,7 @@ impl Default for AppConfig {
         Self {
             schema_version: 1,
             workspace_root: None,
+            language: None,
         }
     }
 }
@@ -237,10 +241,95 @@ pub fn read_workspace_root() -> Option<PathBuf> {
     path.canonicalize().ok().or(Some(path))
 }
 
+/// Return raw `workspace_root` string from `config.json` if configured and non-empty.
+pub fn read_configured_workspace_root() -> Option<String> {
+    let cfg = read_app_config().ok().flatten()?;
+    cfg.workspace_root
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+/// Clear explicit `workspace_root` in `config.json` while preserving other host settings.
+pub fn clear_workspace_root() -> Result<()> {
+    let cfg_path = config_path()?;
+    if let Ok(meta) = std::fs::symlink_metadata(&cfg_path)
+        && (!meta.is_file() || meta.file_type().is_symlink())
+    {
+        bail!(
+            "refusing to overwrite non-regular config `{}`",
+            cfg_path.display()
+        );
+    }
+    let mut cfg = read_app_config().ok().flatten().unwrap_or_default();
+    cfg.schema_version = 1;
+    cfg.workspace_root = None;
+    store::write_json_atomic(&cfg_path, &cfg)
+}
+
+/// Read persisted UI language preference, falling back to OS/env detection.
+pub fn read_ui_language() -> UiLang {
+    read_app_config()
+        .ok()
+        .flatten()
+        .and_then(|c| c.language)
+        .unwrap_or_else(UiLang::detect_system_lang)
+}
+
+/// Persist UI language preference to `config.json` without clobbering `workspace_root`.
+pub fn write_ui_language(lang: UiLang) -> Result<()> {
+    let cfg_path = config_path()?;
+    if let Ok(meta) = std::fs::symlink_metadata(&cfg_path)
+        && (!meta.is_file() || meta.file_type().is_symlink())
+    {
+        bail!(
+            "refusing to overwrite non-regular config `{}`",
+            cfg_path.display()
+        );
+    }
+    let mut cfg = read_app_config().ok().flatten().unwrap_or_default();
+    cfg.schema_version = 1;
+    cfg.language = Some(lang);
+    store::write_json_atomic(&cfg_path, &cfg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{Bucket, CompanyEntry, DataSource, ValuationAssumptions};
+
+    #[test]
+    fn app_config_language_and_workspace_roundtrip_without_clobbering() {
+        let dir = std::env::temp_dir().join(format!(
+            "m3-app-cfg-test-{}",
+            crate::store::atomic_temp_path(Path::new("cfg"))
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("x")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ws = ensure_initialized_workspace(&dir.join("ws")).unwrap();
+        let cfg_file = dir.join("config.json");
+        let cfg = AppConfig {
+            schema_version: 1,
+            workspace_root: Some(ws.display().to_string()),
+            language: Some(UiLang::En),
+        };
+        store::write_json_atomic(&cfg_file, &cfg).unwrap();
+        let loaded: AppConfig = store::read_json(&cfg_file).unwrap();
+        assert_eq!(loaded.language, Some(UiLang::En));
+        assert_eq!(
+            loaded.workspace_root.as_deref(),
+            cfg.workspace_root.as_deref()
+        );
+
+        // Legacy config JSON without `language` field still deserializes cleanly.
+        let legacy: AppConfig =
+            serde_json::from_str(r#"{"schema_version":1,"workspace_root":"/tmp/m3"}"#).unwrap();
+        assert_eq!(legacy.language, None);
+        assert_eq!(legacy.workspace_root.as_deref(), Some("/tmp/m3"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn ensure_initialized_workspace_creates_empty_files_and_preserves_existing() {

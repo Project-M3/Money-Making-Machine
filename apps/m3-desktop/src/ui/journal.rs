@@ -3,6 +3,7 @@ use gpui::{Context, div, prelude::*, px, rgb, rgba};
 
 impl MungerWorkbench {
     pub(super) fn render_journal_view(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let bench_now = self
             .benchmark
             .as_ref()
@@ -12,16 +13,20 @@ impl MungerWorkbench {
             .journal
             .benchmark_start_price
             .map(|p| format!("{p:.2}"))
-            .unwrap_or_else(|| "待锁定".into());
+            .unwrap_or_else(|| l.t("待锁定", "Unset").into());
 
         let cols: &[(&str, f32, bool)] = &[
-            ("日期", 98., false),
-            ("标的", 84., false),
-            ("决策动作", 112., false),
-            ("冻结价格", 92., true),
-            ("严苛 FCF%", 88., true),
+            (l.t("日期", "Date"), 98., false),
+            (l.t("标的", "Ticker"), 84., false),
+            (l.t("决策动作", "Action"), 112., false),
+            (l.t("冻结价格", "Price"), 92., true),
+            (l.t("严苛 FCF%", "Strict FCF%"), 88., true),
             ("S&P 500", 88., true),
-            ("判断依据与事前证伪条件", 0., false),
+            (
+                l.t("判断依据与事前证伪条件", "Rationale & Pre-Falsification"),
+                0.,
+                false,
+            ),
         ];
 
         let journal_cmd =
@@ -58,7 +63,10 @@ impl MungerWorkbench {
                                     .font_family(self.fonts.ui.clone())
                                     .text_xs()
                                     .text_color(rgb(INK_MUTED))
-                                    .child("事前冻结决策账本"),
+                                    .child(l.t(
+                                        "事前冻结决策账本",
+                                        "Append-Only Pre-Committed Decision Journal",
+                                    )),
                             ),
                     )
                     .child(
@@ -67,14 +75,14 @@ impl MungerWorkbench {
                             .items_center()
                             .gap_4()
                             .child(journal_stat(
-                                "模拟现金",
+                                l.t("模拟现金", "Paper Cash"),
                                 format!("${:.2}", self.journal.cash_balance),
                                 EMERALD_FG,
                                 &self.fonts,
                             ))
                             .child(v_divider())
                             .child(journal_stat(
-                                "初始现金",
+                                l.t("初始现金", "Starting Cash"),
                                 format!("${:.2}", self.journal.starting_cash),
                                 INK_HERO,
                                 &self.fonts,
@@ -82,13 +90,13 @@ impl MungerWorkbench {
                             .child(v_divider())
                             .child(journal_stat(
                                 "S&P 500",
-                                format!("{bench_now} (起点 {bench_start})"),
+                                format!("{bench_now} ({} {bench_start})", l.t("起点", "Baseline")),
                                 INK_PRIMARY,
                                 &self.fonts,
                             ))
                             .child(v_divider())
                             .child(journal_stat(
-                                "记录数",
+                                l.t("记录数", "Entries"),
                                 format!("{}", self.journal.entries.len()),
                                 SLATE_FG,
                                 &self.fonts,
@@ -114,7 +122,10 @@ impl MungerWorkbench {
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(rgb(INK_HERO))
-                                        .child("决策记录（workbench/journal.json）"),
+                                        .child(l.t(
+                                            "决策记录（workbench/journal.json）",
+                                            "Decision Entries (workbench/journal.json)",
+                                        )),
                                 )
                                 .child(
                                     div()
@@ -258,7 +269,8 @@ impl MungerWorkbench {
                                                 .text_xs()
                                                 .text_color(rgb(INK_MUTED))
                                                 .child(format!(
-                                                    "证伪条件: {}",
+                                                    "{}: {}",
+                                                    l.t("证伪条件", "Falsification Trigger"),
                                                     e.falsification_trigger
                                                 )),
                                         ),

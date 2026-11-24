@@ -8,6 +8,7 @@ use rust_decimal::Decimal;
 
 impl MungerWorkbench {
     pub(super) fn render_baskets_view(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let tags = collect_circle_tags(&self.reports);
         let pulse = compute_today_pulse(&self.reports);
         let has_any_filter = self.basket_filter.is_some()
@@ -31,7 +32,7 @@ impl MungerWorkbench {
                     .font_family(self.fonts.mono_term.clone())
                     .text_size(px(10.))
                     .text_color(rgb(INK_MUTED))
-                    .child("今日信号"),
+                    .child(l.t("今日信号", "TODAY'S PULSE")),
             )
             .child(v_divider());
 
@@ -47,7 +48,10 @@ impl MungerWorkbench {
                             .font_family(self.fonts.ui.clone())
                             .text_xs()
                             .text_color(rgb(INK_SECONDARY))
-                            .child("能力圈为空 · 从全市场雷达或收件箱挑选首批标的"),
+                            .child(l.t(
+                                "能力圈为空 · 从全市场雷达或收件箱挑选首批标的",
+                                "Circle is empty · pick holdings from Universe Radar or Inbox",
+                            )),
                     ),
             );
         } else if pulse_quiet {
@@ -62,7 +66,10 @@ impl MungerWorkbench {
                             .font_family(self.fonts.ui.clone())
                             .text_xs()
                             .text_color(rgb(INK_SECONDARY))
-                            .child("今日无球可挥 · 耐心等待"),
+                            .child(l.t(
+                                "今日无球可挥 · 耐心等待",
+                                "No fat pitch today · wait patiently",
+                            )),
                     ),
             );
         } else {
@@ -91,7 +98,7 @@ impl MungerWorkbench {
                                 .text_xs()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(rgb(EMERALD_FG))
-                                .child(format!("击球区: {list_txt}")),
+                                .child(format!("{}: {list_txt}", l.t("击球区", "Strike"))),
                         ),
                 );
             } else {
@@ -100,7 +107,7 @@ impl MungerWorkbench {
                         .font_family(self.fonts.ui.clone())
                         .text_xs()
                         .text_color(rgb(INK_MUTED))
-                        .child("0 击球"),
+                        .child(l.t("0 击球", "0 Strike")),
                 );
             }
 
@@ -137,7 +144,7 @@ impl MungerWorkbench {
                                 .text_xs()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(rgb(CORAL_FG))
-                                .child(format!("红灯复核: {list_txt}")),
+                                .child(format!("{}: {list_txt}", l.t("红灯复核", "Red Review"))),
                         ),
                 );
             } else {
@@ -146,7 +153,7 @@ impl MungerWorkbench {
                         .font_family(self.fonts.ui.clone())
                         .text_xs()
                         .text_color(rgb(INK_MUTED))
-                        .child("核心池无红灯"),
+                        .child(l.t("核心池无红灯", "0 Core Warnings")),
                 );
             }
 
@@ -176,7 +183,10 @@ impl MungerWorkbench {
                             this.focus_basket(Some(Bucket::Watch));
                             cx.notify();
                         }))
-                        .child(format!("○ 待分拣 {watch_cnt} 家")),
+                        .child(match l {
+                            crate::i18n::UiLang::Zh => format!("○ 待分拣 {watch_cnt} 家"),
+                            crate::i18n::UiLang::En => format!("○ {watch_cnt} to triage"),
+                        }),
                 );
             } else {
                 pulse_left = pulse_left.child(
@@ -184,7 +194,7 @@ impl MungerWorkbench {
                         .font_family(self.fonts.ui.clone())
                         .text_xs()
                         .text_color(rgb(INK_MUTED))
-                        .child("待审讯已清空"),
+                        .child(l.t("待审讯已清空", "Watch cleared")),
                 );
             }
         }
@@ -205,7 +215,7 @@ impl MungerWorkbench {
                     seg_group()
                         .child(seg_tab(
                             "bkt-mode-list",
-                            "列表",
+                            l.t("列表", "List"),
                             self.baskets_view_mode == BasketsViewMode::List,
                             None,
                             false,
@@ -218,7 +228,7 @@ impl MungerWorkbench {
                         ))
                         .child(seg_tab(
                             "bkt-mode-board",
-                            "看板",
+                            l.t("看板", "Board"),
                             self.baskets_view_mode == BasketsViewMode::Board,
                             None,
                             false,
@@ -282,7 +292,7 @@ impl MungerWorkbench {
                                             gpui::FontWeight::NORMAL
                                         })
                                         .text_color(rgb(if active { INK_HERO } else { INK_MUTED }))
-                                        .child("全部"),
+                                        .child(l.t("全部", "All")),
                                 )
                                 .child(
                                     div()
@@ -370,7 +380,7 @@ impl MungerWorkbench {
                                             this.toggle_status_filter(sf);
                                             cx.notify();
                                         }))
-                                        .child(sf.label())
+                                        .child(sf.label_for(l))
                                 }),
                         )
                         .when(has_any_filter, |d| {
@@ -394,7 +404,7 @@ impl MungerWorkbench {
                                         this.cursor_index = 0;
                                         cx.notify();
                                     }))
-                                    .child("× 重置"),
+                                    .child(l.t("× 重置", "× Reset")),
                             )
                         }),
                 ),
@@ -455,7 +465,10 @@ impl MungerWorkbench {
                                         .text_base()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(rgb(INK_HERO))
-                                        .child("尚未建立个人能力圈"),
+                                        .child(l.t(
+                                            "尚未建立个人能力圈",
+                                            "Your Circle is Empty",
+                                        )),
                                 ),
                         )
                         .child(
@@ -464,7 +477,10 @@ impl MungerWorkbench {
                                 .text_xs()
                                 .line_height(px(19.))
                                 .text_color(rgb(INK_SECONDARY))
-                                .child("M3 不会预置任何持仓或观察名单。你可以先同步全美股 L0 湖仓，从全市场雷达或简报收件箱中挑选真正读懂的公司加入能力圈（CORE / WATCH / OUT / TOO HARD），也可以在终端通过 CLI 自行维护。"),
+                                .child(l.t(
+                                    "M3 不会预置任何持仓或观察名单。你可以先同步全美股 L0 湖仓，从全市场雷达或简报收件箱中挑选真正读懂的公司加入能力圈（CORE / WATCH / OUT / TOO HARD），也可以在终端通过 CLI 自行维护。",
+                                    "M3 ships with zero pre-loaded holdings or watchlists. Sync the US L0 lakehouse, then promote businesses you understand from Universe Radar or Briefing Inbox into your Circle (CORE / WATCH / OUT / TOO HARD).",
+                                )),
                         )
                         .child(
                             div()
@@ -492,7 +508,10 @@ impl MungerWorkbench {
                                             this.switch_view(NavView::Universe);
                                             cx.notify();
                                         }))
-                                        .child("前往全市场雷达 (⌘2)"),
+                                        .child(l.t(
+                                            "前往全市场雷达 (⌘2)",
+                                            "Open Universe Radar (⌘2)",
+                                        )),
                                 )
                                 .child(
                                     div()
@@ -513,7 +532,10 @@ impl MungerWorkbench {
                                             this.switch_view(NavView::Inbox);
                                             cx.notify();
                                         }))
-                                        .child("打开简报收件箱 (⌘1)"),
+                                        .child(l.t(
+                                            "打开简报收件箱 (⌘1)",
+                                            "Open Briefing Inbox (⌘1)",
+                                        )),
                                 ),
                         )
                         .child(
@@ -528,7 +550,10 @@ impl MungerWorkbench {
                                 .font_family(self.fonts.mono_term.clone())
                                 .text_size(px(11.))
                                 .text_color(rgb(INK_MUTED))
-                                .child("CLI: m3 add AAPL --bucket watch --circle \"消费生态\""),
+                                .child(l.t(
+                                    "CLI: m3 add AAPL --bucket watch --circle \"消费生态\"",
+                                    "CLI: m3 add AAPL --bucket watch --circle \"Ecosystem\"",
+                                )),
                         ),
                 ),
             );
@@ -540,16 +565,38 @@ impl MungerWorkbench {
 
         // Collapsible Grouped Basket Cards
         let mut linear_idx: usize = 0;
+        let nd_label = l.t("净债/OE", "NetDebt/OE");
+        let status_label = l.t("状态", "Status");
         let headers: &[(&str, f32, bool, Option<SortCol>)] = &[
-            ("标的 / 能力圈", 0., false, Some(SortCol::Ticker)),
-            ("现价", 90., true, Some(SortCol::Price)),
-            ("击球价", 90., true, None),
-            ("距击球价", 90., true, Some(SortCol::Margin)),
+            (
+                l.t("标的 / 能力圈", "Holding / Circle"),
+                0.,
+                false,
+                Some(SortCol::Ticker),
+            ),
+            (l.t("现价", "Price"), 90., true, Some(SortCol::Price)),
+            (l.t("击球价", "Strike"), 90., true, None),
+            (
+                l.t("距击球价", "vs Strike"),
+                90.,
+                true,
+                Some(SortCol::Margin),
+            ),
             ("5Y ROIC", 84., true, Some(SortCol::Roic)),
-            ("严苛 FCF%", 88., true, Some(SortCol::FcfYield)),
-            ("3Y 股本Δ", 84., true, Some(SortCol::ShareDelta)),
-            ("净债/OE", 82., true, Some(SortCol::NetDebt)),
-            ("状态", 112., false, None),
+            (
+                l.t("严苛 FCF%", "Strict FCF%"),
+                88.,
+                true,
+                Some(SortCol::FcfYield),
+            ),
+            (
+                l.t("3Y 股本Δ", "3Y ShareΔ"),
+                84.,
+                true,
+                Some(SortCol::ShareDelta),
+            ),
+            (nd_label, 82., true, Some(SortCol::NetDebt)),
+            (status_label, 112., false, None),
         ];
 
         let mut cards = div().px_5().pt_3().pb_5().flex().flex_col().gap_3();
@@ -632,7 +679,7 @@ impl MungerWorkbench {
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(INK_HERO))
-                                    .child(bucket.short_label()),
+                                    .child(bucket.short_label_for(l)),
                             )
                             .child(
                                 div()
@@ -656,17 +703,31 @@ impl MungerWorkbench {
             if !is_collapsed {
                 if rows.is_empty() {
                     let empty_msg = if has_any_filter {
-                        format!(
-                            "当前筛选下 [{} · {}] 暂无匹配标的。",
-                            bucket.code(),
-                            bucket.short_label()
-                        )
+                        match l {
+                            crate::i18n::UiLang::Zh => format!(
+                                "当前筛选下 [{} · {}] 暂无匹配标的。",
+                                bucket.code(),
+                                bucket.short_label_for(l)
+                            ),
+                            crate::i18n::UiLang::En => format!(
+                                "No matching holdings in [{} · {}] for active filters.",
+                                bucket.code(),
+                                bucket.short_label_for(l)
+                            ),
+                        }
                     } else {
-                        format!(
-                            "当前 [{} · {}] 暂无标的。",
-                            bucket.code(),
-                            bucket.short_label()
-                        )
+                        match l {
+                            crate::i18n::UiLang::Zh => format!(
+                                "当前 [{} · {}] 暂无标的。",
+                                bucket.code(),
+                                bucket.short_label_for(l)
+                            ),
+                            crate::i18n::UiLang::En => format!(
+                                "No holdings in [{} · {}] yet.",
+                                bucket.code(),
+                                bucket.short_label_for(l)
+                            ),
+                        }
                     };
                     block = block.child(
                         div()
@@ -694,8 +755,8 @@ impl MungerWorkbench {
                                 } else {
                                     ""
                                 };
-                                let is_nd = *label == "净债/OE";
-                                let is_status = *label == "状态";
+                                let is_nd = *label == nd_label;
+                                let is_status = *label == status_label;
                                 div()
                                     .id(gpui::SharedString::from(format!(
                                         "hdr-{}-{label}",
@@ -912,7 +973,7 @@ impl MungerWorkbench {
                                         .flex()
                                         .items_center()
                                         .child(badge(
-                                            rep.status.label().to_owned(),
+                                            rep.status.label_for(l).to_owned(),
                                             s_fg,
                                             s_bg,
                                             s_br,
@@ -1009,7 +1070,9 @@ impl MungerWorkbench {
                                                 .text_xs()
                                                 .text_color(rgb(INK_SECONDARY))
                                                 .child(format!(
-                                                    "现价 {price_txt} · 严苛 OE {oe_txt}"
+                                                    "{} {price_txt} · {} {oe_txt}",
+                                                    l.t("现价", "Price"),
+                                                    l.t("严苛 OE", "Strict OE"),
                                                 )),
                                         ),
                                 )
@@ -1020,11 +1083,10 @@ impl MungerWorkbench {
                                         .text_size(px(13.))
                                         .line_height(px(20.))
                                         .text_color(rgb(INK_SECONDARY))
-                                        .child(
-                                            rep.too_hard_reason
-                                                .clone()
-                                                .unwrap_or_else(|| "已拒绝或能力圈外。".into()),
-                                        ),
+                                        .child(rep.too_hard_reason.clone().unwrap_or_else(|| {
+                                            l.t("已拒绝或能力圈外。", "Rejected or Too Hard.")
+                                                .into()
+                                        })),
                                 ),
                         );
                     }
@@ -1038,6 +1100,7 @@ impl MungerWorkbench {
     }
 
     pub(super) fn render_baskets_board(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let l = self.lang;
         let board_order = [Bucket::Watch, Bucket::Core, Bucket::Out, Bucket::TooHard];
         let mut linear_idx: usize = 0;
 
@@ -1104,7 +1167,7 @@ impl MungerWorkbench {
                                             .text_xs()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(rgb(INK_HERO))
-                                            .child(bucket.short_label()),
+                                            .child(bucket.short_label_for(l)),
                                     ),
                             )
                             .child(
@@ -1129,7 +1192,7 @@ impl MungerWorkbench {
                             .font_family(self.fonts.ui.clone())
                             .text_size(px(11.))
                             .text_color(rgb(INK_MUTED))
-                            .child("暂无标的"),
+                            .child(l.t("暂无标的", "Empty")),
                     );
                 } else {
                     for rep in rows {
@@ -1225,11 +1288,12 @@ impl MungerWorkbench {
                                                 .text_color(rgb(INK_MUTED))
                                                 .truncate()
                                                 .child(format!(
-                                                    "边际 {dist_txt} · ROIC {roic_txt}"
+                                                    "{} {dist_txt} · ROIC {roic_txt}",
+                                                    l.t("边际", "Diff")
                                                 )),
                                         )
                                         .child(badge(
-                                            rep.status.label().to_owned(),
+                                            rep.status.label_for(l).to_owned(),
                                             s_fg,
                                             s_bg,
                                             s_br,
@@ -1241,11 +1305,9 @@ impl MungerWorkbench {
                                         .text_size(px(11.))
                                         .line_height(px(16.))
                                         .text_color(rgb(INK_MUTED))
-                                        .child(
-                                            rep.too_hard_reason
-                                                .clone()
-                                                .unwrap_or_else(|| "已拒绝或能力圈外".into()),
-                                        ),
+                                        .child(rep.too_hard_reason.clone().unwrap_or_else(|| {
+                                            l.t("已拒绝或能力圈外", "Rejected or Too Hard").into()
+                                        })),
                                 })
                                 .child(
                                     div()
