@@ -2045,6 +2045,7 @@ impl Render for MungerWorkbench {
                                             .id("main-scroll")
                                             .flex_1()
                                             .min_h_0()
+                                            .w_full()
                                             .overflow_y_scroll()
                                             .child(content),
                                     )

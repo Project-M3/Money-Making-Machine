@@ -17,18 +17,29 @@ fn setting_chip(
     id: impl Into<gpui::SharedString>,
     label: &str,
     active: bool,
+    mono: bool,
     accent: Option<(u32, u32, u32)>,
     fonts: &super::FontRoles,
     on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
+    let family = if mono {
+        fonts.mono_num.clone()
+    } else {
+        fonts.ui.clone()
+    };
     let mut el = div()
         .id(id.into())
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
         .px_2p5()
         .py_1()
         .rounded_sm()
         .cursor_pointer()
         .border_1()
-        .font_family(fonts.mono_num.clone())
+        .whitespace_nowrap()
+        .font_family(family)
         .text_size(px(11.))
         .on_click(on_click);
 
@@ -50,29 +61,49 @@ fn setting_chip(
     el.child(label.to_owned())
 }
 
-fn section_header(tag: &str, title: &str, subtitle: &str, fonts: &super::FontRoles) -> gpui::Div {
+fn section_block(
+    tag: &str,
+    title: &str,
+    subtitle: &str,
+    fonts: &super::FontRoles,
+    card_body: gpui::Div,
+) -> gpui::Div {
     div()
-        .px_4()
-        .py_3()
-        .bg(rgb(BG_WELL))
-        .border_b_1()
-        .border_color(rgb(BORDER_HAIRLINE))
+        .w_full()
         .flex()
-        .items_center()
-        .justify_between()
-        .gap_3()
+        .flex_col()
+        .gap_2()
         .child(
             div()
+                .w_full()
+                .px_1()
                 .flex()
                 .flex_col()
                 .gap_0p5()
                 .child(
                     div()
-                        .font_family(fonts.ui.clone())
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(rgb(INK_HERO))
-                        .child(title.to_owned()),
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(
+                            div()
+                                .font_family(fonts.ui.clone())
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(INK_HERO))
+                                .child(title.to_owned()),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .whitespace_nowrap()
+                                .font_family(fonts.mono_term.clone())
+                                .text_size(px(10.))
+                                .text_color(rgb(INK_MUTED))
+                                .child(tag.to_owned()),
+                        ),
                 )
                 .child(
                     div()
@@ -82,17 +113,17 @@ fn section_header(tag: &str, title: &str, subtitle: &str, fonts: &super::FontRol
                         .child(subtitle.to_owned()),
                 ),
         )
-        .child(
-            div()
-                .font_family(fonts.mono_term.clone())
-                .text_size(px(10.))
-                .text_color(rgb(INK_MUTED))
-                .child(tag.to_owned()),
-        )
+        .child(card_body.w_full().flex().flex_col())
 }
 
-fn setting_row(label: &str, hint: Option<&str>, fonts: &super::FontRoles) -> gpui::Div {
-    let mut left = div().flex().flex_col().gap_0p5().child(
+fn setting_row(
+    label: &str,
+    hint: Option<&str>,
+    mono_hint: bool,
+    has_divider: bool,
+    fonts: &super::FontRoles,
+) -> gpui::Div {
+    let mut left = div().flex_1().min_w_0().flex().flex_col().gap_0p5().child(
         div()
             .font_family(fonts.ui.clone())
             .text_xs()
@@ -101,24 +132,43 @@ fn setting_row(label: &str, hint: Option<&str>, fonts: &super::FontRoles) -> gpu
             .child(label.to_owned()),
     );
     if let Some(h) = hint {
-        left = left.child(
-            div()
-                .font_family(fonts.ui.clone())
-                .text_size(px(11.))
-                .text_color(rgb(INK_MUTED))
-                .child(h.to_owned()),
-        );
+        let mut hint_el = div()
+            .font_family(if mono_hint {
+                fonts.mono_term.clone()
+            } else {
+                fonts.ui.clone()
+            })
+            .text_size(px(11.))
+            .text_color(rgb(INK_MUTED));
+        if mono_hint {
+            hint_el = hint_el.truncate();
+        }
+        left = left.child(hint_el.child(h.to_owned()));
     }
     div()
+        .w_full()
         .px_4()
         .py_3()
-        .border_b_1()
-        .border_color(rgb(BORDER_HAIRLINE))
+        .when(has_divider, |d| {
+            d.border_b_1().border_color(rgb(BORDER_HAIRLINE))
+        })
         .flex()
         .items_center()
         .justify_between()
-        .gap_4()
+        .gap_6()
         .child(left)
+}
+
+fn action_strip() -> gpui::Div {
+    div()
+        .w_full()
+        .px_4()
+        .py_3()
+        .bg(rgb(BG_WELL))
+        .flex()
+        .items_center()
+        .flex_wrap()
+        .gap_2()
 }
 
 impl MungerWorkbench {
@@ -189,105 +239,128 @@ impl MungerWorkbench {
         ];
         let weekly_quotas: [usize; 5] = [0, 1, 3, 5, 10];
 
-        div()
+        let inner = div()
             .w_full()
-            .max_w(px(900.))
-            .px_6()
-            .py_5()
+            .max_w(px(820.))
             .flex()
             .flex_col()
-            .gap_4()
-            // 1. Interface & Language
+            .gap_5()
             .child(
-                card_shell()
-                    .child(section_header(
-                        "INTERFACE · I18N",
-                        l.t("界面与语言", "Interface & Language"),
-                        l.t(
-                            "即时切换界面、菜单栏与命令面板语言，重启后保持记忆",
-                            "Switch all views, menus, and command palette live; persisted in config.json",
-                        ),
-                        &self.fonts,
-                    ))
+                div()
+                    .w_full()
+                    .pb_3()
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .items_end()
+                    .justify_between()
+                    .gap_4()
                     .child(
                         div()
-                            .px_4()
-                            .py_3()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_4()
+                            .flex_col()
+                            .gap_0p5()
                             .child(
                                 div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_0p5()
-                                    .child(
-                                        div()
-                                            .font_family(self.fonts.ui.clone())
-                                            .text_xs()
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(rgb(INK_PRIMARY))
-                                            .child(l.t("显示语言", "Display Language")),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_family(self.fonts.ui.clone())
-                                            .text_size(px(11.))
-                                            .text_color(rgb(INK_MUTED))
-                                            .child(l.t(
-                                                "支持中文与 English 实时无感切换",
-                                                "Switches live between 中文 and English without restarting",
-                                            )),
-                                    ),
+                                    .font_family(self.fonts.ui.clone())
+                                    .text_lg()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_HERO))
+                                    .child(l.t("偏好设置", "Settings")),
                             )
                             .child(
-                                seg_group()
-                                    .child(seg_tab(
-                                        "settings-lang-zh",
-                                        "中文",
-                                        self.lang == UiLang::Zh,
-                                        Some((EMERALD_FG, EMERALD_BG)),
-                                        false,
-                                        &self.fonts,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.set_language(UiLang::Zh, cx);
-                                        }),
-                                    ))
-                                    .child(seg_tab(
-                                        "settings-lang-en",
-                                        "English",
-                                        self.lang == UiLang::En,
-                                        Some((SKY_FG, SKY_BG)),
-                                        false,
-                                        &self.fonts,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.set_language(UiLang::En, cx);
-                                        }),
+                                div()
+                                    .font_family(self.fonts.ui.clone())
+                                    .text_xs()
+                                    .text_color(rgb(INK_MUTED))
+                                    .child(l.t(
+                                        "管理显示语言、本地工作区目录、发布通道、AI 预算护栏与 DuckDB 湖仓同步",
+                                        "Manage language, local workspace, release channel, AI budget guardrails, and DuckDB sync",
                                     )),
                             ),
+                    )
+                    .child(
+                        badge(
+                            ver_text.clone(),
+                            INK_SECONDARY,
+                            SLATE_BG,
+                            SLATE_BORDER,
+                            &self.fonts,
+                        ),
                     ),
             )
-            // 2. Workspace
-            .child(
-                card_shell()
-                    .child(section_header(
-                        "WORKSPACE · LOCAL-FIRST",
-                        l.t("本地工作区", "Workspace"),
-                        l.t(
-                            "全部财报缓存、能力圈分层、决策账本与 DuckDB 湖仓均本地保存",
-                            "Circle watchlist, decision journal, filings, and DuckDB lakehouse stay local",
-                        ),
+            // 1. Interface & Language
+            .child(section_block(
+                "INTERFACE · I18N",
+                l.t("界面与语言", "Interface & Language"),
+                l.t(
+                    "即时切换界面、菜单栏与命令面板语言，重启后保持记忆",
+                    "Switch all views, menus, and command palette live; persisted in config.json",
+                ),
+                &self.fonts,
+                card_shell().child(
+                    setting_row(
+                        l.t("显示语言", "Display Language"),
+                        Some(l.t(
+                            "支持中文与 English 实时无感切换",
+                            "Switches live between 中文 and English without restarting",
+                        )),
+                        false,
+                        false,
                         &self.fonts,
-                    ))
+                    )
+                    .child(
+                        div().flex_shrink_0().child(
+                            seg_group()
+                                .child(seg_tab(
+                                    "settings-lang-zh",
+                                    "中文",
+                                    self.lang == UiLang::Zh,
+                                    Some((EMERALD_FG, EMERALD_BG)),
+                                    false,
+                                    &self.fonts,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.set_language(UiLang::Zh, cx);
+                                    }),
+                                ))
+                                .child(seg_tab(
+                                    "settings-lang-en",
+                                    "English",
+                                    self.lang == UiLang::En,
+                                    Some((SKY_FG, SKY_BG)),
+                                    false,
+                                    &self.fonts,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.set_language(UiLang::En, cx);
+                                    }),
+                                )),
+                        ),
+                    ),
+                ),
+            ))
+            // 2. Workspace
+            .child(section_block(
+                "WORKSPACE · LOCAL-FIRST",
+                l.t("本地工作区", "Workspace"),
+                l.t(
+                    "全部财报缓存、能力圈分层、决策账本与 DuckDB 湖仓均本地保存",
+                    "Circle watchlist, decision journal, filings, and DuckDB lakehouse stay local",
+                ),
+                &self.fonts,
+                card_shell()
                     .child(
                         setting_row(
                             l.t("当前工作区目录", "Active Workspace Root"),
                             Some(&workspace_path),
+                            true,
+                            true,
                             &self.fonts,
                         )
                         .child(
                             div()
+                                .flex_shrink_0()
                                 .flex()
                                 .items_center()
                                 .gap_2()
@@ -297,8 +370,16 @@ impl MungerWorkbench {
                                     } else {
                                         l.t("独立空白工作区", "Standalone Default").to_owned()
                                     },
-                                    if has_custom_workspace { SKY_FG } else { EMERALD_FG },
-                                    if has_custom_workspace { SKY_BG } else { EMERALD_BG },
+                                    if has_custom_workspace {
+                                        SKY_FG
+                                    } else {
+                                        EMERALD_FG
+                                    },
+                                    if has_custom_workspace {
+                                        SKY_BG
+                                    } else {
+                                        EMERALD_BG
+                                    },
                                     if has_custom_workspace {
                                         SKY_BORDER
                                     } else {
@@ -313,23 +394,18 @@ impl MungerWorkbench {
                                         l.t("家标的", "holdings")
                                     ),
                                     INK_SECONDARY,
-                                    EMERALD_BG,
-                                    BORDER_SUBTLE,
+                                    SLATE_BG,
+                                    SLATE_BORDER,
                                     &self.fonts,
                                 )),
                         ),
                     )
                     .child(
-                        div()
-                            .px_4()
-                            .py_3()
-                            .flex()
-                            .items_center()
-                            .flex_wrap()
-                            .gap_2()
+                        action_strip()
                             .child(setting_chip(
                                 "settings-ws-reveal",
                                 l.t("在 Finder 中打开", "Reveal in Finder"),
+                                false,
                                 false,
                                 None,
                                 &self.fonts,
@@ -342,6 +418,7 @@ impl MungerWorkbench {
                                 "settings-ws-choose",
                                 l.t("切换或新建目录…", "Choose Folder…"),
                                 false,
+                                false,
                                 None,
                                 &self.fonts,
                                 cx.listener(|this, _, _, cx| {
@@ -353,6 +430,7 @@ impl MungerWorkbench {
                                     "settings-ws-reset",
                                     l.t("恢复默认空白工作区", "Reset to Default Workspace"),
                                     false,
+                                    false,
                                     None,
                                     &self.fonts,
                                     cx.listener(|this, _, _, cx| {
@@ -363,6 +441,7 @@ impl MungerWorkbench {
                             .child(setting_chip(
                                 "settings-ws-reload",
                                 l.t("重新加载磁盘数据", "Reload from Disk"),
+                                false,
                                 false,
                                 None,
                                 &self.fonts,
@@ -382,27 +461,28 @@ impl MungerWorkbench {
                                 }),
                             )),
                     ),
-            )
+            ))
             // 3. Updates & Release Channel
-            .child(
+            .child(section_block(
+                "UPDATER · SIGNED & VERIFIED",
+                l.t("软件更新与通道", "Updates & Release Channel"),
+                l.t(
+                    "支持 stable 正式版与 beta 滚动预览通道，校验 SHA-256 原子替换",
+                    "Switch between stable tags and rolling beta builds with SHA-256 verification",
+                ),
+                &self.fonts,
                 card_shell()
-                    .child(section_header(
-                        "UPDATER · SIGNED & VERIFIED",
-                        l.t("软件更新与通道", "Updates & Release Channel"),
-                        l.t(
-                            "支持 stable 正式版与 beta 滚动预览通道，校验 SHA-256 原子替换",
-                            "Switch between stable tags and rolling beta builds with SHA-256 verification",
-                        ),
-                        &self.fonts,
-                    ))
                     .child(
                         setting_row(
                             l.t("当前版本", "Installed Version"),
                             Some(&ver_text),
+                            true,
+                            true,
                             &self.fonts,
                         )
                         .child(
                             div()
+                                .flex_shrink_0()
                                 .flex()
                                 .items_center()
                                 .gap_2()
@@ -430,7 +510,10 @@ impl MungerWorkbench {
                                             true,
                                             &self.fonts,
                                             cx.listener(|this, _, _, cx| {
-                                                this.switch_update_channel(ReleaseChannel::Beta, cx);
+                                                this.switch_update_channel(
+                                                    ReleaseChannel::Beta,
+                                                    cx,
+                                                );
                                             }),
                                         )),
                                 )
@@ -443,6 +526,7 @@ impl MungerWorkbench {
                                         "settings-update-restart",
                                         &restart_lbl,
                                         true,
+                                        false,
                                         Some((EMERALD_FG, EMERALD_BG, EMERALD_BORDER)),
                                         &self.fonts,
                                         cx.listener(|this, _, _, cx| {
@@ -453,6 +537,7 @@ impl MungerWorkbench {
                                     setting_chip(
                                         "settings-update-applying",
                                         l.t("正在安装更新…", "Installing…"),
+                                        false,
                                         false,
                                         None,
                                         &self.fonts,
@@ -468,6 +553,7 @@ impl MungerWorkbench {
                                         "settings-update-apply",
                                         &apply_lbl,
                                         true,
+                                        false,
                                         Some((SKY_FG, SKY_BG, SKY_BORDER)),
                                         &self.fonts,
                                         cx.listener(|this, _, _, cx| {
@@ -483,6 +569,7 @@ impl MungerWorkbench {
                                             l.t("检查更新", "Check for Updates")
                                         },
                                         false,
+                                        false,
                                         None,
                                         &self.fonts,
                                         cx.listener(|this, _, _, cx| {
@@ -493,15 +580,11 @@ impl MungerWorkbench {
                         ),
                     )
                     .child(
-                        div()
-                            .px_4()
-                            .py_2p5()
-                            .flex()
-                            .items_center()
-                            .gap_2()
+                        action_strip()
                             .child(setting_chip(
                                 "settings-link-web",
                                 l.t("Project M3 官网 ↗", "Website ↗"),
+                                false,
                                 false,
                                 None,
                                 &self.fonts,
@@ -513,6 +596,7 @@ impl MungerWorkbench {
                                 "settings-link-gh",
                                 "GitHub ↗",
                                 false,
+                                false,
                                 None,
                                 &self.fonts,
                                 cx.listener(|_, _, _, cx| {
@@ -523,6 +607,7 @@ impl MungerWorkbench {
                                 "settings-link-rel",
                                 "Releases ↗",
                                 false,
+                                false,
                                 None,
                                 &self.fonts,
                                 cx.listener(|_, _, _, cx| {
@@ -530,19 +615,17 @@ impl MungerWorkbench {
                                 }),
                             )),
                     ),
-            )
+            ))
             // 4. AI Budget & Embedded Alan Provider
-            .child(
+            .child(section_block(
+                "L2 · ALAN GUARDRAILS",
+                l.t("AI 深研预算与护栏", "AI Budget & Guardrails"),
+                l.t(
+                    "写入 workbench/budget.json · 到达硬上限前禁止启动 Embedded Alan",
+                    "Saved to workbench/budget.json · Hard gate blocks Deep Research before spending",
+                ),
+                &self.fonts,
                 card_shell()
-                    .child(section_header(
-                        "L2 · ALAN GUARDRAILS",
-                        l.t("AI 深研预算与护栏", "AI Budget & Guardrails"),
-                        l.t(
-                            "写入 workbench/budget.json · 到达硬上限前禁止启动 Embedded Alan",
-                            "Saved to workbench/budget.json · Hard gate blocks Deep Research before spending",
-                        ),
-                        &self.fonts,
-                    ))
                     .child(
                         setting_row(
                             l.t("本月已用 / 月度上限", "Monthly Usage / Cap"),
@@ -550,16 +633,23 @@ impl MungerWorkbench {
                                 "${monthly_used} / ${monthly_cap} · {tokens_used} / {} tokens",
                                 self.budget_config.monthly_token_limit
                             )),
+                            true,
+                            true,
                             &self.fonts,
                         )
                         .child(
-                            div().flex().items_center().gap_1p5().children(
-                                monthly_presets.into_iter().map(|(label, val)| {
+                            div()
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .children(monthly_presets.into_iter().map(|(label, val)| {
                                     let active = self.budget_config.monthly_budget_usd == val;
                                     setting_chip(
                                         gpui::SharedString::from(format!("settings-mb-{val}")),
                                         label,
                                         active,
+                                        true,
                                         None,
                                         &self.fonts,
                                         cx.listener(move |this, _, _, cx| {
@@ -569,8 +659,7 @@ impl MungerWorkbench {
                                             );
                                         }),
                                     )
-                                }),
-                            ),
+                                })),
                         ),
                     )
                     .child(
@@ -580,16 +669,23 @@ impl MungerWorkbench {
                                 "4 视角并行深研（护城河 / 会计 / 同行 / 逆向验尸）总上限",
                                 "Total USD ceiling across all 4 parallel Deep Research perspectives",
                             )),
+                            false,
+                            true,
                             &self.fonts,
                         )
                         .child(
-                            div().flex().items_center().gap_1p5().children(
-                                per_run_presets.into_iter().map(|(label, val)| {
+                            div()
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .children(per_run_presets.into_iter().map(|(label, val)| {
                                     let active = self.budget_config.per_run_budget_usd == val;
                                     setting_chip(
                                         gpui::SharedString::from(format!("settings-prb-{label}")),
                                         label,
                                         active,
+                                        true,
                                         Some((SKY_FG, SKY_BG, SKY_BORDER)),
                                         &self.fonts,
                                         cx.listener(move |this, _, _, cx| {
@@ -599,81 +695,93 @@ impl MungerWorkbench {
                                             );
                                         }),
                                     )
-                                }),
+                                })),
+                        ),
+                    )
+                    .child(
+                        setting_row(
+                            l.t("自动触发深研", "Auto-Trigger Deep Research"),
+                            Some(l.t(
+                                "L0/L1 完全零 LLM；仅在开启后于每周配额内自动运行 L2",
+                                "L0/L1 stay 100% Zero-LLM; optional L2 auto-runs stay capped weekly",
+                            )),
+                            false,
+                            true,
+                            &self.fonts,
+                        )
+                        .child(
+                            div().flex_shrink_0().child(
+                                seg_group()
+                                    .child(seg_tab(
+                                        "settings-auto-off",
+                                        l.t("关闭", "Off"),
+                                        !self.budget_config.auto_trigger_enabled,
+                                        None,
+                                        false,
+                                        &self.fonts,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.update_budget_config(
+                                                |cfg| cfg.auto_trigger_enabled = false,
+                                                cx,
+                                            );
+                                        }),
+                                    ))
+                                    .child(seg_tab(
+                                        "settings-auto-on",
+                                        l.t("开启", "On"),
+                                        self.budget_config.auto_trigger_enabled,
+                                        Some((EMERALD_FG, EMERALD_BG)),
+                                        false,
+                                        &self.fonts,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.update_budget_config(
+                                                |cfg| cfg.auto_trigger_enabled = true,
+                                                cx,
+                                            );
+                                        }),
+                                    )),
                             ),
                         ),
                     )
                     .child(
                         setting_row(
-                            l.t("自动触发深研与每周配额", "Auto-Trigger & Weekly Quota"),
+                            l.t("每周自动深研配额", "Weekly Auto Quota"),
                             Some(l.t(
-                                "L0/L1 完全零 LLM；仅在开启后于每周配额内自动运行 L2",
-                                "L0/L1 stay 100% Zero-LLM; optional L2 auto-runs stay capped weekly",
+                                "限制每周后台自动派发 Deep Research 的最大次数",
+                                "Maximum background Deep Research runs triggered automatically per week",
                             )),
+                            false,
+                            true,
                             &self.fonts,
                         )
                         .child(
                             div()
+                                .flex_shrink_0()
                                 .flex()
                                 .items_center()
-                                .gap_2()
-                                .child(
-                                    seg_group()
-                                        .child(seg_tab(
-                                            "settings-auto-off",
-                                            l.t("关闭", "Off"),
-                                            !self.budget_config.auto_trigger_enabled,
-                                            None,
-                                            false,
-                                            &self.fonts,
-                                            cx.listener(|this, _, _, cx| {
-                                                this.update_budget_config(
-                                                    |cfg| cfg.auto_trigger_enabled = false,
-                                                    cx,
-                                                );
-                                            }),
-                                        ))
-                                        .child(seg_tab(
-                                            "settings-auto-on",
-                                            l.t("开启", "On"),
-                                            self.budget_config.auto_trigger_enabled,
-                                            Some((EMERALD_FG, EMERALD_BG)),
-                                            false,
-                                            &self.fonts,
-                                            cx.listener(|this, _, _, cx| {
-                                                this.update_budget_config(
-                                                    |cfg| cfg.auto_trigger_enabled = true,
-                                                    cx,
-                                                );
-                                            }),
-                                        )),
-                                )
-                                .child(
-                                    div().flex().items_center().gap_1().children(
-                                        weekly_quotas.into_iter().map(|q| {
-                                            let active = self.budget_config.weekly_auto_quota == q;
-                                            let q_lbl = format!("{q}/wk");
-                                            setting_chip(
-                                                gpui::SharedString::from(format!(
-                                                    "settings-wq-{q}"
-                                                )),
-                                                &q_lbl,
-                                                active,
-                                                None,
-                                                &self.fonts,
-                                                cx.listener(move |this, _, _, cx| {
-                                                    this.update_budget_config(
-                                                        |cfg| cfg.weekly_auto_quota = q,
-                                                        cx,
-                                                    );
-                                                }),
-                                            )
+                                .gap_1p5()
+                                .children(weekly_quotas.into_iter().map(|q| {
+                                    let active = self.budget_config.weekly_auto_quota == q;
+                                    let q_lbl = format!("{q}/wk");
+                                    setting_chip(
+                                        gpui::SharedString::from(format!("settings-wq-{q}")),
+                                        &q_lbl,
+                                        active,
+                                        true,
+                                        None,
+                                        &self.fonts,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.update_budget_config(
+                                                |cfg| cfg.weekly_auto_quota = q,
+                                                cx,
+                                            );
                                         }),
-                                    ),
-                                )
+                                    )
+                                }))
                                 .child(setting_chip(
                                     "settings-budget-reset",
                                     l.t("恢复默认", "Reset"),
+                                    false,
                                     false,
                                     None,
                                     &self.fonts,
@@ -687,137 +795,106 @@ impl MungerWorkbench {
                         ),
                     )
                     .child(
-                        div()
-                            .px_4()
-                            .py_3()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_0p5()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .child(
-                                        div()
-                                            .font_family(self.fonts.ui.clone())
-                                            .text_xs()
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(rgb(INK_PRIMARY))
-                                            .child(l.t(
-                                                "Embedded Alan 模型连接配置",
-                                                "Embedded Alan Connection Profile",
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_family(self.fonts.mono_term.clone())
-                                            .text_size(px(11.))
-                                            .text_color(rgb(INK_MUTED))
-                                            .truncate()
-                                            .child(ALAN_SETUP_CMD),
-                                    ),
-                            )
-                            .child(setting_chip(
-                                "settings-copy-alan-cmd",
-                                l.t("复制配置命令", "Copy Setup Command"),
-                                false,
-                                None,
-                                &self.fonts,
-                                cx.listener(|this, _, _, cx| {
-                                    let lbl = this.lang.t("Alan 连接命令", "Alan setup");
-                                    this.copy_cli_command(ALAN_SETUP_CMD.to_owned(), lbl, cx);
-                                    cx.notify();
-                                }),
-                            )),
+                        setting_row(
+                            l.t("Embedded Alan 模型连接配置", "Embedded Alan Connection Profile"),
+                            Some(ALAN_SETUP_CMD),
+                            true,
+                            false,
+                            &self.fonts,
+                        )
+                        .child(setting_chip(
+                            "settings-copy-alan-cmd",
+                            l.t("复制配置命令", "Copy Setup Command"),
+                            false,
+                            false,
+                            None,
+                            &self.fonts,
+                            cx.listener(|this, _, _, cx| {
+                                let lbl = this.lang.t("Alan 连接命令", "Alan setup");
+                                this.copy_cli_command(ALAN_SETUP_CMD.to_owned(), lbl, cx);
+                                cx.notify();
+                            }),
+                        )),
                     ),
-            )
+            ))
             // 5. Data Lake & Maintenance
+            .child(section_block(
+                "DUCKDB · L0 / L1",
+                l.t("数据湖与日常维护", "Data Lake & Maintenance"),
+                &format!(
+                    "L0: {lake_companies} {} · L1: {unread_signals} {} / {semantic_chunks} {} · {} {last_sync}",
+                    l.t("家公司", "issuers"),
+                    l.t("未读信号", "unread"),
+                    l.t("语义片段", "chunks"),
+                    l.t("上次自选同步", "Last Circle sync"),
+                ),
+                &self.fonts,
+                card_shell().child(
+                    action_strip()
+                        .child(setting_chip(
+                            "settings-sync-circle",
+                            if self.syncing {
+                                l.t("能力圈同步中…", "Syncing Circle…")
+                            } else {
+                                l.t("同步能力圈财报与股价 (⌘R)", "Sync Circle Financials (⌘R)")
+                            },
+                            self.syncing,
+                            false,
+                            None,
+                            &self.fonts,
+                            cx.listener(|this, _, _, cx| {
+                                this.start_sync(cx);
+                            }),
+                        ))
+                        .child(setting_chip(
+                            "settings-sync-l1",
+                            if self.inbox_catching_up {
+                                l.t("追平事件流中…", "Catching Up L1…")
+                            } else {
+                                l.t("追平 L1 SEC 与新闻流", "Catch Up L1 Events")
+                            },
+                            self.inbox_catching_up,
+                            false,
+                            Some((SKY_FG, SKY_BG, SKY_BORDER)),
+                            &self.fonts,
+                            cx.listener(|this, _, _, cx| {
+                                this.trigger_l1_catchup(cx);
+                            }),
+                        ))
+                        .child(setting_chip(
+                            "settings-sync-l0",
+                            if self.universe_syncing {
+                                l.t("全美股 L0 同步中…", "Syncing US L0…")
+                            } else {
+                                l.t("同步全美股 L0 湖仓", "Sync US L0 Lakehouse")
+                            },
+                            self.universe_syncing,
+                            false,
+                            Some((SKY_FG, SKY_BG, SKY_BORDER)),
+                            &self.fonts,
+                            cx.listener(|this, _, _, cx| {
+                                this.trigger_universe_sync(cx);
+                            }),
+                        ))
+                        .child(setting_chip(
+                            "settings-sync-themes",
+                            if self.themes_syncing {
+                                l.t("主题图谱生成中…", "Syncing Themes…")
+                            } else {
+                                l.t("同步商业原型主题图谱", "Sync Theme Graph")
+                            },
+                            self.themes_syncing,
+                            false,
+                            None,
+                            &self.fonts,
+                            cx.listener(|this, _, _, cx| {
+                                this.trigger_themes_sync(cx);
+                            }),
+                        )),
+                ),
+            ))
             .child(
-                card_shell()
-                    .child(section_header(
-                        "DUCKDB · L0 / L1",
-                        l.t("数据湖与日常维护", "Data Lake & Maintenance"),
-                        &format!(
-                            "L0: {lake_companies} {} · L1: {unread_signals} {} / {semantic_chunks} {} · {} {last_sync}",
-                            l.t("家公司", "issuers"),
-                            l.t("未读信号", "unread"),
-                            l.t("语义片段", "chunks"),
-                            l.t("上次自选同步", "Last Circle sync"),
-                        ),
-                        &self.fonts,
-                    ))
-                    .child(
-                        div()
-                            .px_4()
-                            .py_3()
-                            .flex()
-                            .items_center()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(setting_chip(
-                                "settings-sync-circle",
-                                if self.syncing {
-                                    l.t("能力圈同步中…", "Syncing Circle…")
-                                } else {
-                                    l.t("同步能力圈财报与股价 (⌘R)", "Sync Circle Financials (⌘R)")
-                                },
-                                self.syncing,
-                                None,
-                                &self.fonts,
-                                cx.listener(|this, _, _, cx| {
-                                    this.start_sync(cx);
-                                }),
-                            ))
-                            .child(setting_chip(
-                                "settings-sync-l1",
-                                if self.inbox_catching_up {
-                                    l.t("追平事件流中…", "Catching Up L1…")
-                                } else {
-                                    l.t("追平 L1 SEC 与新闻流", "Catch Up L1 Events")
-                                },
-                                self.inbox_catching_up,
-                                Some((SKY_FG, SKY_BG, SKY_BORDER)),
-                                &self.fonts,
-                                cx.listener(|this, _, _, cx| {
-                                    this.trigger_l1_catchup(cx);
-                                }),
-                            ))
-                            .child(setting_chip(
-                                "settings-sync-l0",
-                                if self.universe_syncing {
-                                    l.t("全美股 L0 同步中…", "Syncing US L0…")
-                                } else {
-                                    l.t("同步全美股 L0 湖仓", "Sync US L0 Lakehouse")
-                                },
-                                self.universe_syncing,
-                                Some((SKY_FG, SKY_BG, SKY_BORDER)),
-                                &self.fonts,
-                                cx.listener(|this, _, _, cx| {
-                                    this.trigger_universe_sync(cx);
-                                }),
-                            ))
-                            .child(setting_chip(
-                                "settings-sync-themes",
-                                if self.themes_syncing {
-                                    l.t("主题图谱生成中…", "Syncing Themes…")
-                                } else {
-                                    l.t("同步商业原型主题图谱", "Sync Theme Graph")
-                                },
-                                self.themes_syncing,
-                                None,
-                                &self.fonts,
-                                cx.listener(|this, _, _, cx| {
-                                    this.trigger_themes_sync(cx);
-                                }),
-                            )),
-                    ),
-            )
-            .child(
-                div().px_1().flex().items_center().justify_between().child(
+                div().w_full().px_1().pt_1().flex().items_center().justify_between().child(
                     div()
                         .font_family(self.fonts.mono_term.clone())
                         .text_size(px(10.))
@@ -827,6 +904,15 @@ impl MungerWorkbench {
                             "esc back to Inbox · ⌘, Settings · ⌘K Command Palette",
                         )),
                 ),
-            )
+            );
+
+        div()
+            .w_full()
+            .px_6()
+            .py_6()
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(inner)
     }
 }
