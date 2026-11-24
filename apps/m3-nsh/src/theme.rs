@@ -86,9 +86,12 @@ pub const PIXEL_M3: [&str; 10] = [
 ];
 
 /// Canonical font families for UI copy, tabular numbers, and monospace labels.
-pub const FONT_UI: &str = ".AppleSystemUIFont";
-pub const FONT_MONO_NUM: &str = "SF Mono";
-pub const FONT_MONO_TERM: &str = "SF Mono";
+/// Using NSH generic families (`system-ui` / `ui-monospace`) resolves directly to
+/// `NSFont::systemFontOfSize_weight` and `NSFont::monospacedSystemFontOfSize_weight`
+/// (SF Mono on macOS) with zero CoreText family-lookup warnings.
+pub const FONT_UI: &str = "system-ui";
+pub const FONT_MONO_NUM: &str = "ui-monospace";
+pub const FONT_MONO_TERM: &str = "ui-monospace";
 
 /// Typography scale tokens (points).
 pub const TEXT_2XS: f32 = 10.0;

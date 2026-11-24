@@ -48,6 +48,7 @@ pub fn industry_view(store: AppStore) -> impl IntoElement {
         .w_full()
         .flex()
         .flex_row()
+        .overflow_hidden()
         .child(render_left_rail(store))
         .child(
             scroll().flex_1().min_w(px(0.0)).h_full().child(

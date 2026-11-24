@@ -12,22 +12,29 @@ use crate::components::{
     seg_group, styled_input, v_divider,
 };
 use crate::format::{dec_to_f64, fmt_money_compact, fmt_pct_clean, fmt_price, fmt_time_cn_for};
-use crate::platform_desktop::copy_text_with_notice;
+use crate::platform_desktop::{copy_text_with_notice, open_external_url};
 use crate::stores::{
     AppStore, CompanyViewTab, ScatterPlotModel, ScatterPoint, UniversePreset, UniverseSearchMode,
     WorkspaceTab,
 };
 use crate::theme::*;
+use m3_core::edgar;
 use m3_core::i18n::UiLang;
 use m3_core::lake::{LakeAnnualRow, UniverseRow, UniverseSortBy, UniverseSummary};
 use m3_core::lake_l1::{SignalEvidence, SimilarCompanyHit};
 use m3_core::model::{Bucket, WarningFlag, WarningSeverity};
+use nsh_core::FontVariant;
+use nsh_core::canvas::{CanvasTextAlign, CanvasTextBaseline};
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
 use std::collections::HashSet;
+use std::f32::consts::TAU;
 
 const TABLE_ROW_HEIGHT: f32 = 44.0;
 const DRAWER_WIDTH: f32 = 312.0;
+const SCATTER_CANVAS_H: f32 = 116.0;
+const SCATTER_PAD_X: f32 = 10.0;
+const SCATTER_PAD_Y: f32 = 8.0;
 const COL_ROIC_W: f32 = 54.0;
 const COL_FCF_W: f32 = 58.0;
 const COL_SHRS_W: f32 = 56.0;
@@ -42,17 +49,6 @@ const COL_WARN_W: f32 = 38.0;
 enum StrikeBadgeKind {
     CircleStrike,
     NonCircleDiscount,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ScatterRenderData {
-    model: ScatterPlotModel,
-    ref_roic_norm: Option<f32>,
-    ref_fcf_norm: Option<f32>,
-    zero_fcf_norm: Option<f32>,
-    clipped_count: usize,
-    strike_count: usize,
-    watch_count: usize,
 }
 
 /// Renders the US Universe Radar L0/L1 workspace tab.
@@ -743,7 +739,7 @@ fn render_universe_search_box(store: AppStore) -> View {
         ))
 }
 
-// ── Compact ROIC × Strict FCF Yield Scatter Slot (Wave 4 Enrichment Target) ──
+// ── Compact ROIC × Strict FCF Yield Scatter Slot (Wave 4 Interactive Canvas) ─
 
 fn percentile_sorted(sorted: &[f64], frac: f64) -> Option<f64> {
     if sorted.is_empty() {
@@ -753,11 +749,13 @@ fn percentile_sorted(sorted: &[f64], frac: f64) -> Option<f64> {
     sorted.get(idx).copied()
 }
 
-fn build_scatter_render_data(
+/// Computes normalized 2D scatter coordinates for priced rows with valid 5Y ROIC and FCF yield.
+/// Threshold reference lines mark `15% ROIC` and `4% FCF Yield`.
+pub fn build_scatter_model(
     rows: &[UniverseRow],
     strike_zone_ciks: &HashSet<String>,
     selected_cik: Option<&str>,
-) -> Option<ScatterRenderData> {
+) -> Option<ScatterPlotModel> {
     struct RawPt<'a> {
         row: &'a UniverseRow,
         roic: f64,
@@ -809,7 +807,8 @@ fn build_scatter_render_data(
     let mut points: Vec<ScatterPoint> = raw
         .into_iter()
         .map(|p| {
-            if p.roic < x_min || p.roic > x_max || p.fcf < y_min || p.fcf > y_max {
+            let clipped = p.roic < x_min || p.roic > x_max || p.fcf < y_min || p.fcf > y_max;
+            if clipped {
                 clipped_count += 1;
             }
             let in_strike_zone = p.row.in_price_pool
@@ -834,10 +833,12 @@ fn build_scatter_render_data(
                 in_strike_zone,
                 in_watchlist: p.row.in_watchlist,
                 is_selected,
+                clipped,
             }
         })
         .collect();
 
+    // Paint screened dots first, Circle/watchlist above, Strike Zone above, and selected on top.
     points.sort_by_key(|p| {
         if p.is_selected {
             3u8
@@ -851,17 +852,15 @@ fn build_scatter_render_data(
     });
 
     let ref_roic_norm = (15.0 >= x_min && 15.0 <= x_max).then(|| norm_x(15.0));
-    let ref_fcf_norm = (5.0 >= y_min && 5.0 <= y_max).then(|| norm_y(5.0));
+    let ref_fcf_norm = (4.0 >= y_min && 4.0 <= y_max).then(|| norm_y(4.0));
     let zero_fcf_norm = (0.0 > y_min && 0.0 < y_max).then(|| norm_y(0.0));
 
-    Some(ScatterRenderData {
-        model: ScatterPlotModel {
-            points,
-            x_min,
-            x_max,
-            y_min,
-            y_max,
-        },
+    Some(ScatterPlotModel {
+        points,
+        x_min,
+        x_max,
+        y_min,
+        y_max,
         ref_roic_norm,
         ref_fcf_norm,
         zero_fcf_norm,
@@ -871,18 +870,63 @@ fn build_scatter_render_data(
     })
 }
 
-/// Compact ROIC × Strict FCF Yield scatter summary & canvas slot (`roic_scatter_slot`).
-/// Kept compact (~144pt total) so the virtualized 6,000-row table dominates the viewport.
+/// Projects normalized `[0, 1]` scatter coordinates into local canvas pixel space.
+pub fn scatter_point_px(x_norm: f32, y_norm: f32, width: f32, height: f32) -> (f32, f32) {
+    let pw = (width - SCATTER_PAD_X * 2.0).max(8.0);
+    let ph = (height - SCATTER_PAD_Y * 2.0).max(8.0);
+    (
+        SCATTER_PAD_X + x_norm * pw,
+        SCATTER_PAD_Y + (1.0 - y_norm) * ph,
+    )
+}
+
+/// Finds the nearest scatter point within `max_radius_px`, preferring higher-z-order dots.
+pub fn hit_test_scatter_point(
+    points: &[ScatterPoint],
+    pos_x: f32,
+    pos_y: f32,
+    width: f32,
+    height: f32,
+    max_radius_px: f32,
+) -> Option<usize> {
+    if points.is_empty()
+        || width <= 24.0
+        || height <= 24.0
+        || pos_x < 0.0
+        || pos_x > width
+        || pos_y < 0.0
+        || pos_y > height
+    {
+        return None;
+    }
+    let limit_sq = max_radius_px * max_radius_px;
+    let mut best: Option<(usize, f32)> = None;
+    for (idx, pt) in points.iter().enumerate().rev() {
+        let (px_x, px_y) = scatter_point_px(pt.x_norm, pt.y_norm, width, height);
+        let dx = pos_x - px_x;
+        let dy = pos_y - px_y;
+        let d2 = dx * dx + dy * dy;
+        if d2 <= limit_sq && best.is_none_or(|(_, best_d2)| d2 < best_d2) {
+            best = Some((idx, d2));
+        }
+    }
+    best.map(|(idx, _)| idx)
+}
+
+/// Interactive ROIC × Strict FCF Yield scatter summary & canvas slot (`roic_scatter_slot`).
+/// Kept compact so the virtualized 6,000-row table dominates the viewport.
 pub fn roic_scatter_slot(store: AppStore) -> View {
     let scatter_data = computed(move || {
         let sel = store.universe_selected_cik.get();
         store.universe_rows.with(|rows| {
             store
                 .universe_strike_zone_ciks
-                .with(|ciks| build_scatter_render_data(rows, ciks, sel.as_deref()))
+                .with(|ciks| build_scatter_model(rows, ciks, sel.as_deref()))
         })
     });
+    let has_data = computed(move || scatter_data.with(|d| d.is_some()));
     let canvas_size = signal(size(px(0.0), px(0.0)));
+    let hover_pt: Signal<Option<Point<Points>>> = signal(None);
 
     obsidian_card()
         .flex_shrink_0()
@@ -923,27 +967,29 @@ pub fn roic_scatter_slot(store: AppStore) -> View {
                             text(move || {
                                 let l = store.lang.get();
                                 scatter_data.with(|opt| match opt {
-                                    Some(d) => {
-                                        let clip = if d.clipped_count > 0 {
+                                    Some(m) => {
+                                        let clip = if m.clipped_count > 0 {
                                             match l {
-                                                UiLang::Zh => format!(" · {} 贴边", d.clipped_count),
-                                                UiLang::En => format!(" · {} clipped", d.clipped_count),
+                                                UiLang::Zh => format!(" · {} 贴边", m.clipped_count),
+                                                UiLang::En => {
+                                                    format!(" · {} clipped", m.clipped_count)
+                                                }
                                             }
                                         } else {
                                             String::new()
                                         };
                                         match l {
                                             UiLang::Zh => format!(
-                                                "{} 家含报价 · {} 击球 · {} 观察{clip}",
-                                                d.model.points.len(),
-                                                d.strike_count,
-                                                d.watch_count
+                                                "{} 家含报价 · {} 击球 · {} 能力圈{clip}",
+                                                m.points.len(),
+                                                m.strike_count,
+                                                m.watch_count
                                             ),
                                             UiLang::En => format!(
-                                                "{} priced · {} strike · {} watch{clip}",
-                                                d.model.points.len(),
-                                                d.strike_count,
-                                                d.watch_count
+                                                "{} priced · {} strike · {} circle{clip}",
+                                                m.points.len(),
+                                                m.strike_count,
+                                                m.watch_count
                                             ),
                                         }
                                     }
@@ -990,7 +1036,7 @@ pub fn roic_scatter_slot(store: AppStore) -> View {
                                                         r.ticker
                                                     ),
                                                     UiLang::En => format!(
-                                                        "{} · ROIC {roic_s} · FCF% {fcf_s}",
+                                                        "Selected {} · ROIC {roic_s} · FCF% {fcf_s}",
                                                         r.ticker
                                                     ),
                                                 }
@@ -1006,18 +1052,18 @@ pub fn roic_scatter_slot(store: AppStore) -> View {
                             store.lang.get().t("击球区", "Strike Zone").to_owned()
                         }))
                         .child(scatter_legend_dot(SKY_FG, move || {
-                            store.lang.get().t("观察池", "Watch").to_owned()
+                            store.lang.get().t("能力圈", "Circle").to_owned()
                         }))
                         .child(scatter_legend_dot(GOLD_FG, move || {
-                            store.lang.get().t("候选池", "Pool").to_owned()
+                            store.lang.get().t("筛选池", "Screened").to_owned()
                         })),
                 ),
         )
-        .child(dynamic(move || {
-            let has_data = scatter_data.with(|d| d.is_some());
-            if !has_data {
-                return view()
-                    .h(px(52.0))
+        .child(when(
+            move || !has_data.get(),
+            move || {
+                view()
+                    .h(px(56.0))
                     .rounded_md()
                     .bg(rgb(BG_VIEWPORT))
                     .border_1()
@@ -1041,213 +1087,327 @@ pub fn roic_scatter_slot(store: AppStore) -> View {
                         .text_size(px(TEXT_XS))
                         .text_color(rgb(INK_MUTED)),
                     )
-                    .into_element();
-            }
-
-            view()
-                .flex()
-                .flex_col()
-                .gap(px(3.0))
-                .child(
-                    view()
-                        .flex()
-                        .flex_row()
-                        .gap(px(6.0))
-                        .child(
-                            view()
-                                .w(px(34.0))
-                                .h(px(92.0))
-                                .flex_shrink_0()
-                                .py(px(2.0))
-                                .flex()
-                                .flex_col()
-                                .justify_between()
-                                .items_end()
-                                .child(axis_tick_text(move || {
-                                    scatter_data.with(|d| {
-                                        d.as_ref()
-                                            .map(|x| format!("{:.0}%", x.model.y_max))
-                                            .unwrap_or_default()
-                                    })
-                                }))
-                                .child(axis_tick_text(move || {
-                                    scatter_data.with(|d| {
-                                        d.as_ref()
-                                            .map(|x| {
-                                                format!(
-                                                    "{:.0}%",
-                                                    x.model.y_min
-                                                        + (x.model.y_max - x.model.y_min) * 0.5
-                                                )
+            },
+        ))
+        .child(when(
+            move || has_data.get(),
+            move || {
+                view()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.0))
+                    .child(
+                        view()
+                            .flex()
+                            .flex_row()
+                            .gap(px(6.0))
+                            .child(
+                                view()
+                                    .w(px(34.0))
+                                    .h(px(SCATTER_CANVAS_H))
+                                    .flex_shrink_0()
+                                    .py(px(2.0))
+                                    .flex()
+                                    .flex_col()
+                                    .justify_between()
+                                    .items_end()
+                                    .child(axis_tick_text(move || {
+                                        scatter_data.with(|d| {
+                                            d.as_ref()
+                                                .map(|m| format!("{:.0}%", m.y_max))
+                                                .unwrap_or_default()
+                                        })
+                                    }))
+                                    .child(axis_tick_text(move || {
+                                        scatter_data.with(|d| {
+                                            d.as_ref()
+                                                .map(|m| {
+                                                    format!(
+                                                        "{:.0}%",
+                                                        m.y_min + (m.y_max - m.y_min) * 0.5
+                                                    )
+                                                })
+                                                .unwrap_or_default()
+                                        })
+                                    }))
+                                    .child(axis_tick_text(move || {
+                                        scatter_data.with(|d| {
+                                            d.as_ref()
+                                                .map(|m| format!("{:.0}%", m.y_min))
+                                                .unwrap_or_default()
+                                        })
+                                    })),
+                            )
+                            .child(
+                                view()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .h(px(SCATTER_CANVAS_H))
+                                    .rounded_md()
+                                    .bg(rgb(BG_VIEWPORT))
+                                    .border_1()
+                                    .border_color(rgb(BORDER_HAIRLINE))
+                                    .overflow_hidden()
+                                    .cursor_pointer()
+                                    .child(
+                                        canvas(move || {
+                                            let sz = canvas_size.get();
+                                            let hover = hover_pt.get();
+                                            let l = store.lang.get();
+                                            scatter_data.with(|opt| match opt {
+                                                Some(m) => paint_scatter_canvas(m, sz, hover, l),
+                                                None => Painter::new(),
                                             })
-                                            .unwrap_or_default()
-                                    })
-                                }))
-                                .child(axis_tick_text(move || {
-                                    scatter_data.with(|d| {
-                                        d.as_ref()
-                                            .map(|x| format!("{:.0}%", x.model.y_min))
-                                            .unwrap_or_default()
-                                    })
-                                })),
-                        )
-                        .child(
-                            view()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .h(px(92.0))
-                                .rounded_md()
-                                .bg(rgb(BG_VIEWPORT))
-                                .border_1()
-                                .border_color(rgb(BORDER_HAIRLINE))
-                                .overflow_hidden()
-                                .child(
-                                    canvas(move || {
-                                        let sz = canvas_size.get();
-                                        let mut p = Painter::new();
-                                        let w = sz.width.0;
-                                        let h = sz.height.0;
-                                        if w <= 24.0 || h <= 24.0 {
-                                            return p;
-                                        }
-                                        let Some(data) = scatter_data.get() else {
-                                            return p;
-                                        };
-                                        p = p.fill_color(rgb(BG_VIEWPORT)).fill_rect(0.0, 0.0, w, h);
-
-                                        let pad_x = 10.0f32;
-                                        let pad_y = 8.0f32;
-                                        let pw = (w - pad_x * 2.0).max(8.0);
-                                        let ph = (h - pad_y * 2.0).max(8.0);
-                                        let to_px = |xn: f32, yn: f32| -> (f32, f32) {
-                                            (pad_x + xn * pw, pad_y + (1.0 - yn) * ph)
-                                        };
-
-                                        for frac in [0.0f32, 0.5, 1.0] {
-                                            let (_, gy) = to_px(0.0, frac);
-                                            p = p
-                                                .fill_color(rgb(BORDER_HAIRLINE))
-                                                .fill_rect(0.0, gy, w, 1.0);
-                                            let (gx, _) = to_px(frac, 0.0);
-                                            p = p
-                                                .fill_color(rgb(BORDER_HAIRLINE))
-                                                .fill_rect(gx, 0.0, 1.0, h);
-                                        }
-
-                                        if let (Some(rx), Some(ry)) =
-                                            (data.ref_roic_norm, data.ref_fcf_norm)
-                                        {
-                                            let (x0, y0) = to_px(rx, 1.0);
-                                            let (x1, y1) = to_px(1.0, ry);
-                                            p = p.fill_color(rgba(EMERALD_BAND)).fill_rect(
-                                                x0,
-                                                y0,
-                                                (x1 - x0).max(1.0),
-                                                (y1 - y0).max(1.0),
-                                            );
-                                        }
-
-                                        if let Some(rx) = data.ref_roic_norm {
-                                            let (gx, _) = to_px(rx, 0.0);
-                                            p = p
-                                                .stroke_color(rgba(GOLD_BORDER))
-                                                .line_width(1.0)
-                                                .line_dash(&[px(4.0), px(4.0)])
-                                                .begin_path()
-                                                .move_to(gx, 0.0)
-                                                .line_to(gx, h)
-                                                .stroke();
-                                        }
-                                        if let Some(ry) = data.ref_fcf_norm {
-                                            let (_, gy) = to_px(0.0, ry);
-                                            p = p
-                                                .stroke_color(rgba(EMERALD_BORDER))
-                                                .line_width(1.0)
-                                                .line_dash(&[px(4.0), px(4.0)])
-                                                .begin_path()
-                                                .move_to(0.0, gy)
-                                                .line_to(w, gy)
-                                                .stroke();
-                                        }
-                                        if let Some(zy) = data.zero_fcf_norm {
-                                            let (_, gy) = to_px(0.0, zy);
-                                            p = p
-                                                .fill_color(rgb(BORDER_SUBTLE))
-                                                .fill_rect(0.0, gy, w, 1.0);
-                                        }
-
-                                        p = p.line_dash(&[]);
-                                        for pt in &data.model.points {
-                                            let (cx_p, cy_p) = to_px(pt.x_norm, pt.y_norm);
-                                            let col = if pt.in_strike_zone {
-                                                EMERALD_FG
-                                            } else if pt.in_watchlist {
-                                                SKY_FG
-                                            } else {
-                                                GOLD_FG
-                                            };
-                                            if pt.is_selected {
-                                                p = p
-                                                    .fill_color(rgba(0xFFFFFF22))
-                                                    .fill_rect(0.0, cy_p - 0.5, w, 1.0)
-                                                    .fill_rect(cx_p - 0.5, 0.0, 1.0, h)
-                                                    .fill_color(rgb(INK_HERO))
-                                                    .fill_rect(cx_p - 5.0, cy_p - 5.0, 10.0, 10.0)
-                                                    .fill_color(rgb(col))
-                                                    .fill_rect(cx_p - 3.0, cy_p - 3.0, 6.0, 6.0);
-                                            } else {
-                                                let r = if pt.in_strike_zone || pt.in_watchlist {
-                                                    2.8f32
-                                                } else {
-                                                    2.0f32
-                                                };
-                                                p = p.fill_color(rgb(col)).fill_rect(
-                                                    cx_p - r,
-                                                    cy_p - r,
-                                                    r * 2.0,
-                                                    r * 2.0,
-                                                );
+                                        })
+                                        .w_full()
+                                        .h_full()
+                                        .on_layout(move |b: &Bounds<Points>| canvas_size.set(b.size))
+                                        .on_mouse_move(move |e: &MouseEvent| {
+                                            hover_pt.set(Some(e.position));
+                                        })
+                                        .on_mouse_leave(move |_: &MouseEvent| {
+                                            hover_pt.set(None);
+                                        })
+                                        .on_press(move |e: &PressEvent| {
+                                            let sz = canvas_size.get_untracked();
+                                            let hit_cik = scatter_data.with_untracked(|opt| {
+                                                let m = opt.as_ref()?;
+                                                let idx = hit_test_scatter_point(
+                                                    &m.points,
+                                                    e.position.x.0,
+                                                    e.position.y.0,
+                                                    sz.width.0,
+                                                    sz.height.0,
+                                                    14.0,
+                                                )?;
+                                                m.points.get(idx).map(|p| p.cik.clone())
+                                            });
+                                            if let Some(cik) = hit_cik
+                                                && let Some(row) = store.universe_rows.with_untracked(|rows| {
+                                                    rows.iter().find(|r| r.cik == cik).cloned()
+                                                })
+                                            {
+                                                store.select_universe_row(&row);
                                             }
-                                        }
-                                        p
-                                    })
-                                    .w_full()
-                                    .h_full()
-                                    .on_layout(move |b: &Bounds<Points>| canvas_size.set(b.size)),
-                                ),
-                        ),
-                )
-                .child(
-                    view()
-                        .pl(px(40.0))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .child(axis_tick_text(move || {
-                            scatter_data.with(|d| {
-                                d.as_ref()
-                                    .map(|x| format!("ROIC {:.0}%", x.model.x_min))
-                                    .unwrap_or_default()
-                            })
-                        }))
-                        .child(axis_tick_text(move || {
-                            scatter_data.with(|d| {
-                                d.as_ref()
-                                    .map(|x| format!("{:.0}%", (x.model.x_min + x.model.x_max) * 0.5))
-                                    .unwrap_or_default()
-                            })
-                        }))
-                        .child(axis_tick_text(move || {
-                            scatter_data.with(|d| {
-                                d.as_ref()
-                                    .map(|x| format!("{:.0}%", x.model.x_max))
-                                    .unwrap_or_default()
-                            })
-                        })),
-                )
-                .into_element()
-        }))
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        view()
+                            .pl(px(40.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(axis_tick_text(move || {
+                                scatter_data.with(|d| {
+                                    d.as_ref()
+                                        .map(|m| format!("ROIC {:.0}%", m.x_min))
+                                        .unwrap_or_default()
+                                })
+                            }))
+                            .child(axis_tick_text(move || {
+                                scatter_data.with(|d| {
+                                    d.as_ref()
+                                        .map(|m| format!("{:.0}%", (m.x_min + m.x_max) * 0.5))
+                                        .unwrap_or_default()
+                                })
+                            }))
+                            .child(axis_tick_text(move || {
+                                scatter_data.with(|d| {
+                                    d.as_ref()
+                                        .map(|m| format!("{:.0}%", m.x_max))
+                                        .unwrap_or_default()
+                                })
+                            })),
+                    )
+            },
+        ))
+}
+
+fn paint_scatter_canvas(
+    model: &ScatterPlotModel,
+    sz: Size<Points>,
+    hover: Option<Point<Points>>,
+    lang: UiLang,
+) -> Painter {
+    let mut p = Painter::new();
+    let w = sz.width.0;
+    let h = sz.height.0;
+    if w <= 24.0 || h <= 24.0 {
+        return p;
+    }
+
+    p = p.fill_color(rgb(BG_VIEWPORT)).fill_rect(0.0, 0.0, w, h);
+
+    // Subtle grid lines
+    for frac in [0.0f32, 0.5, 1.0] {
+        let (_, gy) = scatter_point_px(0.0, frac, w, h);
+        p = p
+            .fill_color(rgb(BORDER_HAIRLINE))
+            .fill_rect(0.0, gy, w, 1.0);
+        let (gx, _) = scatter_point_px(frac, 0.0, w, h);
+        p = p
+            .fill_color(rgb(BORDER_HAIRLINE))
+            .fill_rect(gx, 0.0, 1.0, h);
+    }
+
+    // Sweet-spot quadrant: ROIC >= 15% & Strict FCF Yield >= 4%
+    if let (Some(rx), Some(ry)) = (model.ref_roic_norm, model.ref_fcf_norm) {
+        let (x0, y0) = scatter_point_px(rx, 1.0, w, h);
+        let (x1, y1) = scatter_point_px(1.0, ry, w, h);
+        p = p.fill_color(rgba(EMERALD_BAND)).fill_rect(
+            x0,
+            y0,
+            (x1 - x0).max(1.0),
+            (y1 - y0).max(1.0),
+        );
+    }
+
+    // Threshold reference lines: 15% ROIC & 4% FCF Yield
+    if let Some(rx) = model.ref_roic_norm {
+        let (gx, _) = scatter_point_px(rx, 0.0, w, h);
+        p = p
+            .stroke_color(rgba(GOLD_BORDER))
+            .line_width(1.0)
+            .line_dash(&[px(4.0), px(4.0)])
+            .begin_path()
+            .move_to(gx, 0.0)
+            .line_to(gx, h)
+            .stroke()
+            .line_dash(&[])
+            .font(&format!("9px {FONT_MONO_NUM}"))
+            .font_variant_numeric(FontVariant(FontVariant::TABULAR_NUMS))
+            .text_align(CanvasTextAlign::Left)
+            .text_baseline(CanvasTextBaseline::Bottom)
+            .fill_color(rgb(GOLD_FG))
+            .fill_text("15%", gx + 3.0, h - 3.0);
+    }
+    if let Some(ry) = model.ref_fcf_norm {
+        let (_, gy) = scatter_point_px(0.0, ry, w, h);
+        p = p
+            .stroke_color(rgba(EMERALD_BORDER))
+            .line_width(1.0)
+            .line_dash(&[px(4.0), px(4.0)])
+            .begin_path()
+            .move_to(0.0, gy)
+            .line_to(w, gy)
+            .stroke()
+            .line_dash(&[])
+            .font(&format!("9px {FONT_MONO_NUM}"))
+            .font_variant_numeric(FontVariant(FontVariant::TABULAR_NUMS))
+            .text_align(CanvasTextAlign::Left)
+            .text_baseline(CanvasTextBaseline::Bottom)
+            .fill_color(rgb(EMERALD_FG))
+            .fill_text("4%", 6.0, gy - 2.0);
+    }
+    if let Some(zy) = model.zero_fcf_norm {
+        let (_, gy) = scatter_point_px(0.0, zy, w, h);
+        p = p.fill_color(rgb(BORDER_SUBTLE)).fill_rect(0.0, gy, w, 1.0);
+    }
+
+    let hovered_idx =
+        hover.and_then(|pos| hit_test_scatter_point(&model.points, pos.x.0, pos.y.0, w, h, 14.0));
+
+    for (idx, pt) in model.points.iter().enumerate() {
+        let (cx_p, cy_p) = scatter_point_px(pt.x_norm, pt.y_norm, w, h);
+        let col = if pt.in_strike_zone {
+            EMERALD_FG
+        } else if pt.in_watchlist {
+            SKY_FG
+        } else {
+            GOLD_FG
+        };
+        let is_hovered = hovered_idx == Some(idx);
+
+        if pt.is_selected {
+            p = p
+                .fill_color(rgba(0xFFFFFF22))
+                .fill_rect(0.0, cy_p - 0.5, w, 1.0)
+                .fill_rect(cx_p - 0.5, 0.0, 1.0, h)
+                .fill_color(rgb(INK_HERO))
+                .begin_path()
+                .arc(cx_p, cy_p, 5.5, radians(0.0), radians(TAU))
+                .fill()
+                .fill_color(rgb(col))
+                .begin_path()
+                .arc(cx_p, cy_p, 3.5, radians(0.0), radians(TAU))
+                .fill();
+        } else {
+            let r = if pt.in_strike_zone || pt.in_watchlist {
+                3.0f32
+            } else {
+                2.2f32
+            };
+            if is_hovered {
+                p = p
+                    .fill_color(rgb(INK_HERO))
+                    .begin_path()
+                    .arc(cx_p, cy_p, r + 2.0, radians(0.0), radians(TAU))
+                    .fill();
+            }
+            p = p
+                .fill_color(rgb(col))
+                .begin_path()
+                .arc(cx_p, cy_p, r, radians(0.0), radians(TAU))
+                .fill();
+        }
+    }
+
+    // Floating hover tooltip pill
+    if let Some(idx) = hovered_idx
+        && let Some(pt) = model.points.get(idx)
+    {
+        let (cx_p, cy_p) = scatter_point_px(pt.x_norm, pt.y_norm, w, h);
+        let tier_tag = if pt.in_strike_zone {
+            lang.t("击球区", "Strike")
+        } else if pt.in_watchlist {
+            lang.t("能力圈", "Circle")
+        } else {
+            lang.t("点击选中", "Click")
+        };
+        let tip = format!(
+            "{} · ROIC {:.1}% · FCF {:.1}% · {tier_tag}",
+            pt.ticker, pt.roic_pct, pt.fcf_yield_pct
+        );
+        let tip_w = (tip.chars().count() as f32 * 5.9 + 16.0).clamp(150.0, w - 12.0);
+        let tip_h = 20.0f32;
+        let tip_x = if cx_p + 10.0 + tip_w <= w - 6.0 {
+            cx_p + 10.0
+        } else {
+            (cx_p - tip_w - 10.0).clamp(6.0, (w - tip_w - 6.0).max(6.0))
+        };
+        let tip_y = if cy_p - tip_h - 8.0 >= 6.0 {
+            cy_p - tip_h - 8.0
+        } else {
+            (cy_p + 8.0).clamp(6.0, (h - tip_h - 6.0).max(6.0))
+        };
+        let tip_col = if pt.in_strike_zone {
+            EMERALD_FG
+        } else if pt.in_watchlist {
+            SKY_FG
+        } else {
+            INK_HERO
+        };
+        let tip_rect = bounds(point(px(tip_x), px(tip_y)), size(px(tip_w), px(tip_h)));
+        p = p
+            .fill_color(rgba(0x13131CEB))
+            .stroke_color(rgb(BORDER_STRONG))
+            .line_width(1.0)
+            .begin_path()
+            .round_rect(tip_rect, px(4.0))
+            .fill()
+            .stroke()
+            .font(&format!("10px {FONT_MONO_NUM}"))
+            .font_variant_numeric(FontVariant(FontVariant::TABULAR_NUMS))
+            .text_align(CanvasTextAlign::Left)
+            .text_baseline(CanvasTextBaseline::Middle)
+            .fill_color(rgb(tip_col))
+            .fill_text(&tip, tip_x + 8.0, tip_y + tip_h * 0.5);
+    }
+
+    p
 }
 
 fn axis_tick_text(label: impl Fn() -> String + 'static) -> Text {
@@ -2800,28 +2960,19 @@ fn render_universe_drawer_provenance(store: AppStore, row: &UniverseRow, l: UiLa
         .map(|s| &s[..s.len().min(16)])
         .unwrap_or("—");
     let peers_cli = format!("m3 universe peers {}", row.ticker);
+    let edgar_url = edgar::normalize_cik(&row.cik)
+        .ok()
+        .map(|norm| format!("https://www.sec.gov/edgar/browse/?CIK={norm}"));
 
-    prop_section(l.t("PROVENANCE · XBRL 溯源", "PROVENANCE · XBRL Trace"))
-        .child(kv_line("CIK", row.cik.clone(), INK_SECONDARY))
-        .child(kv_line(
-            l.t("最近财报", "Latest Filing"),
-            row.latest_filing_end
-                .clone()
-                .unwrap_or_else(|| "—".to_owned()),
-            INK_SECONDARY,
-        ))
-        .child(kv_line(
-            l.t("年报年数", "Annual Years"),
-            match l {
-                UiLang::Zh => format!("{} 年", row.years_of_data),
-                UiLang::En => format!("{} yr", row.years_of_data),
-            },
-            INK_SECONDARY,
-        ))
-        .child(kv_line("RAW_SHA256", sha_short.to_owned(), INK_MUTED))
+    let mut action_row = view()
+        .mt(px(4.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .flex_wrap()
+        .gap(px(6.0))
         .child(
             view()
-                .mt(px(4.0))
                 .px(px(10.0))
                 .py(px(5.0))
                 .rounded_sm()
@@ -2844,13 +2995,54 @@ fn render_universe_drawer_provenance(store: AppStore, row: &UniverseRow, l: UiLa
                     .truncate()
                     .number_of_lines(1),
                 ),
-        )
+        );
+    if let Some(url) = edgar_url {
+        action_row = action_row.child(
+            view()
+                .px(px(10.0))
+                .py(px(5.0))
+                .rounded_sm()
+                .bg(rgba(SKY_BG))
+                .border_1()
+                .border_color(rgba(SKY_BORDER))
+                .hover(|s| s.bg(rgb(BG_HOVER)))
+                .cursor_pointer()
+                .on_press(move || open_external_url(&url))
+                .child(
+                    text(l.t("打开 SEC EDGAR ↗", "Open SEC EDGAR ↗"))
+                        .font_family(FONT_MONO_TERM)
+                        .text_size(px(TEXT_2XS))
+                        .text_color(rgb(SKY_FG))
+                        .number_of_lines(1),
+                ),
+        );
+    }
+
+    prop_section(l.t("PROVENANCE · XBRL 溯源", "PROVENANCE · XBRL Trace"))
+        .child(kv_line("CIK", row.cik.clone(), INK_SECONDARY))
+        .child(kv_line(
+            l.t("最近财报", "Latest Filing"),
+            row.latest_filing_end
+                .clone()
+                .unwrap_or_else(|| "—".to_owned()),
+            INK_SECONDARY,
+        ))
+        .child(kv_line(
+            l.t("年报年数", "Annual Years"),
+            match l {
+                UiLang::Zh => format!("{} 年", row.years_of_data),
+                UiLang::En => format!("{} yr", row.years_of_data),
+            },
+            INK_SECONDARY,
+        ))
+        .child(kv_line("RAW_SHA256", sha_short.to_owned(), INK_MUTED))
+        .child(action_row)
 }
 
 // ── Empty States (NeedsSync / Loading / NoMatches) ───────────────────────────
 
 fn render_universe_empty_state(store: AppStore) -> View {
-    let sync_cli = "./apps/m3-desktop/m3 universe sync --full --prices-top 400";
+    let sync_cli = "m3 universe sync --full --prices-top 400";
 
     obsidian_card()
         .p(px(24.0))
@@ -3419,6 +3611,7 @@ fn render_universe_similar_card(
 fn render_evidence_card(store: AppStore, ev: &SignalEvidence, l: UiLang) -> View {
     let date_str = ev.filing_date.as_deref().unwrap_or("—");
     let copy_url = ev.source_url.clone();
+    let open_url_str = ev.source_url.clone();
     let copy_label = format!("{} {}", ev.ticker, ev.doc_type);
 
     let mut right = view().flex().flex_row().items_center().gap(px(8.0)).child(
@@ -3433,11 +3626,17 @@ fn render_evidence_card(store: AppStore, ev: &SignalEvidence, l: UiLang) -> View
         .text_color(rgb(EMERALD_FG)),
     );
     if !ev.source_url.trim().is_empty() {
-        right = right.child(action_button(
-            l.t("复制 URL", "Copy URL").to_owned(),
-            false,
-            move || copy_text_with_notice(store, copy_url.clone(), &copy_label),
-        ));
+        right = right
+            .child(action_button(
+                l.t("复制 URL", "Copy URL").to_owned(),
+                false,
+                move || copy_text_with_notice(store, copy_url.clone(), &copy_label),
+            ))
+            .child(action_button(
+                l.t("打开原文 ↗", "Open SEC ↗").to_owned(),
+                false,
+                move || open_external_url(&open_url_str),
+            ));
     }
 
     let mut card = obsidian_card()

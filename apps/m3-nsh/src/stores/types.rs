@@ -468,6 +468,7 @@ pub struct ScatterPoint {
     pub in_strike_zone: bool,
     pub in_watchlist: bool,
     pub is_selected: bool,
+    pub clipped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -477,6 +478,12 @@ pub struct ScatterPlotModel {
     pub x_max: f64,
     pub y_min: f64,
     pub y_max: f64,
+    pub ref_roic_norm: Option<f32>,
+    pub ref_fcf_norm: Option<f32>,
+    pub zero_fcf_norm: Option<f32>,
+    pub clipped_count: usize,
+    pub strike_count: usize,
+    pub watch_count: usize,
 }
 
 /// Chat role in EmbeddedAlan / Industry Tutor panels.

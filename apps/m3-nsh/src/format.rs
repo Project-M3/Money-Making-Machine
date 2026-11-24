@@ -238,7 +238,7 @@ pub fn fmt_pct_clean(val: Option<Decimal>, signed: bool) -> (String, i8) {
     (text, pol)
 }
 
-pub fn civil_ym_from_ms(ms: u64) -> String {
+fn civil_ymd_tuple_from_ms(ms: u64) -> (i64, i64, i64) {
     let days = (ms / 1000) as i64 / 86_400;
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -247,9 +247,32 @@ pub fn civil_ym_from_ms(ms: u64) -> String {
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
     let m = mp + if mp < 10 { 3 } else { -9 };
     let yr = y + i64::from(m <= 2);
+    (yr, m, d)
+}
+
+pub fn civil_ym_from_ms(ms: u64) -> String {
+    let (yr, m, _) = civil_ymd_tuple_from_ms(ms);
     format!("{yr:04}-{m:02}")
+}
+
+pub fn civil_ymd_from_ms(ms: u64) -> String {
+    let (yr, m, d) = civil_ymd_tuple_from_ms(ms);
+    format!("{yr:04}-{m:02}-{d:02}")
+}
+
+pub fn fmt_volume_compact(vol: u64) -> String {
+    if vol >= 1_000_000_000 {
+        format!("{:.2}B", vol as f64 / 1_000_000_000.0)
+    } else if vol >= 1_000_000 {
+        format!("{:.2}M", vol as f64 / 1_000_000.0)
+    } else if vol >= 1_000 {
+        format!("{:.1}K", vol as f64 / 1_000.0)
+    } else {
+        format!("{vol}")
+    }
 }
 
 pub fn fmt_time_cn_for(ms: Option<u64>, lang: UiLang) -> String {

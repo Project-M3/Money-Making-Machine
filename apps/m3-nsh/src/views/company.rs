@@ -599,68 +599,78 @@ fn kline_and_sandbox_card(
     gro_text: Signal<String>,
 ) -> View {
     let l = store.lang.get();
-    let tf = store.chart_timeframe.get();
-    let bars = match tf {
-        ChartTimeframe::FiveYearWeekly => store
-            .selected_history_wk
-            .with(|h| h.as_ref().map(|x| x.bars.clone()).unwrap_or_default()),
-        ChartTimeframe::ThreeYearWeekly => store.selected_history_wk.with(|h| {
-            h.as_ref()
-                .map(|x| {
-                    let keep = 156usize.min(x.bars.len());
-                    x.bars[x.bars.len() - keep..].to_vec()
-                })
-                .unwrap_or_default()
-        }),
-        ChartTimeframe::OneYearDaily => store
-            .selected_history_1d
-            .with(|h| h.as_ref().map(|x| x.bars.clone()).unwrap_or_default()),
-    };
-
-    let ohlc_readout = match bars.last() {
-        Some(b) => {
-            let pfx = currency_prefix(&rep.currency);
-            format!(
-                "O {pfx}{:.2}   H {pfx}{:.2}   L {pfx}{:.2}   C {pfx}{:.2}",
-                b.open, b.high, b.low, b.close
-            )
-        }
-        None => l.t("暂无本地 K 线缓存", "No local K-line cache").to_owned(),
-    };
-    let peak_high = bars
-        .iter()
-        .map(|b| b.high)
-        .fold(Decimal::ZERO, Decimal::max);
-    let drawdown_pct = match (bars.last(), peak_high) {
-        (Some(b), pk) if pk > Decimal::ZERO => Some(((b.close - pk) / pk) * Decimal::from(100)),
-        _ => None,
-    };
-    let (dd_str, _) = fmt_pct_clean(drawdown_pct, true);
-    let date_range = match (bars.first(), bars.last()) {
-        (Some(f), Some(last)) => format!(
-            "{} → {} ({})",
-            civil_ym_from_ms(f.ts_ms),
-            civil_ym_from_ms(last.ts_ms),
-            bars.len()
-        ),
-        _ => String::new(),
-    };
-
     let cur_price = rep.price.as_ref().map(|p| p.price);
     let oe_per_share = val_opt.and_then(|v| v.owner_earnings_per_share);
     let saved_mult = rep.assumptions.multiple_low;
     let saved_ret = rep.assumptions.target_return_pct;
     let saved_gro = rep.assumptions.expected_growth_pct;
     let currency = rep.currency.clone();
+    let currency_hdr = currency.clone();
     let fallback_strike = val_opt.and_then(|v| v.strike_price);
+
+    let active_bars = move || {
+        let tf = store.chart_timeframe.get();
+        match tf {
+            ChartTimeframe::FiveYearWeekly => store
+                .selected_history_wk
+                .with(|h| h.as_ref().map(|x| x.bars.clone()).unwrap_or_default()),
+            ChartTimeframe::ThreeYearWeekly => store.selected_history_wk.with(|h| {
+                h.as_ref()
+                    .map(|x| {
+                        let keep = 156usize.min(x.bars.len());
+                        x.bars[x.bars.len() - keep..].to_vec()
+                    })
+                    .unwrap_or_default()
+            }),
+            ChartTimeframe::OneYearDaily => store
+                .selected_history_1d
+                .with(|h| h.as_ref().map(|x| x.bars.clone()).unwrap_or_default()),
+        }
+    };
 
     let mut card = obsidian_card()
         .p(px(16.0))
         .flex()
         .flex_col()
         .gap(px(12.0))
-        // K-line Header + Timeframe switcher
-        .child(
+        // K-line Header + Timeframe switcher (reactive so switching TF never rebuilds parent)
+        .child(dynamic(move || {
+            let cur_l = store.lang.get();
+            let tf = store.chart_timeframe.get();
+            let bars = active_bars();
+            let ohlc_readout = match bars.last() {
+                Some(b) => {
+                    let pfx = currency_prefix(&currency_hdr);
+                    format!(
+                        "O {pfx}{:.2}   H {pfx}{:.2}   L {pfx}{:.2}   C {pfx}{:.2}",
+                        b.open, b.high, b.low, b.close
+                    )
+                }
+                None => cur_l
+                    .t("暂无本地 K 线缓存", "No local K-line cache")
+                    .to_owned(),
+            };
+            let peak_high = bars
+                .iter()
+                .map(|b| b.high)
+                .fold(Decimal::ZERO, Decimal::max);
+            let drawdown_pct = match (bars.last(), peak_high) {
+                (Some(b), pk) if pk > Decimal::ZERO => {
+                    Some(((b.close - pk) / pk) * Decimal::from(100))
+                }
+                _ => None,
+            };
+            let (dd_str, _) = fmt_pct_clean(drawdown_pct, true);
+            let date_range = match (bars.first(), bars.last()) {
+                (Some(f), Some(last)) => format!(
+                    "{} → {} ({})",
+                    civil_ym_from_ms(f.ts_ms),
+                    civil_ym_from_ms(last.ts_ms),
+                    bars.len()
+                ),
+                _ => String::new(),
+            };
+
             view()
                 .flex()
                 .flex_row()
@@ -685,7 +695,7 @@ fn kline_and_sandbox_card(
                                 .into_iter()
                                 .map(|item_tf| {
                                     seg_tab(
-                                        item_tf.label_for(l),
+                                        item_tf.label_for(cur_l),
                                         tf == item_tf,
                                         None,
                                         true,
@@ -724,7 +734,7 @@ fn kline_and_sandbox_card(
                                 .items_baseline()
                                 .gap(px(4.0))
                                 .child(
-                                    text(l.t("高点回撤", "Drawdown"))
+                                    text(cur_l.t("高点回撤", "Drawdown"))
                                         .font_family(FONT_UI)
                                         .text_size(px(TEXT_XS))
                                         .text_color(rgb(INK_MUTED)),
@@ -736,9 +746,9 @@ fn kline_and_sandbox_card(
                                         .text_color(rgb(INK_SECONDARY)),
                                 ),
                         ),
-                ),
-        )
-        // Required chart_placeholder slot (Wave 4 replaces implementation in chart.rs)
+                )
+        }))
+        // Interactive K-Line & Intrinsic Value Canvas
         .child(chart_placeholder(store));
 
     // Charlie Sandbox Interactive Valuation Card (inputs mounted outside dynamic!)
@@ -1758,8 +1768,11 @@ fn xbrl_inspector_body(store: AppStore, rep: &MungerReport) -> View {
             obsidian_card()
                 .p(px(20.0))
                 .child(section_header(
-                    "Deterministic Rust Arithmetic Trace (rust_decimal)",
-                    "ZERO LLM ESTIMATION".to_owned(),
+                    l.t(
+                        "确定性 Rust 算术推导 (rust_decimal)",
+                        "Deterministic Rust Arithmetic Trace (rust_decimal)",
+                    ),
+                    l.t("零 LLM 估算", "ZERO LLM ESTIMATION").to_owned(),
                 ))
                 .children(formula_lines.into_iter().map(|(lbl, expr)| {
                     view()
@@ -1793,7 +1806,10 @@ fn xbrl_inspector_body(store: AppStore, rep: &MungerReport) -> View {
             obsidian_card()
                 .p(px(20.0))
                 .child(section_header(
-                    "Source Provenance & SHA-256 Verification",
+                    l.t(
+                        "一手溯源与 SHA-256 校验",
+                        "Source Provenance & SHA-256 Verification",
+                    ),
                     format!("CIK {}", rep.cik.as_deref().unwrap_or("MANUAL")),
                 ))
                 .child(
@@ -1834,17 +1850,24 @@ fn xbrl_inspector_body(store: AppStore, rep: &MungerReport) -> View {
                         .items_center()
                         .justify_between()
                         .child(
-                            text("SEC XBRL Concept Mapping (Latest Annual Provenance)")
-                                .font_family(FONT_UI)
-                                .text_size(px(TEXT_SM))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(INK_HERO)),
+                            text(l.t(
+                                "SEC XBRL 科目映射 (最新年报溯源)",
+                                "SEC XBRL Concept Mapping (Latest Annual Provenance)",
+                            ))
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_SM))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(INK_HERO)),
                         )
                         .child(
-                            text(format!("{} fields", rep.provenance_summary.len()))
-                                .font_family(FONT_MONO_NUM)
-                                .text_size(px(TEXT_XS))
-                                .text_color(rgb(INK_MUTED)),
+                            text(format!(
+                                "{} {}",
+                                rep.provenance_summary.len(),
+                                l.t("个字段", "fields")
+                            ))
+                            .font_family(FONT_MONO_NUM)
+                            .text_size(px(TEXT_XS))
+                            .text_color(rgb(INK_MUTED)),
                         ),
                 )
                 .child(
@@ -1899,10 +1922,13 @@ fn xbrl_inspector_body(store: AppStore, rep: &MungerReport) -> View {
                 )
                 .child(if rep.provenance_summary.is_empty() {
                     view().p(px(16.0)).child(
-                        text("(no XBRL concept provenance records)")
-                            .font_family(FONT_MONO_TERM)
-                            .text_size(px(TEXT_XS))
-                            .text_color(rgb(INK_MUTED)),
+                        text(l.t(
+                            "(暂无 XBRL 科目溯源记录)",
+                            "(no XBRL concept provenance records)",
+                        ))
+                        .font_family(FONT_MONO_TERM)
+                        .text_size(px(TEXT_XS))
+                        .text_color(rgb(INK_MUTED)),
                     )
                 } else {
                     view().flex().flex_col().children(
@@ -1951,12 +1977,14 @@ fn xbrl_inspector_body(store: AppStore, rep: &MungerReport) -> View {
                                 )
                                 .child(
                                     view().w(px(170.0)).flex_shrink_0().child(
-                                        text(p.note.clone().unwrap_or_else(|| "direct".to_owned()))
-                                            .font_family(FONT_MONO_TERM)
-                                            .text_size(px(TEXT_XS))
-                                            .text_color(rgb(INK_MUTED))
-                                            .truncate()
-                                            .number_of_lines(1),
+                                        text(p.note.clone().unwrap_or_else(|| {
+                                            l.t("直接映射", "direct").to_owned()
+                                        }))
+                                        .font_family(FONT_MONO_TERM)
+                                        .text_size(px(TEXT_XS))
+                                        .text_color(rgb(INK_MUTED))
+                                        .truncate()
+                                        .number_of_lines(1),
                                     ),
                                 )
                         }),
