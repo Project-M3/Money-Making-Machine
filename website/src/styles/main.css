@@ -1603,6 +1603,11 @@ pre,
   padding: clamp(1.25rem, 3vw, 2rem);
 }
 
+.pipeline-stage > *,
+.access-grid > * {
+  min-width: 0;
+}
+
 .pipeline-stage h3 {
   margin: 0 0 0.6rem;
   font-size: 1.25rem;
@@ -1639,6 +1644,8 @@ pre,
 }
 
 .pipeline-spec-box {
+  min-width: 0;
+  max-width: 100%;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -1650,6 +1657,7 @@ pre,
 }
 
 .cmd-snippet {
+  max-width: 100%;
   background: var(--bg-shell);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-xs);
@@ -1710,6 +1718,8 @@ pre,
 }
 
 .preview-card {
+  min-width: 0;
+  max-width: 100%;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -1740,6 +1750,8 @@ pre,
 }
 
 .install-snippet-row {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -1748,6 +1760,7 @@ pre,
 .install-box {
   flex: 1;
   min-width: 0;
+  max-width: 100%;
   margin: 0;
   background: var(--bg-shell);
   border: 1px solid var(--border-hairline);
@@ -1760,6 +1773,8 @@ pre,
 }
 
 .cli-deck {
+  min-width: 0;
+  max-width: 100%;
   background: var(--bg-viewport);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -1801,6 +1816,7 @@ pre,
   font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--ink-hero);
+  overflow-wrap: anywhere;
 }
 
 .cli-desc {
