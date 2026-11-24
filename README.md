@@ -22,7 +22,7 @@
 
 ## 当前方向与约束（2026-11-19 确认）
 
-- **全 Rust 栈 + GPUI**：沿用 Rust 1.98.1 + GPUI 0.2.2 构建原生桌面工作台与 JSON CLI（[apps/m3-desktop/README.md](apps/m3-desktop/README.md)）。
+- **全 Rust 栈 + Longbridge NSH `0.5.1`**：沿用 Rust 1.98.1 + Longbridge NSH `0.5.1`（`apps/m3-nsh`）构建 macOS 原生桌面工作台，并将确定性内核（`crates/m3-core`，macOS 主力 + iOS-ready 路径抽象，零 UI 框架依赖）与 JSON CLI（`crates/m3-cli` / `m3`）拆分为清晰边界（[apps/m3-nsh/README.md](apps/m3-nsh/README.md)）。
 - **算术与推理严格分离**：所有财务指标（ROIC、严苛股东盈余 `OCF - CapEx - SBC`、股本缩减/稀释率、反向隐含增速、击球价）必须由确定性 Rust 代码直接从一手官方数据源（美股首选 SEC EDGAR Company Facts XBRL）计算并附 SHA-256 溯源；**绝不让 LLM 估算或编造财报数字**。
 - **第一版范围**：先做 **15–20 家能力圈深度观察台 + 查理计算器 + Alan 逆向审讯**，把全市场 5000 股筛选器留待二期。
 - **首批能力圈观察池**：美股（SEC EDGAR 一手数据）先行覆盖 `AAPL`、`GOOGL`、`ADSK`、`PTC`、`SNPS`、`COST` 与 `Too Hard` 样本 `INTC`；非美股 `DSY.PA`（达索，欧元实时报价+待录 IFRS 财报）与 `1810.HK`（小米，`Too Hard` 样本）纳入统一结构。
@@ -43,7 +43,7 @@ curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta
 # 若在本地仓库内执行，也可直接运行脚本自动绑定当前工作区：
 ./scripts/install.sh --channel stable
 
-# 2. 日常切换通道与自更新（命令行 & GPUI 桌面端均支持）
+# 2. 日常切换通道与自更新（命令行 & M3 NSH 桌面端均支持）
 m3 update channel beta     # 切到 beta（或 stable）
 m3 update --check          # 检查是否有新版本
 m3 update                  # 下载校验 SHA-256 并原子替换 /Applications/M3.app
@@ -55,7 +55,7 @@ m3 update                  # 下载校验 SHA-256 并原子替换 /Applications/
 
 ## 文档入口
 
-- [GPUI 工作台与 CLI](apps/m3-desktop/README.md)：Munger Workbench 桌面界面（Inbox、Universe、Research Desk、Themes & Journal）与 JSON CLI 说明
+- [NSH 桌面工作台与 CLI](apps/m3-nsh/README.md)：Munger Workbench 桌面界面（Inbox、Universe、Industry Research、Circle Overview、Themes & Journal、Research Desk）与 `m3` JSON CLI 说明
 - [Agent 数据与控制接口](docs/agent-interface.md)：结构化命令（`status / sync / report / dossier / add / journal / universe / events / inbox / research / budget / themes`）与文件契约
 - [芒格人机审讯工作流](docs/munger-workflow.md)：能力圈过滤、跨学科格栅、事前验尸与费曼答辩协议
 - [技术架构方向](docs/architecture.md)：四层架构、`workbench/` 与 `data/munger/` 目录边界

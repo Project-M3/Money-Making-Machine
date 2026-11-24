@@ -24,7 +24,7 @@ use m3_core::model::{
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
 
-fn roic_unavailable_label(roic_note: Option<&str>) -> String {
+pub(crate) fn roic_unavailable_label(roic_note: Option<&str>) -> String {
     match roic_note {
         Some("net_cash_exceeds_book_capital") => "Net Cash > Book Capital".into(),
         Some("total_debt_unavailable") => "— (Debt Unavailable)".into(),

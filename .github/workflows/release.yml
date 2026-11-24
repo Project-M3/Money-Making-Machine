@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.2.0; defaults to v<apps/m3-desktop/Cargo.toml version>)"
+        description: "Release tag (e.g. v0.3.0; defaults to v<apps/m3-nsh/Cargo.toml version>)"
         type: string
         required: false
         default: ""
@@ -57,10 +57,14 @@ jobs:
           python3 - <<'PY'
           import os, pathlib, tomllib
 
-          cargo = tomllib.loads(pathlib.Path("apps/m3-desktop/Cargo.toml").read_text(encoding="utf-8"))
+          cargo = tomllib.loads(pathlib.Path("apps/m3-nsh/Cargo.toml").read_text(encoding="utf-8"))
           version = cargo["package"]["version"].strip()
           if not version or version.startswith("v"):
               raise SystemExit(f"Invalid Cargo.toml package.version: {version!r}")
+          for crate_toml in ("crates/m3-core/Cargo.toml", "crates/m3-cli/Cargo.toml"):
+              other_ver = tomllib.loads(pathlib.Path(crate_toml).read_text(encoding="utf-8"))["package"]["version"].strip()
+              if other_ver != version:
+                  raise SystemExit(f"{crate_toml} version {other_ver!r} != apps/m3-nsh/Cargo.toml {version!r}")
 
           expected_tag = f"v{version}"
           event_name = os.environ["EVENT_NAME"]

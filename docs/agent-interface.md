@@ -1,10 +1,10 @@
 # Agent 接口：Munger Workbench 数据与 CLI 契约
 
-人类使用 GPUI 桌面窗口（`open apps/m3-desktop/artifacts/M3.app`）浏览、调参和记录判断；Alan / Agent 通过 `apps/m3-desktop/m3` CLI 与本地 JSON 文件工作，**不依赖屏幕截图或 Computer Use**。
+人类使用 Longbridge NSH `0.5.1` 原生桌面窗口（`open apps/m3-nsh/artifacts/M3.app` 或 `/Applications/M3.app`）浏览、调参和记录判断；Alan / Agent 通过 `m3` CLI（`~/.local/bin/m3`、`apps/m3-nsh/m3` 或 `cargo run -p m3-cli --`）与本地 JSON 文件工作，**不依赖屏幕截图或 Computer Use**。
 
 ## 1. CLI 命令一览
 
-在仓库根目录执行，所有命令均输出 JSON 至 `stdout`：
+在仓库根目录执行（已安装用户可直接使用 `m3 ...`），所有命令均输出 JSON 至 `stdout`：
 
 ```json
 {"schema_version": 1, "ok": true, "data": ...}
@@ -16,51 +16,51 @@
 
 ```sh
 # 1. 查看工作台整体状态、数据新鲜度、各公司击球状态摘要与同步记录
-apps/m3-desktop/m3 status
+apps/m3-nsh/m3 status
 
 # 2. 同步一手 SEC EDGAR 财报与 Yahoo 日级股价（支持单标的和仅同步价格）
-apps/m3-desktop/m3 sync
-apps/m3-desktop/m3 sync --ticker GOOGL
-apps/m3-desktop/m3 sync --prices-only
+apps/m3-nsh/m3 sync
+apps/m3-nsh/m3 sync --ticker GOOGL
+apps/m3-nsh/m3 sync --prices-only
 
 # 3. 读取单家公司的确定性查理计算器报告（含多年财务、TTM、估值、预警与溯源）
-apps/m3-desktop/m3 report AAPL
+apps/m3-nsh/m3 report AAPL
 
 # 4. 读取单家公司的完整人机审讯档案（AI 草稿 + 人类判断与证伪栏位）
-apps/m3-desktop/m3 dossier AAPL
+apps/m3-nsh/m3 dossier AAPL
 
 # 5. 向观察池添加公司或更新分桶（自动从 SEC tickers 查找 CIK；支持 in/core、watch、out、too_hard）
-apps/m3-desktop/m3 add CDNS --bucket watch --circle "EDA / 半导体设计工具" --name "Cadence Design Systems"
-apps/m3-desktop/m3 add INTC --bucket too_hard --reason "重资产晶圆代工死磕期，现金流不可预测"
+apps/m3-nsh/m3 add CDNS --bucket watch --circle "EDA / 半导体设计工具" --name "Cadence Design Systems"
+apps/m3-nsh/m3 add INTC --bucket too_hard --reason "重资产晶圆代工死磕期，现金流不可预测"
 
 # 6. 决策账本操作（事前记录 WAIT / OUT / TOO_HARD / PAPER_BUY / PAPER_SELL）
-apps/m3-desktop/m3 journal list
-apps/m3-desktop/m3 journal record --ticker GOOGL --action wait --note "Q3 2026 CapEx 超 OCF，等击球安全边际或 CapEx 见顶"
+apps/m3-nsh/m3 journal list
+apps/m3-nsh/m3 journal record --ticker GOOGL --action wait --note "Q3 2026 CapEx 超 OCF，等击球安全边际或 CapEx 见顶"
 
-# 7. 启动 GPUI 桌面工作台
-apps/m3-desktop/m3 start
+# 7. 启动 M3 NSH 桌面工作台
+apps/m3-nsh/m3 start
 
 # 8. L0 全美股湖仓（DuckDB + Parquet）筛选、同行对照与混合语义相似搜索
-apps/m3-desktop/m3 universe status
-apps/m3-desktop/m3 universe sync --full --prices-top 400
-apps/m3-desktop/m3 universe screen --min-roic 15 --max-sbc-ocf 25 --exclude-financials --limit 50
-apps/m3-desktop/m3 universe screen --strike-only --sort fcf_yield --limit 20
-apps/m3-desktop/m3 universe peers ADSK --limit 15
-apps/m3-desktop/m3 universe similar ADSK --ticker --limit 10
-apps/m3-desktop/m3 universe similar "enterprise engineering software subscription" --min-roic 15 --limit 10
+apps/m3-nsh/m3 universe status
+apps/m3-nsh/m3 universe sync --full --prices-top 400
+apps/m3-nsh/m3 universe screen --min-roic 15 --max-sbc-ocf 25 --exclude-financials --limit 50
+apps/m3-nsh/m3 universe screen --strike-only --sort fcf_yield --limit 20
+apps/m3-nsh/m3 universe peers ADSK --limit 15
+apps/m3-nsh/m3 universe similar ADSK --ticker --limit 10
+apps/m3-nsh/m3 universe similar "enterprise engineering software subscription" --min-roic 15 --limit 10
 
 # 9. L1 事件流追平与简报收件箱（0 Flagship Token，本地确定性语义索引 + 原文溯源）
-apps/m3-desktop/m3 events catchup --bootstrap --max-ciks 25 --max-docs 12 --max-news-tickers 20
-apps/m3-desktop/m3 events list --ticker PTC --type sec_8k --limit 20
-apps/m3-desktop/m3 inbox list --status unread --limit 20
-apps/m3-desktop/m3 inbox triage <SIGNAL_ID> --status watch --promote-watch
+apps/m3-nsh/m3 events catchup --bootstrap --max-ciks 25 --max-docs 12 --max-news-tickers 20
+apps/m3-nsh/m3 events list --ticker PTC --type sec_8k --limit 20
+apps/m3-nsh/m3 inbox list --status unread --limit 20
+apps/m3-nsh/m3 inbox triage <SIGNAL_ID> --status watch --promote-watch
 
 # 10. L2 Alan Deep Research（4 视角并行）、预算门控与商业原型主题图谱
-apps/m3-desktop/m3 research run ADSK --focus "云转型净留存与 SBC 控制" --trigger cli
-apps/m3-desktop/m3 research status --ticker ADSK --limit 10
-apps/m3-desktop/m3 budget status
-apps/m3-desktop/m3 themes sync
-apps/m3-desktop/m3 themes list
+apps/m3-nsh/m3 research run ADSK --focus "云转型净留存与 SBC 控制" --trigger cli
+apps/m3-nsh/m3 research status --ticker ADSK --limit 10
+apps/m3-nsh/m3 budget status
+apps/m3-nsh/m3 themes sync
+apps/m3-nsh/m3 themes list
 ```
 
 #### `m3 universe` 子命令契约

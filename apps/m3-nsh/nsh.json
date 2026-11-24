@@ -10,6 +10,7 @@
     "title": "M3",
     "defaultSize": { "width": 1380, "height": 880 },
     "minSize": { "width": 1140, "height": 720 },
+    "defaultVisible": false,
     "restoreBounds": true,
     "titleBar": {
       "style": "hidden",

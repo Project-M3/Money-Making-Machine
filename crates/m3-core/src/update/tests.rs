@@ -161,10 +161,14 @@ fn passive_check_cache_handles_fresh_stale_and_channel_switch() {
 #[cfg(target_os = "macos")]
 #[test]
 fn resolve_target_app_ignores_repo_artifacts_build_dir() {
-    let dev_exe =
-        Path::new("/Users/test/repo/apps/m3-desktop/artifacts/M3.app/Contents/MacOS/m3-desktop");
+    let dev_exe = Path::new("/Users/test/repo/apps/m3-nsh/artifacts/M3.app/Contents/MacOS/m3-nsh");
     let resolved = resolve_target_app_bundle(None, None, Some(dev_exe)).unwrap();
     assert_eq!(resolved, PathBuf::from("/Applications/M3.app"));
+
+    let legacy_dev_exe =
+        Path::new("/Users/test/repo/apps/m3-desktop/artifacts/M3.app/Contents/MacOS/m3-desktop");
+    let legacy_resolved = resolve_target_app_bundle(None, None, Some(legacy_dev_exe)).unwrap();
+    assert_eq!(legacy_resolved, PathBuf::from("/Applications/M3.app"));
 
     let custom_dir = make_temp_dir("appdir");
     let custom_resolved =
@@ -213,7 +217,7 @@ fn extract_rejects_path_traversal_and_symlinks() {
         header.set_entry_type(tar::EntryType::Symlink);
         header.set_size(0);
         header.set_mode(0o777);
-        tar.append_link(&mut header, "M3.app/Contents/MacOS/m3-desktop", "/bin/sh")
+        tar.append_link(&mut header, "M3.app/Contents/MacOS/m3-nsh", "/bin/sh")
             .unwrap();
         tar.finish().unwrap();
     }
@@ -240,24 +244,30 @@ fn end_to_end_extract_smoke_test_and_atomic_swap_with_cli_symlink() {
     fs::create_dir_all(&app_dir).unwrap();
     fs::create_dir_all(&bin_dir).unwrap();
 
-    // Point app_config to temp support dir for receipt write (cleanup after test).
-    // Note: keep serialized via sequential helper only inside this test scope.
+    // Seed an existing legacy m3-desktop bundle and CLI symlink pointing to m3-desktop.
     let target_app = app_dir.join("M3.app");
     let old_bin = target_app.join("Contents/MacOS/m3-desktop");
     fs::create_dir_all(old_bin.parent().unwrap()).unwrap();
     fs::write(&old_bin, b"#!/bin/sh\necho \"m3 0.1.0\"\n").unwrap();
 
-    let script_body =
+    let cli_link = bin_dir.join("m3");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&old_bin, &cli_link).unwrap();
+
+    let app_script_body =
         b"#!/bin/sh\nif [ \"$1\" = \"-V\" ]; then echo \"m3 9.9.9\"; exit 0; fi\nexit 0\n";
-    let bin_sha = encode_lower_hex(&Sha256::digest(script_body));
-    let plist_body = b"<plist version=\"1.0\"><dict><key>CFBundleShortVersionString</key><string>9.9.9</string></dict></plist>";
+    let cli_script_body =
+        b"#!/bin/sh\nif [ \"$1\" = \"-V\" ]; then echo \"m3 9.9.9\"; exit 0; fi\nexit 0\n";
+    let bin_sha = encode_lower_hex(&Sha256::digest(app_script_body));
+    let plist_body = b"<plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>m3-nsh</string><key>CFBundleShortVersionString</key><string>9.9.9</string></dict></plist>";
+    let nsh_app_json = br#"{"name":"M3","id":"systems.thinksmart.m3","version":"9.9.9"}"#;
     let archive_manifest = ArchiveManifest {
         schema_version: 1,
         version: "9.9.9".to_string(),
         channel: "beta".to_string(),
         target: "aarch64-apple-darwin".to_string(),
         commit: "deadbee".to_string(),
-        bundle_id: "com.morris.m3.desktop".to_string(),
+        bundle_id: "systems.thinksmart.m3".to_string(),
         binary_sha256: bin_sha.clone(),
         signed: false,
         notarized: false,
@@ -271,8 +281,14 @@ fn end_to_end_extract_smoke_test_and_atomic_swap_with_cli_symlink() {
         let mut tar = Builder::new(enc);
 
         for (rel, bytes, mode) in [
-            ("M3.app/Contents/MacOS/m3-desktop", &script_body[..], 0o755),
+            ("M3.app/Contents/MacOS/m3-nsh", &app_script_body[..], 0o755),
+            ("M3.app/Contents/MacOS/m3", &cli_script_body[..], 0o755),
             ("M3.app/Contents/Info.plist", &plist_body[..], 0o644),
+            (
+                "M3.app/Contents/Resources/nsh/app.json",
+                &nsh_app_json[..],
+                0o644,
+            ),
             ("manifest.json", &manifest_bytes[..], 0o644),
         ] {
             let mut header = Header::new_gnu();
@@ -296,13 +312,10 @@ fn end_to_end_extract_smoke_test_and_atomic_swap_with_cli_symlink() {
     assert_eq!(parsed_manifest.commit, "deadbee");
 
     fs::create_dir_all(&support_dir).unwrap();
-    let cli_link = bin_dir.join("m3");
     let archive_sha = super::install::sha256_file(&archive_path).unwrap();
 
-    // Regular non-symlink file in cli_link must fail preflight unless --force.
-    fs::write(&cli_link, b"custom").unwrap();
-    assert!(preflight_install_targets(&target_app, Some(&cli_link), false).is_err());
-    fs::remove_file(&cli_link).unwrap();
+    // Existing symlink cli_link pointing to old m3-desktop must be replaceable without --force.
+    assert!(preflight_install_targets(&target_app, Some(&cli_link), false).is_ok());
 
     let receipt = atomic_swap_app_bundle_with_receipt_dir(
         &staged_app,
@@ -319,11 +332,105 @@ fn end_to_end_extract_smoke_test_and_atomic_swap_with_cli_symlink() {
     .unwrap();
     assert_eq!(receipt.version, "9.9.9");
     assert!(support_dir.join("install-receipt.json").exists());
+    assert!(!target_app.join("Contents/MacOS/m3-desktop").exists());
+    assert!(target_app.join("Contents/MacOS/m3-nsh").is_file());
+    assert!(target_app.join("Contents/MacOS/m3").is_file());
+    assert_eq!(
+        fs::read_link(&cli_link).unwrap(),
+        target_app.join("Contents/MacOS/m3")
+    );
     let out = std::process::Command::new(&cli_link)
         .arg("-V")
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "m3 9.9.9");
+
+    // Regular non-symlink file in cli_link must still fail preflight unless --force.
+    fs::remove_file(&cli_link).unwrap();
+    fs::write(&cli_link, b"custom").unwrap();
+    assert!(preflight_install_targets(&target_app, Some(&cli_link), false).is_err());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn extract_and_swap_supports_legacy_m3_desktop_archive_for_rollback() {
+    let dir = make_temp_dir("legacy-rollback");
+    let app_dir = dir.join("Applications");
+    let bin_dir = dir.join("bin");
+    let support_dir = dir.join("AppSupport");
+    fs::create_dir_all(&app_dir).unwrap();
+    fs::create_dir_all(&bin_dir).unwrap();
+    fs::create_dir_all(&support_dir).unwrap();
+
+    let script_body =
+        b"#!/bin/sh\nif [ \"$1\" = \"-V\" ]; then echo \"m3 0.3.0\"; exit 0; fi\nexit 0\n";
+    let bin_sha = encode_lower_hex(&Sha256::digest(script_body));
+    let plist_body = b"<plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>m3-desktop</string></dict></plist>";
+    let archive_manifest = ArchiveManifest {
+        schema_version: 1,
+        version: "0.3.0".to_string(),
+        channel: "stable".to_string(),
+        target: "aarch64-apple-darwin".to_string(),
+        commit: "0000001".to_string(),
+        bundle_id: "com.morris.m3.desktop".to_string(),
+        binary_sha256: bin_sha.clone(),
+        signed: false,
+        notarized: false,
+    };
+    let manifest_bytes = serde_json::to_vec_pretty(&archive_manifest).unwrap();
+
+    let archive_path = dir.join("m3-0.3.0-aarch64-apple-darwin.tar.gz");
+    {
+        let file = fs::File::create(&archive_path).unwrap();
+        let enc = GzEncoder::new(file, Compression::default());
+        let mut tar = Builder::new(enc);
+        for (rel, bytes, mode) in [
+            ("M3.app/Contents/MacOS/m3-desktop", &script_body[..], 0o755),
+            ("M3.app/Contents/Info.plist", &plist_body[..], 0o644),
+            ("manifest.json", &manifest_bytes[..], 0o644),
+        ] {
+            let mut header = Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(mode);
+            header.set_cksum();
+            tar.append_data(&mut header, rel, bytes).unwrap();
+        }
+        tar.finish().unwrap();
+    }
+
+    let staging = SameFsStagingDir::create_in(&app_dir).unwrap();
+    let (staged_app, _) = extract_and_verify_bundle(
+        &archive_path,
+        staging.path(),
+        "0.3.0",
+        ReleaseChannel::Stable,
+        "aarch64-apple-darwin",
+    )
+    .unwrap();
+    let target_app = app_dir.join("M3.app");
+    let cli_link = bin_dir.join("m3");
+    let archive_sha = super::install::sha256_file(&archive_path).unwrap();
+
+    let receipt = atomic_swap_app_bundle_with_receipt_dir(
+        &staged_app,
+        &target_app,
+        Some(&cli_link),
+        false,
+        "0.3.0",
+        ReleaseChannel::Stable,
+        "v0.3.0",
+        &archive_sha,
+        &bin_sha,
+        &support_dir,
+    )
+    .unwrap();
+    assert_eq!(receipt.version, "0.3.0");
+    assert_eq!(
+        fs::read_link(&cli_link).unwrap(),
+        target_app.join("Contents/MacOS/m3-desktop")
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

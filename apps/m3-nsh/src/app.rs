@@ -9,7 +9,7 @@ use crate::palette::{
     build_palette_items_from_store, command_palette_overlay, execute_palette_action,
 };
 use crate::platform_desktop::{
-    bind_live_application_menu, configure_main_window, restart_after_update,
+    bind_live_application_menu, restart_after_update, reveal_main_window_after_mount,
     show_company_context_menu, titlebar_left_inset,
 };
 use crate::stores::{AppStore, CompanyViewTab, WorkspaceTab};
@@ -29,7 +29,6 @@ use nsh_core::prelude::*;
 pub fn render_app_root() -> impl IntoElement {
     let store = AppStore::start();
     provide_context(store);
-    configure_main_window();
     bind_live_application_menu(store);
     register_keyboard_shortcuts(store);
 
@@ -74,11 +73,13 @@ pub fn render_app_root() -> impl IntoElement {
             move || command_palette_overlay(store),
         ));
 
-    if os().is_desktop() {
+    let built = if os().is_desktop() {
         root
     } else {
         root.p_safe_area()
-    }
+    };
+    reveal_main_window_after_mount();
+    built
 }
 
 fn render_main_viewport(store: AppStore) -> impl IntoElement {

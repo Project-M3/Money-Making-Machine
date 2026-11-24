@@ -7,7 +7,7 @@
 
 ## 1. 核心范式跃迁（Why v2）
 
-v1 验证了确定性 Rust XBRL 计算、GPUI 工作台与进程内 `EmbeddedAlan` 审讯的基本闭环，但只覆盖手选的 9 只股票——其中明星白马（`AAPL`、`COST`、`SNPS` 等）长期显著高于击球价，暴露出**“人手选股带宽受限”**的根本瓶颈。
+v1 验证了确定性 Rust XBRL 计算、桌面工作台与进程内 `EmbeddedAlan` 审讯的基本闭环，但只覆盖手选的 9 只股票——其中明星白马（`AAPL`、`COST`、`SNPS` 等）长期显著高于击球价，暴露出**“人手选股带宽受限”**的根本瓶颈。
 
 查理·芒格集中投资的本质是**决策集中**（只打好球、重仓少做），而**“只能精读几十家公司”只是碳基大脑的带宽约束，并非投资优势**。v2 用机器规模打破研究带宽瓶颈，同时保留两条不可动摇的铁律：
 
@@ -20,7 +20,7 @@ v1 验证了确定性 Rust XBRL 计算、GPUI 工作台与进程内 `EmbeddedAla
 | :--- | :--- | :--- |
 | **1. 覆盖范围** | **先吃透全美股** | 基于 SEC EDGAR 免费全量 XBRL 与公告覆盖 ~5,000+ 活跃美股，完整闭环跑通后再评估非美股扩展。 |
 | **2. 流式粒度** | **事件驱动的近实时投研流** | 关注 10-K / 10-Q / 8-K / Form 4、候选池新闻与日级价格穿越击球阈值；不做盘中逐笔 tick 与高频盯盘。 |
-| **3. 运行形态** | **Local-First 单体 App** | 沿用 `m3-desktop` + `m3` CLI 单二进制，不搭云端微服务或 24/7 `launchd` 守护进程；依靠 DuckDB 游标实现启动时**断点续传追平（Catch-up Stream）** + 运行期低频增量轮询。 |
+| **3. 运行形态** | **Local-First 单体 App** | 沿用 `m3-nsh` + `m3` CLI（`crates/m3-core` / `crates/m3-cli` / `apps/m3-nsh`），不搭云端微服务或 24/7 `launchd` 守护进程；依靠 DuckDB 游标实现启动时**断点续传追平（Catch-up Stream）** + 运行期低频增量轮询。 |
 | **4. 成本策略** | **极度克制的低成本自动运转 + 价格方案 1（零成本先跑通）** | L0 纯靠 SEC 免费全量财报筛出 Top 300–500 质量候选池（0 Token、0 订阅费），仅对该池拉取免费公开日级股价；L1 近零成本做增量索引与相关性；L2 旗舰模型 Deep Research 严格受手动派单或硬预算上限控制。 |
 
 ---
@@ -56,7 +56,7 @@ v1 验证了确定性 Rust XBRL 计算、GPUI 工作台与进程内 `EmbeddedAla
         │
         ▼
 [L3 · 人类主理人（投委会主席）| 每周 6–10 小时低焦虑节奏]
-  在 GPUI 工作台分拣 Inbox 信号、发起费曼拷问、锁定 human_judgment 与击球价、记入决策账本
+  在 M3 桌面工作台分拣 Inbox 信号、发起费曼拷问、锁定 human_judgment 与击球价、记入决策账本
 ```
 
 ### 2.1 L0：全市场确定性底库与价格方案 1
@@ -79,7 +79,7 @@ v1 验证了确定性 Rust XBRL 计算、GPUI 工作台与进程内 `EmbeddedAla
 
 ### 2.3 L2：Alan 股票分析师集群与成本/权限门控
 
-- **多会话并行深研**：基于 `apps/m3-desktop/src/alan_interrogator.rs` 现有的 `EmbeddedAlan` 集成（固定在公开仓库 `alan` `v0.1.4+`），通过 `open_session` / `spawn_child_session` 调度专业化子分析师会话，并行完成商业护城河、会计排雷、隐空间同行对比与 5 年逆向验尸，最终汇总为可演化研报。
+- **多会话并行深研**：基于 `crates/m3-core/src/alan_interrogator.rs` 现有的 `EmbeddedAlan` 集成（固定在公开仓库 `alan` `v0.1.4+`），通过 `open_session` / `spawn_child_session` 调度专业化子分析师会话，并行完成商业护城河、会计排雷、隐空间同行对比与 5 年逆向验尸，最终汇总为可演化研报。
 - **面向分析的只读工具集**：在现有 `m3_status / m3_report / m3_dossier / m3_update_draft` 基础上，新增只读湖仓查询工具（`m3_universe_query`、`m3_peer_percentiles`、`m3_semantic_neighbors`、`m3_events_for_ticker`）及受控的一手原文/新闻片段抓取工具。
 - **预算与红线双闸门**：
   - `workbench/budget.json` 定义月度 Token/费用硬上限、单次 Deep Research 预算上限以及自动触发配额（默认关闭自动唤醒旗舰模型，只允许手动派单或每周有限高分信号名额）。
@@ -89,7 +89,7 @@ v1 验证了确定性 Rust XBRL 计算、GPUI 工作台与进程内 `EmbeddedAla
 
 ## 3. 本地湖仓 Schema 与目录边界
 
-坚持 **单二进制嵌入式湖仓**：在 `apps/m3-desktop` 中以 `bundled` 模式内嵌 Rust `duckdb` crate，既用 DuckDB SQL 原生执行 OLAP、FTS 与相似度检索，也由 DuckDB 直接导出/查询 ZSTD 压缩 Parquet（避免引入整套重型 `arrow` / `parquet` Rust 编译链）。
+坚持 **单二进制嵌入式湖仓**：在 `crates/m3-core` 中以 `bundled` 模式内嵌 Rust `duckdb` crate，既用 DuckDB SQL 原生执行 OLAP、FTS 与相似度检索，也由 DuckDB 直接导出/查询 ZSTD 压缩 Parquet（避免引入整套重型 `arrow` / `parquet` Rust 编译链）。
 
 ```text
 Money-Making-Machine/
@@ -164,10 +164,10 @@ Money-Making-Machine/
 ### Milestone A — L0 全美股湖仓底座 + 全市场雷达（下一步立即启动）
 
 - **工程范围**：
-  - 在 `apps/m3-desktop/Cargo.toml` 引入 `duckdb`（`bundled`）、`zip`、`rayon`；
+  - 在 `crates/m3-core/Cargo.toml` 引入 `duckdb`（`bundled`）、`zip`、`rayon`；
   - 新增 `src/lake.rs`（Parquet 导出、DuckDB 连接与表/视图迁移、游标读写）与 `src/universe.rs`（SEC `company_tickers_exchange.json` + `companyfacts.zip` 批量解析、金融业 SIC 6000–6799 标记、方案 1 Top 300–500 质量分层与限速批量股价同步）；
-  - 扩展 `src/cli.rs` 支持 `m3 universe sync / screen / peers`；
-  - 在 `src/ui/` 新增 `Universe` 视图并保留现有 v1 视图完整可用。
+  - 扩展 `crates/m3-cli` 支持 `m3 universe sync / screen / peers`；
+  - 在 `apps/m3-nsh/src/views/` 新增 `Universe` 视图并保留现有视图完整可用。
 - **硬验收标准**：
   1. 全美股 SEC 批量摄入在本地稳定跑通，明确记录成功解析数与跳过诊断（如缺失 XBRL 字段或非标准财年），全链路零 `unwrap()` panic；
   2. DuckDB 对 5,000+ 家美股的筛选与排序查询耗时 `< 100ms`；

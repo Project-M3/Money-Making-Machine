@@ -1,6 +1,4 @@
-//! US Universe Radar L0/L1 view (`apps/m3-nsh`).
-//!
-//! Full NSH 0.5.1 parity with `apps/m3-desktop/src/ui/universe.rs`, featuring:
+//! US Universe Radar L0/L1 view (`apps/m3-nsh`), featuring:
 //! - Top Lakehouse L0/L1 telemetry strip and incremental / Full-SEC sync triggers
 //! - Munger screening presets, boolean filter chips, and IME-safe dual-mode search (`input()`)
 //! - Compact `roic_scatter_slot` (`canvas` + `Painter`) keeping table dominance
@@ -90,7 +88,7 @@ pub fn universe_view(store: AppStore) -> impl IntoElement {
         )
 }
 
-fn is_lake_empty(lake_present: bool, summary: Option<&UniverseSummary>) -> bool {
+pub(crate) fn is_lake_empty(lake_present: bool, summary: Option<&UniverseSummary>) -> bool {
     !lake_present || summary.is_none_or(|s| s.total_companies == 0)
 }
 

@@ -1,12 +1,12 @@
 /* ==========================================================================
    Project M3 — Obsidian Precision Instrument Design Tokens
-   Synchronized 1:1 with apps/m3-desktop/src/ui/theme.rs
+   Synchronized 1:1 with apps/m3-nsh/src/theme.rs
    ========================================================================== */
 
 :root {
   color-scheme: dark;
 
-  /* Core Surfaces (apps/m3-desktop/src/ui/theme.rs) */
+  /* Core Surfaces (apps/m3-nsh/src/theme.rs) */
   --bg-shell: #0b0b0e;
   --bg-viewport: #101015;
   --bg-toolbar: #121218;

@@ -105,7 +105,7 @@ pub struct AcmeEvidenceToken {
     pub summary: String,
 }
 
-/// Events drained on the GPUI timer into `MungerWorkbench`.
+/// Events streamed into the M3 UI and CLI consumers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InterrogatorEvent {
     Ready,

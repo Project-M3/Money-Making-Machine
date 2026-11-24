@@ -1,7 +1,7 @@
 //! Complete reactive Signal store for Project M3 (`apps/m3-nsh`).
 //!
 //! `AppStore` is a `Copy` handle containing NSH `Signal<T>` and `Stored<T>` handles,
-//! providing 100% state and action parity with `apps/m3-desktop`'s `MungerWorkbench`
+//! providing complete MungerWorkbench state and action parity
 //! while executing background DuckDB, SEC EDGAR, Updater, Deep Research, and EmbeddedAlan
 //! workflows over event-driven Tokio -> NSH channels with zero idle polling.
 
@@ -34,8 +34,8 @@ use m3_core::i18n::UiLang;
 use m3_core::industry::{self, IndustryProfile, IndustryStatus};
 use m3_core::industry_research::{self, IndustryResearchEvent};
 use m3_core::lake::{
-    LakeAnnualRow, LakeDb, PeerComparison, UniverseDrawerDetails, UniverseRow, UniverseSortBy,
-    UniverseSummary,
+    LakeAnnualRow, LakeDb, PeerComparison, UniverseDrawerDetails, UniverseFilter, UniverseRow,
+    UniverseSortBy, UniverseSummary,
 };
 use m3_core::lake_l1::{
     L1Summary, SignalEvidence, SignalInboxRow, SignalStatus, SimilarCompanyHit, SimilarSearchFilter,
@@ -206,8 +206,256 @@ pub struct AppStore {
     inbox_last_auto_catchup_at: Stored<Option<Instant>>,
 }
 
+struct StartupHydrationSnapshot {
+    repo_root: std::path::PathBuf,
+    benchmark_symbol: Option<String>,
+    reports_res: Result<Vec<MungerReport>, String>,
+    budget_config: BudgetConfig,
+    journal: Option<DecisionJournal>,
+    benchmark: Option<PriceSnapshot>,
+    sync_status: Option<SyncStatusFile>,
+    selected_ticker: String,
+    selected_dossier: Option<Dossier>,
+    selected_history_wk: Option<PriceHistorySnapshot>,
+    selected_history_1d: Option<PriceHistorySnapshot>,
+    selected_memo_raw: Option<String>,
+    selected_memo_parsed: Option<ParsedResearchMemo>,
+    themes_res: Result<ThemesFile, String>,
+    industries: Vec<IndustryProfile>,
+    selected_industry_slug: Option<String>,
+    industry_primer_md: Option<String>,
+    industry_peer_rows: Vec<UniverseRow>,
+    lake_present: bool,
+    inbox_summary: Option<L1Summary>,
+    inbox_signals: Vec<SignalInboxRow>,
+    inbox_error: Option<String>,
+    inbox_selected_id: Option<String>,
+    inbox_cursor_index: usize,
+    inbox_selected_details: Option<UniverseDrawerDetails>,
+    inbox_selected_business_chunks: Vec<SignalEvidence>,
+    budget_report: Option<BudgetStatusReport>,
+    universe_summary: Option<UniverseSummary>,
+    universe_strike_zone_ciks: HashSet<String>,
+    universe_rows: Vec<UniverseRow>,
+    universe_selected_details: Option<UniverseDrawerDetails>,
+    universe_error: Option<String>,
+    selected_research_runs: Vec<ResearchRunRow>,
+    selected_peers: Option<PeerComparison>,
+    selected_similar_hits: Vec<SimilarCompanyHit>,
+}
+
+fn load_startup_snapshot(
+    paths: &WorkspacePaths,
+    lang: UiLang,
+    universe_filter: &UniverseFilter,
+    require_5y_history: bool,
+    inbox_filter: InboxFilter,
+) -> StartupHydrationSnapshot {
+    let benchmark_symbol = store::load_watchlist(paths)
+        .ok()
+        .map(|wl| wl.benchmark_symbol);
+    let bench_sym = benchmark_symbol.as_deref().unwrap_or("^GSPC").to_owned();
+
+    let reports_res = store::load_or_compute_reports(paths).map_err(|err| {
+        format!(
+            "{}: {err:#}",
+            lang.t("加载计算报告失败", "Failed to load reports")
+        )
+    });
+    let selected_ticker = reports_res
+        .as_ref()
+        .ok()
+        .and_then(|list| list.first())
+        .map(|r| r.ticker.clone())
+        .unwrap_or_default();
+
+    let budget_config = budget::load_budget_config(paths).unwrap_or_default();
+    let journal = store::load_journal(paths).ok();
+    let benchmark = store::load_cached_price(paths, &bench_sym);
+    let sync_status = store::read_json(&paths.sync_status_path()).ok();
+
+    let (selected_dossier, selected_history_wk, selected_history_1d, selected_memo_raw) =
+        if selected_ticker.trim().is_empty() {
+            (None, None, None, None)
+        } else {
+            let trimmed = selected_ticker.trim();
+            let upper = trimmed.to_ascii_uppercase();
+            (
+                store::load_dossier(paths, trimmed).ok().flatten(),
+                store::load_cached_price_history(paths, trimmed, "1wk"),
+                store::load_cached_price_history(paths, trimmed, "1d"),
+                research::load_research_memo(paths, &upper),
+            )
+        };
+    let selected_memo_parsed = selected_memo_raw.as_deref().map(parse_research_memo);
+
+    let themes_res = budget::load_themes(paths).map_err(|err| {
+        format!(
+            "{}: {err:#}",
+            lang.t(
+                "读取 workbench/themes.json 失败",
+                "Failed to read workbench/themes.json"
+            )
+        )
+    });
+    let industries = industry::list_industries(paths).unwrap_or_default();
+    let selected_industry = industries.first().cloned();
+    let selected_industry_slug = selected_industry.as_ref().map(|p| p.slug.clone());
+    let industry_primer_md = selected_industry_slug
+        .as_deref()
+        .and_then(|slug| industry::load_industry_primer_md(paths, slug));
+
+    let mut lake_present = false;
+    let mut inbox_summary = None;
+    let mut inbox_signals = Vec::new();
+    let mut inbox_error = None;
+    let mut inbox_selected_id = None;
+    let mut inbox_cursor_index = 0usize;
+    let mut inbox_selected_details = None;
+    let mut inbox_selected_business_chunks = Vec::new();
+    let mut budget_report = None;
+    let mut universe_summary = None;
+    let mut universe_strike_zone_ciks = HashSet::new();
+    let mut universe_rows = Vec::new();
+    let mut universe_selected_details = None;
+    let mut universe_error = None;
+    let mut selected_research_runs = Vec::new();
+    let mut selected_peers = None;
+    let mut selected_similar_hits = Vec::new();
+    let mut industry_peer_rows = Vec::new();
+
+    match LakeDb::open_read_only_if_exists(paths) {
+        Ok(None) => {}
+        Ok(Some(db)) => {
+            lake_present = true;
+            if let Ok(budget) = db.budget_status_report(paths) {
+                budget_report = Some(budget);
+            }
+            match (db.l1_summary(), db.list_inbox_signals(None, None, 500)) {
+                (Ok(summary), Ok(signals)) => {
+                    let visible = filter_inbox_signals(&signals, inbox_filter);
+                    if let Some((idx, sig)) = resolve_active_inbox_signal(&visible, None, 0) {
+                        inbox_cursor_index = idx;
+                        inbox_selected_id = Some(sig.signal_id.clone());
+                        let ticker = sig.primary_ticker.trim().to_ascii_uppercase();
+                        if !ticker.is_empty()
+                            && let Ok(Some(details)) = db.load_drawer_details_by_ticker(&ticker, 5)
+                        {
+                            inbox_selected_business_chunks = db
+                                .load_company_business_chunks(&details.row.cik, 6)
+                                .unwrap_or_default();
+                            inbox_selected_details = Some(details);
+                        }
+                    }
+                    inbox_summary = Some(summary);
+                    inbox_signals = signals;
+                }
+                (Err(err), _) | (_, Err(err)) => {
+                    inbox_error = Some(format!(
+                        "{}: {err:#}",
+                        lang.t("读取 L1 简报收件箱失败", "Failed to read L1 Briefing Inbox")
+                    ));
+                }
+            }
+
+            match db.load_universe_snapshot(universe_filter, None, 5) {
+                Ok(snapshot) => {
+                    universe_summary = Some(snapshot.summary);
+                    universe_strike_zone_ciks = snapshot.strike_zone_ciks;
+                    universe_rows = apply_ui_row_guards(snapshot.rows, require_5y_history);
+                    universe_selected_details = snapshot.selected_details;
+                }
+                Err(err) => {
+                    universe_error = Some(match lang {
+                        UiLang::Zh => format!("读取全市场湖仓失败: {err:#}"),
+                        UiLang::En => format!("Failed to load Universe lakehouse: {err:#}"),
+                    });
+                }
+            }
+
+            if !selected_ticker.trim().is_empty() {
+                let upper = selected_ticker.trim().to_ascii_uppercase();
+                selected_research_runs = db.list_research_runs(Some(&upper), 8).unwrap_or_default();
+                selected_peers = db.query_peers(&upper, 6).ok();
+                selected_similar_hits = db
+                    .search_similar(
+                        &upper,
+                        true,
+                        &SimilarSearchFilter {
+                            exclude_financials: true,
+                            limit: 5,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap_or_default();
+            }
+
+            if let Some(ind) = selected_industry.as_ref() {
+                industry_peer_rows = db
+                    .load_universe_rows_by_tickers(&ind.bound_tickers)
+                    .unwrap_or_default();
+            }
+        }
+        Err(err) => {
+            lake_present = paths.lake_db_path().exists();
+            let msg = format!(
+                "{}: {err:#}",
+                lang.t("打开 m3.duckdb 失败", "Failed to open m3.duckdb")
+            );
+            inbox_error = Some(msg.clone());
+            universe_error = Some(msg);
+        }
+    }
+
+    if budget_report.is_none()
+        && !lake_present
+        && let Ok(report) = lake_l2::load_budget_status_report(paths)
+    {
+        budget_report = Some(report);
+    }
+
+    StartupHydrationSnapshot {
+        repo_root: paths.repo_root.clone(),
+        benchmark_symbol,
+        reports_res,
+        budget_config,
+        journal,
+        benchmark,
+        sync_status,
+        selected_ticker,
+        selected_dossier,
+        selected_history_wk,
+        selected_history_1d,
+        selected_memo_raw,
+        selected_memo_parsed,
+        themes_res,
+        industries,
+        selected_industry_slug,
+        industry_primer_md,
+        industry_peer_rows,
+        lake_present,
+        inbox_summary,
+        inbox_signals,
+        inbox_error,
+        inbox_selected_id,
+        inbox_cursor_index,
+        inbox_selected_details,
+        inbox_selected_business_chunks,
+        budget_report,
+        universe_summary,
+        universe_strike_zone_ciks,
+        universe_rows,
+        universe_selected_details,
+        universe_error,
+        selected_research_runs,
+        selected_peers,
+        selected_similar_hits,
+    }
+}
+
 impl AppStore {
-    /// Resolves the workspace root and initializes the full reactive store.
+    /// Resolves the workspace root and initializes lightweight config synchronously so
+    /// frame 1 renders immediately, then hydrates disk and DuckDB snapshots off-thread.
     pub fn start() -> Self {
         let root = match store::resolve_repo_root() {
             Ok(p) => p,
@@ -217,13 +465,19 @@ impl AppStore {
             }
         };
         let paths = WorkspacePaths::from_root(root);
-        let store = Self::new(paths);
-        store.bootstrap_background();
+        let store = Self::new_empty(paths);
+        store.hydrate_startup_async();
         store
     }
 
-    /// Creates a store bound to `paths` and loads synchronous disk/lake snapshots.
+    /// Creates a store bound to `paths` and loads synchronous disk/lake snapshots (used by tests).
     pub fn new(paths: WorkspacePaths) -> Self {
+        let store = Self::new_empty(paths);
+        store.reload_all();
+        store
+    }
+
+    fn new_empty(paths: WorkspacePaths) -> Self {
         let (effective_ch, _) = update::effective_channel();
         let initial_lang = app_config::read_ui_language();
         let initial_budget = budget::load_budget_config(&paths).unwrap_or_default();
@@ -239,7 +493,7 @@ impl AppStore {
             entries: Vec::new(),
         };
 
-        let store = Self {
+        Self {
             lang: signal(initial_lang),
             paths: signal_with(paths, SignalEquals::Never),
             active_tab: signal(WorkspaceTab::Inbox),
@@ -363,10 +617,155 @@ impl AppStore {
             agent_seq: stored(1),
             universe_search_seq: stored(0),
             inbox_last_auto_catchup_at: stored(None),
-        };
+        }
+    }
 
-        store.reload_all();
-        store
+    fn hydrate_startup_async(self) {
+        let paths = self.paths.get_untracked();
+        let lang = self.lang.get_untracked();
+        let uni_st = self.universe_state.get_untracked();
+        let universe_filter = uni_st.to_lake_filter();
+        let require_5y = uni_st.require_5y_history;
+        let inbox_filter = self.inbox_state.get_untracked().filter;
+
+        run_blocking_result(
+            move || load_startup_snapshot(&paths, lang, &universe_filter, require_5y, inbox_filter),
+            move |snap| {
+                if self.paths.get_untracked().repo_root != snap.repo_root {
+                    return;
+                }
+                if let Some(sym) = snap.benchmark_symbol {
+                    self.benchmark_symbol.set(sym);
+                }
+                match snap.reports_res {
+                    Ok(list) => {
+                        let cur = self.selected_ticker.get_untracked();
+                        let next_sel = if list.is_empty() {
+                            String::new()
+                        } else if list.iter().any(|r| r.ticker.eq_ignore_ascii_case(&cur)) {
+                            cur
+                        } else {
+                            snap.selected_ticker.clone()
+                        };
+                        if let Some(rep) = list.iter().find(|r| r.ticker == next_sel) {
+                            self.sandbox_multiple.set(rep.assumptions.multiple_low);
+                            self.sandbox_target_return
+                                .set(rep.assumptions.target_return_pct);
+                            self.sandbox_expected_growth
+                                .set(rep.assumptions.expected_growth_pct);
+                        }
+                        self.reports.set(list);
+                        self.selected_ticker.set(next_sel);
+                    }
+                    Err(err) => {
+                        self.set_error_notice(err);
+                    }
+                }
+                self.settings_monthly_budget_draft
+                    .set(snap.budget_config.monthly_budget_usd.to_string());
+                self.settings_monthly_tokens_draft
+                    .set(snap.budget_config.monthly_token_limit.to_string());
+                self.budget_config.set(snap.budget_config);
+                if let Some(j) = snap.journal {
+                    self.journal.set(j);
+                }
+                self.benchmark.set(snap.benchmark);
+                self.sync_status.set(snap.sync_status);
+
+                if !snap.selected_ticker.is_empty()
+                    && self.selected_ticker.get_untracked() == snap.selected_ticker
+                {
+                    self.selected_dossier.set(snap.selected_dossier);
+                    self.selected_history_wk.set(snap.selected_history_wk);
+                    self.selected_history_1d.set(snap.selected_history_1d);
+                    self.selected_memo_raw.set(snap.selected_memo_raw);
+                    self.selected_memo_parsed.set(snap.selected_memo_parsed);
+                }
+
+                match snap.themes_res {
+                    Ok(themes) => {
+                        self.themes_file.set(themes);
+                        self.themes_error.set(None);
+                    }
+                    Err(err) => {
+                        self.themes_error.set(Some(err));
+                    }
+                }
+                if let Some(first_ind) = snap.industries.first() {
+                    self.industry_human_note_draft
+                        .set(first_ind.human_notes.clone());
+                    self.industry_anchor_low_draft.set(
+                        first_ind
+                            .multiple_low
+                            .map(|d| d.round_dp(1).normalize().to_string())
+                            .unwrap_or_default(),
+                    );
+                    self.industry_anchor_high_draft.set(
+                        first_ind
+                            .multiple_high
+                            .map(|d| d.round_dp(1).normalize().to_string())
+                            .unwrap_or_default(),
+                    );
+                }
+                self.industries.set(snap.industries);
+                self.selected_industry_slug.set(snap.selected_industry_slug);
+                self.industry_primer_md.set(snap.industry_primer_md);
+
+                if can_open_duckdb_read_only(
+                    self.universe_syncing.get_untracked(),
+                    self.inbox_catching_up.get_untracked(),
+                ) {
+                    self.universe_lake_present.set(snap.lake_present);
+                    self.budget_report.set(snap.budget_report);
+                    self.inbox_summary.set(snap.inbox_summary);
+                    self.inbox_signals.set(snap.inbox_signals);
+                    self.inbox_error.set(snap.inbox_error);
+                    let cur_filter = self.inbox_state.get_untracked().filter;
+                    if cur_filter == InboxFilter::Unread {
+                        self.inbox_state.update(|st| {
+                            st.cursor_index = snap.inbox_cursor_index;
+                            st.selected_signal_id = snap.inbox_selected_id;
+                        });
+                        self.inbox_selected_details.set(snap.inbox_selected_details);
+                        self.inbox_selected_business_chunks
+                            .set(snap.inbox_selected_business_chunks);
+                    } else {
+                        self.sync_inbox_selection();
+                    }
+
+                    self.universe_summary.set(snap.universe_summary);
+                    self.universe_strike_zone_ciks
+                        .set(snap.universe_strike_zone_ciks);
+                    self.universe_error.set(snap.universe_error);
+                    if let Some(first_row) = snap.universe_rows.first().cloned() {
+                        let first_cik = first_row.cik.clone();
+                        self.universe_rows.set(snap.universe_rows);
+                        self.universe_state.update(|s| s.cursor_index = 0);
+                        self.universe_selected_cik.set(Some(first_cik.clone()));
+                        if let Some(details) = snap.universe_selected_details
+                            && details.row.cik == first_cik
+                        {
+                            self.apply_universe_drawer_details(details);
+                        } else {
+                            self.universe_selected_row.set(Some(first_row));
+                        }
+                    } else {
+                        self.universe_rows.set(Vec::new());
+                    }
+
+                    if !snap.selected_ticker.is_empty()
+                        && self.selected_ticker.get_untracked() == snap.selected_ticker
+                    {
+                        self.selected_research_runs.set(snap.selected_research_runs);
+                        self.selected_peers.set(snap.selected_peers);
+                        self.selected_similar_hits.set(snap.selected_similar_hits);
+                    }
+                    self.industry_peer_rows.set(snap.industry_peer_rows);
+                }
+
+                self.bootstrap_background();
+            },
+        );
     }
 
     fn bootstrap_background(self) {
@@ -3473,7 +3872,7 @@ impl AppStore {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn apply_interrogator_event(
+pub(crate) fn apply_interrogator_event(
     streaming: &mut bool,
     status_hint: &mut Option<String>,
     messages: &mut Vec<AgentUiMessage>,

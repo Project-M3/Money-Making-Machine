@@ -79,5 +79,6 @@ jobs:
 
       - name: Check release scripts and Python manifest generator
         run: |
-          bash -n scripts/assemble-macos-release.sh scripts/install.sh scripts/release.sh apps/m3-desktop/build.sh
+          bash -n scripts/assemble-macos-release.sh scripts/install.sh scripts/release.sh apps/m3-nsh/build.sh apps/m3-nsh/m3
+          /usr/bin/plutil -lint apps/m3-nsh/Info.plist
           python3 scripts/generate-release-manifest.py --help >/dev/null

@@ -84,12 +84,17 @@ def verify_archive_contents(
                         f"Forbidden symlink/hardlink in {archive_path}: {raw_name!r}"
                     )
                 normalized = raw_name[2:] if raw_name.startswith("./") else raw_name
-                if normalized == "M3.app/Contents/MacOS/m3-desktop":
+                if normalized == "M3.app/Contents/MacOS/m3-nsh":
                     if not member.isreg() or member.size <= 0:
                         raise ManifestError(
                             f"Archive {archive_path} binary {raw_name!r} must be non-empty regular file"
                         )
                     has_binary = True
+                elif normalized == "M3.app/Contents/MacOS/m3":
+                    if not member.isreg() or member.size <= 0:
+                        raise ManifestError(
+                            f"Archive {archive_path} CLI binary {raw_name!r} must be non-empty regular file"
+                        )
                 elif normalized == "M3.app/Contents/Info.plist":
                     if not member.isreg() or member.size <= 0:
                         raise ManifestError(
@@ -107,7 +112,7 @@ def verify_archive_contents(
         raise ManifestError(f"Invalid gzip tar archive {archive_path}: {exc}") from exc
 
     if not has_binary:
-        raise ManifestError(f"Archive {archive_path} missing M3.app/Contents/MacOS/m3-desktop")
+        raise ManifestError(f"Archive {archive_path} missing M3.app/Contents/MacOS/m3-nsh")
     if not has_plist:
         raise ManifestError(f"Archive {archive_path} missing M3.app/Contents/Info.plist")
     if manifest_bytes is None:

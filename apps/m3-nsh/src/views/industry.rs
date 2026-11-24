@@ -1,6 +1,4 @@
-//! Industry Research Studio view (`apps/m3-nsh/src/views/industry.rs`).
-//!
-//! Provides full NSH 0.5.1 parity with `apps/m3-desktop/src/ui/industry.rs`:
+//! Industry Research Studio view (`apps/m3-nsh/src/views/industry.rs`):
 //! - Left rail: Topic composer, Quick Bind Company composer, status filter bar,
 //!   scrollable industry cards (status badge, peer count, Feynman progress), and
 //!   SIC / Archetype Theme promotion rail.

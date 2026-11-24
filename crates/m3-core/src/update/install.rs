@@ -385,8 +385,31 @@ fn sanitize_archive_rel_path(raw: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(clean))
 }
 
+const PRIMARY_BUNDLE_BINARIES: [&str; 2] = ["m3-nsh", "m3-desktop"];
+const CLI_BUNDLE_BINARIES: [&str; 3] = ["m3", "m3-nsh", "m3-desktop"];
+
+fn resolve_bundle_executable(bundle_dir: &Path, candidates: &[&str]) -> Result<PathBuf> {
+    let macos_dir = bundle_dir.join("Contents/MacOS");
+    for name in candidates {
+        let candidate = macos_dir.join(name);
+        if let Ok(meta) = fs::symlink_metadata(&candidate) {
+            ensure!(
+                meta.is_file() && !meta.file_type().is_symlink() && meta.len() > 0,
+                "bundle binary `{}` is not a non-empty regular file",
+                candidate.display()
+            );
+            return Ok(candidate);
+        }
+    }
+    bail!(
+        "bundle `{}` missing executable in `Contents/MacOS/` (expected one of: {})",
+        bundle_dir.display(),
+        candidates.join(", ")
+    );
+}
+
 /// Safely unpack a SHA-256-verified `.tar.gz` into `stage_dir`, verify `manifest.json` +
-/// `binary_sha256`, and smoke-test `M3.app/Contents/MacOS/m3-desktop -V`.
+/// `binary_sha256`, and smoke-test `M3.app/Contents/MacOS/{m3-nsh|m3-desktop}` (plus `m3` if bundled).
 pub fn extract_and_verify_bundle(
     archive_path: &Path,
     stage_dir: &Path,
@@ -514,14 +537,7 @@ pub fn extract_and_verify_bundle(
         "staged bundle missing `Contents/Info.plist`"
     );
 
-    let staged_bin = staged_app.join("Contents/MacOS/m3-desktop");
-    let bin_meta = fs::symlink_metadata(&staged_bin)
-        .context("staged bundle missing `Contents/MacOS/m3-desktop`")?;
-    ensure!(
-        bin_meta.is_file() && !bin_meta.file_type().is_symlink() && bin_meta.len() > 0,
-        "staged binary `{}` is missing or empty",
-        staged_bin.display()
-    );
+    let staged_bin = resolve_bundle_executable(&staged_app, &PRIMARY_BUNDLE_BINARIES)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -537,6 +553,23 @@ pub fn extract_and_verify_bundle(
     );
 
     smoke_test_staged_binary(&staged_bin, expected_version)?;
+
+    let staged_cli = staged_app.join("Contents/MacOS/m3");
+    if let Ok(cli_meta) = fs::symlink_metadata(&staged_cli) {
+        ensure!(
+            cli_meta.is_file() && !cli_meta.file_type().is_symlink() && cli_meta.len() > 0,
+            "staged CLI binary `{}` is missing or empty",
+            staged_cli.display()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&staged_cli, fs::Permissions::from_mode(0o755)).with_context(
+                || format!("chmod +x staged CLI binary `{}`", staged_cli.display()),
+            )?;
+        }
+        smoke_test_staged_binary(&staged_cli, expected_version)?;
+    }
 
     Ok((staged_app, archive_manifest))
 }
@@ -667,7 +700,8 @@ pub(crate) fn atomic_swap_app_bundle_with_receipt_dir(
     }
 
     let linked_path = if let Some(link) = cli_link {
-        install_cli_symlink(&target_app.join("Contents/MacOS/m3-desktop"), link, force)?;
+        let cli_target = resolve_bundle_executable(target_app, &CLI_BUNDLE_BINARIES)?;
+        install_cli_symlink(&cli_target, link, force)?;
         Some(link.display().to_string())
     } else {
         None

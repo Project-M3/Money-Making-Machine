@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+dir="$(dirname "$0")"
+if [ -x "$dir/artifacts/M3.app/Contents/MacOS/m3" ]; then
+  exec "$dir/artifacts/M3.app/Contents/MacOS/m3" "$@"
+fi
+exec "$dir/artifacts/M3.app/Contents/MacOS/m3-nsh" "$@"

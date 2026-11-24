@@ -79,7 +79,7 @@ impl DeepResearchPerspective {
         }
     }
 
-    /// Concise Chinese title shown in GPUI Research Desk and memos.
+    /// Concise Chinese title shown in Research Desk and memos.
     pub fn title_cn(&self) -> &'static str {
         match self {
             Self::Moat => "护城河",
@@ -90,7 +90,7 @@ impl DeepResearchPerspective {
     }
 }
 
-/// Real-time streaming event emitted via `std::sync::mpsc::Sender` for GPUI/CLI telemetry.
+/// Real-time streaming event emitted via `std::sync::mpsc::Sender` for UI/CLI telemetry.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeepResearchEvent {
     Started {
@@ -148,7 +148,7 @@ pub struct PerspectiveOutcome {
     pub output_tokens: u64,
 }
 
-/// Final outcome of a Deep Research run, returned to CLI/GPUI and persisted to `research_runs`.
+/// Final outcome of a Deep Research run, returned to CLI/UI and persisted to `research_runs`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeepResearchResult {
     pub run_id: String,

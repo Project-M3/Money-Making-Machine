@@ -7,7 +7,9 @@ set -euo pipefail
 #   ./scripts/release.sh stable <X.Y.Z> [--push]
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_DIR="$ROOT_DIR/apps/m3-desktop"
+APP_DIR="$ROOT_DIR/apps/m3-nsh"
+CORE_DIR="$ROOT_DIR/crates/m3-core"
+CLI_DIR="$ROOT_DIR/crates/m3-cli"
 cd "$ROOT_DIR"
 
 usage() {
@@ -21,7 +23,7 @@ EOF
 cmd="${1:-status}"
 case "$cmd" in
   status)
-    ver="$(python3 -c 'import tomllib; print(tomllib.load(open("apps/m3-desktop/Cargo.toml","rb"))["package"]["version"])')"
+    ver="$(python3 -c 'import tomllib; print(tomllib.load(open("apps/m3-nsh/Cargo.toml","rb"))["package"]["version"])')"
     echo "Branch: $(git branch --show-current)"
     echo "HEAD:   $(git rev-parse --short=7 HEAD)"
     echo "Cargo:  $ver"
@@ -71,29 +73,36 @@ case "$cmd" in
       exit 1
     fi
 
-    python3 - "$APP_DIR/Cargo.toml" "$version" <<'PY'
-import pathlib, re, sys
-path = pathlib.Path(sys.argv[1])
-version = sys.argv[2]
-text = path.read_text(encoding="utf-8")
-updated, n = re.subn(r'(?m)^(version\s*=\s*")([^"]+)(")', rf'\g<1>{version}\g<3>', text, count=1)
-if n != 1:
-    raise SystemExit("failed to update version in Cargo.toml")
-path.write_text(updated, encoding="utf-8")
+    python3 - "$version" "$CORE_DIR/Cargo.toml" "$CLI_DIR/Cargo.toml" "$APP_DIR/Cargo.toml" "$APP_DIR/nsh.json" <<'PY'
+import json, pathlib, re, sys
+version, *targets = sys.argv[1:]
+for raw_path in targets:
+    path = pathlib.Path(raw_path)
+    if path.name == "nsh.json":
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["version"] = version
+        path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    else:
+        text = path.read_text(encoding="utf-8")
+        updated, n = re.subn(r'(?m)^(version\s*=\s*")([^"]+)(")', rf'\g<1>{version}\g<3>', text, count=1)
+        if n != 1:
+            raise SystemExit(f"failed to update version in {path}")
+        path.write_text(updated, encoding="utf-8")
 PY
 
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$APP_DIR/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$APP_DIR/Info.plist"
+    /usr/bin/plutil -lint "$APP_DIR/Info.plist" >/dev/null
 
     (
-      cd "$APP_DIR"
-      cargo update -p m3-desktop --offline
-      rustfmt --edition 2024 --check build.rs src/*.rs src/ui/*.rs src/update/*.rs
-      cargo clippy --locked --all-targets -- -D warnings
-      cargo test --locked -j 4
+      cd "$ROOT_DIR"
+      cargo update -p m3-core -p m3-cli -p m3-nsh --offline
+      cargo fmt --all -- --check
+      cargo clippy --workspace --locked --all-targets -- -D warnings
+      cargo test --workspace --locked -j 4
     )
 
-    git add "$APP_DIR/Cargo.toml" "$APP_DIR/Cargo.lock" "$APP_DIR/Info.plist"
+    git add "$CORE_DIR/Cargo.toml" "$CLI_DIR/Cargo.toml" "$APP_DIR/Cargo.toml" "$APP_DIR/nsh.json" "$APP_DIR/Info.plist" "$ROOT_DIR/Cargo.lock"
     if ! git diff --cached --quiet; then
       git commit -m "chore(release): prepare $tag"
     fi

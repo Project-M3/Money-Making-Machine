@@ -113,7 +113,7 @@ jobs:
         with:
           key: release-${{ matrix.target }}
           cache-bin: false
-          workspaces: apps/m3-desktop
+          workspaces: "."
 
       - name: Build, Developer-ID sign, notarize, and package (macOS)
         if: steps.apple_sign.outputs.enabled == 'true'

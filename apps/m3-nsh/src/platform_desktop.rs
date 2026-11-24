@@ -7,7 +7,9 @@ use crate::stores::{AppStore, CompanyViewTab, WorkspaceTab};
 use m3_core::i18n::UiLang;
 use m3_core::model::Bucket;
 use m3_core::update::{self, ReleaseChannel};
-use nsh_core::desktop::{MenuRole, TitleBarOptions, TitleBarStyle, WindowAttributes};
+use nsh_core::desktop::{
+    MainWindowOptions, MenuRole, TitleBarOptions, TitleBarStyle, WindowAttributes,
+};
 use nsh_core::element::desktop::{
     MenuItem, current_window, popup_menu_at, restart, set_application_menu, title_bar,
 };
@@ -15,16 +17,16 @@ use nsh_core::file_dialog::OpenDialog;
 use nsh_core::platform::Os;
 use nsh_core::prelude::*;
 use std::path::Path;
+use std::time::Duration;
 
 pub const M3_WEBSITE_URL: &str = "https://m3.thinksmart.systems";
 pub const M3_GITHUB_URL: &str = "https://github.com/Project-M3/Money-Making-Machine";
 pub const M3_RELEASES_URL: &str = "https://github.com/Project-M3/Money-Making-Machine/releases";
 
-/// Configures the main desktop window attributes (hidden 38pt titlebar, traffic light offset, min size).
-pub fn configure_main_window() {
-    if !os().is_desktop() {
-        return;
-    }
+/// Builds the launch-time main window options (`systems.thinksmart.m3`) so macOS creates
+/// the window with `TitleBarStyle::Hidden`, restored bounds, and `default_visible: false`
+/// before frame 1 paints (preventing startup flash or frame/origin jump).
+pub fn main_window_options() -> MainWindowOptions {
     let mut tb = TitleBarOptions::default();
     tb.style = TitleBarStyle::Hidden;
     tb.height = Some(px(38.0));
@@ -33,7 +35,27 @@ pub fn configure_main_window() {
     let mut attrs = WindowAttributes::default();
     attrs.title_bar = Some(tb);
     attrs.min_size = Some(Some(size(px(1140.0), px(720.0))));
-    current_window().set(attrs);
+
+    let mut opts = MainWindowOptions::default();
+    opts.default_size = Some(size(px(1380.0), px(880.0)));
+    opts.restore_bounds = true;
+    opts.default_visible = Some(false);
+    opts.attributes = attrs;
+    opts
+}
+
+/// Reveals and focuses the main window shortly after frame 1 mounts so users never see an
+/// unpainted black startup surface.
+pub fn reveal_main_window_after_mount() {
+    if !os().is_desktop() {
+        return;
+    }
+    let window = current_window();
+    spawn(async move {
+        timer(Duration::from_millis(16)).await;
+        window.show();
+        window.focus();
+    });
 }
 
 /// Returns the reactive left inset (traffic light reservation) for the sidebar header.
@@ -73,7 +95,7 @@ pub fn bind_live_application_menu(store: AppStore) {
     });
 }
 
-/// Builds the full 7-menu macOS application bar matching `apps/m3-desktop/src/main.rs`.
+/// Builds the full 7-menu macOS application bar.
 pub fn build_app_menus(lang: UiLang, channel: ReleaseChannel, store: AppStore) -> Vec<MenuItem> {
     vec![
         MenuItem::submenu(

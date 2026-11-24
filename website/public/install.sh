@@ -25,7 +25,7 @@ Install M3.app and the `m3` CLI symlink on macOS from verified GitHub Releases (
 Options:
   --channel <stable|beta>   Release channel to install and track (default: stable)
   --version <VER_OR_TAG>    Install a specific version (e.g. 0.2.0 or v0.2.0)
-  --local                   Install from local apps/m3-desktop/artifacts/M3.app
+  --local                   Install from local apps/m3-nsh/artifacts/M3.app
   --workspace <DIR>         Bind persistent workspace root (default: auto-initialized empty workspace)
   --app-dir <DIR>           Target Applications directory (default: /Applications)
   --bin-dir <DIR>           Target CLI symlink directory (default: ~/.local/bin)
@@ -184,17 +184,40 @@ trap cleanup EXIT
 STAGED_APP=""
 INSTALLED_VERSION=""
 
+resolve_bundle_primary_bin() {
+  local app_bundle="$1"
+  for candidate in m3-nsh m3-desktop; do
+    if [ -x "$app_bundle/Contents/MacOS/$candidate" ]; then
+      printf '%s' "$app_bundle/Contents/MacOS/$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_bundle_cli_bin() {
+  local app_bundle="$1"
+  for candidate in m3 m3-nsh m3-desktop; do
+    if [ -x "$app_bundle/Contents/MacOS/$candidate" ]; then
+      printf '%s' "$app_bundle/Contents/MacOS/$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 if [ "$USE_LOCAL" -eq 1 ]; then
   if [ -z "$REPO_ROOT_GUESS" ]; then
     echo "error: --local requires running install.sh directly from the repository checkout" >&2
     exit 1
   fi
-  LOCAL_APP="$REPO_ROOT_GUESS/apps/m3-desktop/artifacts/M3.app"
-  if [ ! -x "$LOCAL_APP/Contents/MacOS/m3-desktop" ]; then
-    echo "error: local bundle not found at '$LOCAL_APP'; run ./apps/m3-desktop/build.sh first" >&2
+  LOCAL_APP="$REPO_ROOT_GUESS/apps/m3-nsh/artifacts/M3.app"
+  LOCAL_BIN="$(resolve_bundle_primary_bin "$LOCAL_APP" || true)"
+  if [ -z "$LOCAL_BIN" ]; then
+    echo "error: local bundle not found at '$LOCAL_APP'; run ./apps/m3-nsh/build.sh first" >&2
     exit 1
   fi
-  INSTALLED_VERSION="$("$LOCAL_APP/Contents/MacOS/m3-desktop" -V | awk '{print $2}')"
+  INSTALLED_VERSION="$("$LOCAL_BIN" -V | awk '{print $2}')"
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "Dry run (--local): version=$INSTALLED_VERSION channel=$CHANNEL target_app=$TARGET_APP cli_link=$CLI_LINK workspace=${WORKSPACE_DIR:-<unchanged>}"
     exit 0
@@ -387,14 +410,22 @@ PY
 
   tar -xzf "$ARCHIVE_PATH" -C "$STAGE_ROOT"
   STAGED_APP="$STAGE_ROOT/M3.app"
-  if [ ! -x "$STAGED_APP/Contents/MacOS/m3-desktop" ]; then
-    echo "error: extracted archive missing M3.app/Contents/MacOS/m3-desktop" >&2
+  STAGED_BIN="$(resolve_bundle_primary_bin "$STAGED_APP" || true)"
+  if [ -z "$STAGED_BIN" ]; then
+    echo "error: extracted archive missing M3.app/Contents/MacOS/{m3-nsh|m3-desktop}" >&2
     exit 1
   fi
-  smoke_out="$("$STAGED_APP/Contents/MacOS/m3-desktop" -V)"
+  smoke_out="$("$STAGED_BIN" -V)"
   if [ "$smoke_out" != "m3 $INSTALLED_VERSION" ]; then
     echo "error: extracted binary verification failed: got '$smoke_out', expected 'm3 $INSTALLED_VERSION'" >&2
     exit 1
+  fi
+  if [ -x "$STAGED_APP/Contents/MacOS/m3" ]; then
+    cli_smoke_out="$("$STAGED_APP/Contents/MacOS/m3" -V)"
+    if [ "$cli_smoke_out" != "m3 $INSTALLED_VERSION" ]; then
+      echo "error: extracted CLI binary verification failed: got '$cli_smoke_out', expected 'm3 $INSTALLED_VERSION'" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -421,8 +452,13 @@ if [ -n "$BACKUP_APP" ] && [ -e "$BACKUP_APP" ]; then
 fi
 
 mkdir -p "$BIN_DIR"
+CLI_TARGET="$(resolve_bundle_cli_bin "$TARGET_APP" || true)"
+if [ -z "$CLI_TARGET" ]; then
+  echo "error: installed bundle missing CLI binary under '$TARGET_APP/Contents/MacOS/'" >&2
+  exit 1
+fi
 TMP_LINK="${CLI_LINK}.tmp.$$"
-ln -s "$TARGET_APP/Contents/MacOS/m3-desktop" "$TMP_LINK"
+ln -s "$CLI_TARGET" "$TMP_LINK"
 mv -f "$TMP_LINK" "$CLI_LINK"
 
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"

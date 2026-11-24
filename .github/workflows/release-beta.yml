@@ -64,7 +64,7 @@ jobs:
           python3 - <<'PY'
           import datetime, os, pathlib, re, subprocess, tomllib
 
-          cargo = tomllib.loads(pathlib.Path("apps/m3-desktop/Cargo.toml").read_text(encoding="utf-8"))
+          cargo = tomllib.loads(pathlib.Path("apps/m3-nsh/Cargo.toml").read_text(encoding="utf-8"))
           pkg_version = cargo["package"]["version"].strip()
           match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", pkg_version)
           if not match:

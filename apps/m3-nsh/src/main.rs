@@ -50,7 +50,11 @@ fn main() -> Result<()> {
 #[cfg(target_os = "macos")]
 fn run_gui() -> std::process::ExitCode {
     platform::run_app(
-        platform::AppSource::Rust(platform::Root::of::<m3_nsh::App>()),
+        platform::AppSource::Rust(
+            platform::Root::of::<m3_nsh::App>()
+                .app_id("systems.thinksmart.m3")
+                .main_window(m3_nsh::platform_desktop::main_window_options()),
+        ),
         platform::AppOptions {
             title: "M3".to_owned(),
             app_id: "systems.thinksmart.m3".to_owned(),
