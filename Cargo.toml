@@ -3,6 +3,7 @@ members = [
     "crates/m3-core",
     "crates/m3-cli",
     "apps/m3-desktop",
+    "apps/m3-nsh",
 ]
 resolver = "3"
 

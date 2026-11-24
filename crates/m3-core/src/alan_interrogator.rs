@@ -2098,13 +2098,36 @@ impl M3InterrogatorHandle {
         Self::start_with_llm(paths, LlmSource::SharedProductCredentials)
     }
 
+    /// Starts EmbeddedAlan with an async wakeup notifier fired whenever an event is pushed.
+    pub fn start_shared_credentials_notified(
+        paths: WorkspacePaths,
+        notify: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        Self::start_with_llm_inner(paths, LlmSource::SharedProductCredentials, Some(notify))
+    }
+
     pub fn start_with_llm(paths: WorkspacePaths, llm: LlmSource) -> Self {
+        Self::start_with_llm_inner(paths, llm, None)
+    }
+
+    fn start_with_llm_inner(
+        paths: WorkspacePaths,
+        llm: LlmSource,
+        notify: Option<Arc<tokio::sync::Notify>>,
+    ) -> Self {
         let fs = Arc::new(M3WorkbenchFs::new(paths.clone()));
         let (cmd_tx, mut cmd_rx) = tokio_mpsc::unbounded_channel::<InterrogatorCommand>();
         let events = Arc::new(StdMutex::new(Vec::new()));
         let usage = Arc::new(StdMutex::new((0u64, 0u64)));
         let fs_worker = Arc::clone(&fs);
-        let events_worker = Arc::clone(&events);
+        let events_worker = EventSink {
+            events: Arc::clone(&events),
+            notify: notify.clone(),
+        };
+        let events_spawn_err = EventSink {
+            events: Arc::clone(&events),
+            notify,
+        };
         let usage_worker = Arc::clone(&usage);
 
         if let Err(err) = std::thread::Builder::new()
@@ -2311,7 +2334,7 @@ impl M3InterrogatorHandle {
             })
         {
             push_event(
-                &events,
+                &events_spawn_err,
                 InterrogatorEvent::Error {
                     message: format!("无法启动 Alan 审讯线程: {err}"),
                 },
@@ -2387,9 +2410,17 @@ impl M3InterrogatorHandle {
     }
 }
 
-fn push_event(queue: &Arc<StdMutex<Vec<InterrogatorEvent>>>, event: InterrogatorEvent) {
-    if let Ok(mut guard) = queue.lock() {
+struct EventSink {
+    events: Arc<StdMutex<Vec<InterrogatorEvent>>>,
+    notify: Option<Arc<tokio::sync::Notify>>,
+}
+
+fn push_event(sink: &EventSink, event: InterrogatorEvent) {
+    if let Ok(mut guard) = sink.events.lock() {
         guard.push(event);
+    }
+    if let Some(notify) = &sink.notify {
+        notify.notify_one();
     }
 }
 

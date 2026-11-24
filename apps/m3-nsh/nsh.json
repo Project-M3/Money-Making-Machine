@@ -1,0 +1,25 @@
+{
+  "name": "M3",
+  "id": "systems.thinksmart.m3",
+  "version": "0.3.0",
+  "build": 1,
+  "rust": ".",
+  "root": "App",
+  "appearance": "dark",
+  "window": {
+    "title": "M3",
+    "defaultSize": { "width": 1380, "height": 880 },
+    "minSize": { "width": 1140, "height": 720 },
+    "restoreBounds": true,
+    "titleBar": {
+      "style": "hidden",
+      "height": 38,
+      "controlsOffset": { "x": 16, "y": 13 }
+    }
+  },
+  "macos": {
+    "infoPlist": {
+      "LSMinimumSystemVersion": "14.0"
+    }
+  }
+}
