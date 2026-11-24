@@ -220,7 +220,6 @@ export function mountWorkbench(container: HTMLElement): void {
                 <span class="statusline-legend">${escapeHtml(status.legend)}</span>
               </div>
               <div class="statusline-group">
-                <span style="color: var(--ink-secondary)">v0.3.0 · stable</span>
                 <span>${escapeHtml(status.mode)}</span>
               </div>
             </div>

@@ -1663,7 +1663,7 @@ impl Render for MungerWorkbench {
                                     )
                                 },
                             )
-                            .child(self.render_statusline(cx)),
+                            .child(self.render_statusline()),
                     ),
             )
             .when(self.palette_open, |d| {

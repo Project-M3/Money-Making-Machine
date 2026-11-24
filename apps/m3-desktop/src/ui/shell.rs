@@ -653,7 +653,11 @@ impl MungerWorkbench {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.start_update_check(true, cx);
                 }))
-                .child(short_ver)
+                .child(if self.update_checking {
+                    "检查更新中…".to_owned()
+                } else {
+                    short_ver
+                })
         };
 
         let channel_label = self.update_channel.as_str().to_owned();
@@ -990,7 +994,7 @@ impl MungerWorkbench {
             )
     }
 
-    pub(super) fn render_statusline(&self, cx: &mut Context<Self>) -> gpui::Div {
+    pub(super) fn render_statusline(&self) -> gpui::Div {
         let (dot_col, legend) = if self.palette_open {
             (SKY_FG, "↑/↓ 选择 · ↵ 执行 · esc 关闭命令面板")
         } else {
@@ -1059,47 +1063,18 @@ impl MungerWorkbench {
                     ),
             )
             .child(
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .id("status-version-pill")
-                            .px_1p5()
-                            .py_0p5()
-                            .rounded_xs()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(RAIL_HOVER)))
-                            .font_family(self.fonts.mono_term.clone())
-                            .text_size(px(10.))
-                            .text_color(rgb(INK_MUTED))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.start_update_check(true, cx);
-                            }))
-                            .child(if self.update_checking {
-                                "检查更新中…".to_owned()
-                            } else {
-                                format!(
-                                    "v{} · {}",
-                                    update::current_binary_version(),
-                                    self.update_channel.as_str()
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .font_family(self.fonts.mono_term.clone())
-                            .text_size(px(10.))
-                            .text_color(rgb(INK_MUTED))
-                            .child(match self.active_view {
-                                NavView::Inbox => "L0/L1 · 0 FLAGSHIP TOKEN",
-                                NavView::Agent => "EMBEDDED ALAN · PAPER ONLY",
-                                NavView::Universe => "DUCKDB L0/L1 · ZERO-LLM",
-                                _ => "ZERO-LLM · PAPER ONLY",
-                            }),
-                    ),
+                div().flex_shrink_0().flex().items_center().child(
+                    div()
+                        .font_family(self.fonts.mono_term.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(INK_MUTED))
+                        .child(match self.active_view {
+                            NavView::Inbox => "L0/L1 · 0 FLAGSHIP TOKEN",
+                            NavView::Agent => "EMBEDDED ALAN · PAPER ONLY",
+                            NavView::Universe => "DUCKDB L0/L1 · ZERO-LLM",
+                            _ => "ZERO-LLM · PAPER ONLY",
+                        }),
+                ),
             )
     }
 }
