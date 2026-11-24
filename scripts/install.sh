@@ -26,7 +26,7 @@ Options:
   --channel <stable|beta>   Release channel to install and track (default: stable)
   --version <VER_OR_TAG>    Install a specific version (e.g. 0.2.0 or v0.2.0)
   --local                   Install from local apps/m3-desktop/artifacts/M3.app
-  --workspace <DIR>         Bind persistent workspace root (default: current git repo if valid)
+  --workspace <DIR>         Bind persistent workspace root (default: auto-initialized empty workspace)
   --app-dir <DIR>           Target Applications directory (default: /Applications)
   --bin-dir <DIR>           Target CLI symlink directory (default: ~/.local/bin)
   --dry-run                 Resolve manifest & verify target paths without modifying disk
@@ -440,4 +440,6 @@ echo "CLI symlink: $CLI_LINK"
 echo "Channel: $CHANNEL"
 if [ -n "$WORKSPACE_DIR" ]; then
   echo "Workspace: $WORKSPACE_DIR"
+else
+  echo "Workspace: ~/Library/Application Support/M3/workspace (auto-initialized empty on first launch)"
 fi

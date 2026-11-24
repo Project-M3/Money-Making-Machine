@@ -35,7 +35,22 @@ impl MungerWorkbench {
             )
             .child(v_divider());
 
-        if pulse_quiet {
+        if self.reports.is_empty() {
+            pulse_left = pulse_left.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(div().w(px(5.)).h(px(5.)).rounded_full().bg(rgb(INK_MUTED)))
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .text_color(rgb(INK_SECONDARY))
+                            .child("能力圈为空 · 从全市场雷达或收件箱挑选首批标的"),
+                    ),
+            );
+        } else if pulse_quiet {
             pulse_left = pulse_left.child(
                 div()
                     .flex()
@@ -411,6 +426,111 @@ impl MungerWorkbench {
                             }),
                         )
                     })),
+            );
+        }
+
+        if self.reports.is_empty() && !has_any_filter {
+            return root.child(
+                div().px_5().pt_4().pb_6().child(
+                    card_shell()
+                        .p_6()
+                        .flex()
+                        .flex_col()
+                        .gap_3p5()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w(px(7.))
+                                        .h(px(7.))
+                                        .rounded_full()
+                                        .bg(rgb(EMERALD_FG)),
+                                )
+                                .child(
+                                    div()
+                                        .font_family(self.fonts.ui.clone())
+                                        .text_base()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(rgb(INK_HERO))
+                                        .child("尚未建立个人能力圈"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .line_height(px(19.))
+                                .text_color(rgb(INK_SECONDARY))
+                                .child("M3 不会预置任何持仓或观察名单。你可以先同步全美股 L0 湖仓，从全市场雷达或简报收件箱中挑选真正读懂的公司加入能力圈（CORE / WATCH / OUT / TOO HARD），也可以在终端通过 CLI 自行维护。"),
+                        )
+                        .child(
+                            div()
+                                .pt_1()
+                                .flex()
+                                .items_center()
+                                .gap_2p5()
+                                .child(
+                                    div()
+                                        .id("empty-circle-go-universe")
+                                        .px_3()
+                                        .py_1p5()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .bg(rgba(SKY_BG))
+                                        .border_1()
+                                        .border_color(rgba(SKY_BORDER))
+                                        .hover(|s| s.bg(rgb(BG_HOVER)))
+                                        .active(|s| s.bg(rgb(BG_ACTIVE)))
+                                        .font_family(self.fonts.ui.clone())
+                                        .text_xs()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(rgb(SKY_FG))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.switch_view(NavView::Universe);
+                                            cx.notify();
+                                        }))
+                                        .child("前往全市场雷达 (⌘2)"),
+                                )
+                                .child(
+                                    div()
+                                        .id("empty-circle-go-inbox")
+                                        .px_3()
+                                        .py_1p5()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .bg(rgb(BG_WELL))
+                                        .border_1()
+                                        .border_color(rgb(BORDER_PILL))
+                                        .hover(|s| s.bg(rgb(BG_HOVER)))
+                                        .active(|s| s.bg(rgb(BG_ACTIVE)))
+                                        .font_family(self.fonts.ui.clone())
+                                        .text_xs()
+                                        .text_color(rgb(INK_PRIMARY))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.switch_view(NavView::Inbox);
+                                            cx.notify();
+                                        }))
+                                        .child("打开简报收件箱 (⌘1)"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .pt_1()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .bg(rgb(BG_WELL))
+                                .border_1()
+                                .border_color(rgb(BORDER_HAIRLINE))
+                                .font_family(self.fonts.mono_term.clone())
+                                .text_size(px(11.))
+                                .text_color(rgb(INK_MUTED))
+                                .child("CLI: m3 add AAPL --bucket watch --circle \"消费生态\""),
+                        ),
+                ),
             );
         }
 

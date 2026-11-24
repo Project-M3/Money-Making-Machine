@@ -1,7 +1,9 @@
 //! Persistent macOS Application Support configuration for installed `M3.app` / `m3` CLI.
 
+use crate::model::{DecisionJournal, WatchlistFile};
 use crate::store;
 use anyhow::{Context, Result, bail, ensure};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -49,6 +51,104 @@ pub fn app_support_dir() -> Result<PathBuf> {
 /// Resolve the updater state directory under Application Support (`.../M3/updater`).
 pub fn updater_dir() -> Result<PathBuf> {
     Ok(app_support_dir()?.join("updater"))
+}
+
+/// Resolve the default standalone empty workspace (`.../M3/workspace`).
+pub fn default_workspace_dir() -> Result<PathBuf> {
+    Ok(app_support_dir()?.join("workspace"))
+}
+
+/// Reject symlinked workspace directories or files and initialize an empty workspace if missing.
+pub fn ensure_initialized_workspace(root: &Path) -> Result<PathBuf> {
+    ensure!(
+        !root.as_os_str().is_empty(),
+        "workspace root path cannot be empty"
+    );
+    match std::fs::symlink_metadata(root) {
+        Ok(meta) => ensure!(
+            meta.is_dir() && !meta.file_type().is_symlink(),
+            "refusing non-directory or symlinked workspace root `{}`",
+            root.display()
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("inspect workspace root `{}`", root.display()));
+        }
+    }
+
+    let workbench_dir = root.join("workbench");
+    match std::fs::symlink_metadata(&workbench_dir) {
+        Ok(meta) => ensure!(
+            meta.is_dir() && !meta.file_type().is_symlink(),
+            "refusing non-directory or symlinked workbench directory `{}`",
+            workbench_dir.display()
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("inspect workbench dir `{}`", workbench_dir.display()));
+        }
+    }
+
+    std::fs::create_dir_all(workbench_dir.join("dossiers")).with_context(|| {
+        format!(
+            "create workspace dossiers directory `{}`",
+            workbench_dir.join("dossiers").display()
+        )
+    })?;
+
+    let watchlist_path = workbench_dir.join("watchlist.json");
+    match std::fs::symlink_metadata(&watchlist_path) {
+        Ok(meta) => ensure!(
+            meta.is_file() && !meta.file_type().is_symlink(),
+            "refusing symlinked or non-regular watchlist `{}`",
+            watchlist_path.display()
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let empty_wl = WatchlistFile {
+                schema_version: 1,
+                benchmark_symbol: "^GSPC".to_owned(),
+                default_target_return_pct: Decimal::from(10),
+                companies: Vec::new(),
+            };
+            store::write_json_atomic(&watchlist_path, &empty_wl)?;
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("inspect watchlist `{}`", watchlist_path.display()));
+        }
+    }
+
+    let journal_path = workbench_dir.join("journal.json");
+    match std::fs::symlink_metadata(&journal_path) {
+        Ok(meta) => ensure!(
+            meta.is_file() && !meta.file_type().is_symlink(),
+            "refusing symlinked or non-regular journal `{}`",
+            journal_path.display()
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let empty_journal = DecisionJournal {
+                schema_version: 1,
+                account_note: "PAPER RESEARCH FIXTURE — NO LIVE ACCOUNT / NO BROKERAGE CONNECTION"
+                    .to_owned(),
+                currency: "USD".to_owned(),
+                starting_cash: Decimal::from(100_000),
+                cash_balance: Decimal::from(100_000),
+                benchmark_symbol: "^GSPC".to_owned(),
+                benchmark_start_price: None,
+                positions: Vec::new(),
+                entries: Vec::new(),
+            };
+            store::write_json_atomic(&journal_path, &empty_journal)?;
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("inspect journal `{}`", journal_path.display()));
+        }
+    }
+
+    Ok(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
 }
 
 /// Resolve `~/Library/Application Support/M3/config.json`.
@@ -135,4 +235,64 @@ pub fn read_workspace_root() -> Option<PathBuf> {
         return None;
     }
     path.canonicalize().ok().or(Some(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Bucket, CompanyEntry, DataSource, ValuationAssumptions};
+
+    #[test]
+    fn ensure_initialized_workspace_creates_empty_files_and_preserves_existing() {
+        let dir = std::env::temp_dir().join(format!(
+            "m3-empty-ws-test-{}",
+            crate::store::atomic_temp_path(Path::new("ws"))
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("x")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let init_path = ensure_initialized_workspace(&dir).unwrap();
+        assert!(init_path.join("workbench/dossiers").is_dir());
+
+        let paths = crate::store::WorkspacePaths::from_root(init_path.clone());
+        let wl = crate::store::load_watchlist(&paths).unwrap();
+        assert!(wl.companies.is_empty());
+        assert_eq!(wl.benchmark_symbol, "^GSPC");
+
+        let journal = crate::store::load_journal(&paths).unwrap();
+        assert!(journal.entries.is_empty());
+
+        let reports = crate::store::load_or_compute_reports(&paths).unwrap();
+        assert!(reports.is_empty());
+
+        // Populate watchlist with one user entry, then call ensure_initialized_workspace again.
+        let mut wl_mod = wl;
+        wl_mod.companies.push(CompanyEntry {
+            ticker: "COST".to_owned(),
+            name: "Costco".to_owned(),
+            bucket: Bucket::Watch,
+            source: DataSource::SecEdgar,
+            cik: Some("0000909832".to_owned()),
+            currency: "USD".to_owned(),
+            circle: "会员制零售".to_owned(),
+            too_hard_reason: None,
+            assumptions: ValuationAssumptions {
+                multiple_low: Decimal::from(18),
+                multiple_high: Decimal::from(22),
+                target_return_pct: Decimal::from(10),
+                expected_growth_pct: Decimal::from(8),
+                strike_price_override: None,
+            },
+        });
+        crate::store::save_watchlist(&paths, &wl_mod).unwrap();
+
+        ensure_initialized_workspace(&dir).unwrap();
+        let wl_after = crate::store::load_watchlist(&paths).unwrap();
+        assert_eq!(wl_after.companies.len(), 1);
+        assert_eq!(wl_after.companies[0].ticker, "COST");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

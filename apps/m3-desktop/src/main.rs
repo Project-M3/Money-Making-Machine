@@ -144,12 +144,12 @@ fn build_app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("简报收件箱", ViewInbox),
                 MenuItem::action("全市场雷达", ViewUniverse),
-                MenuItem::action("篮子总览", ViewBaskets),
+                MenuItem::action("能力圈总览", ViewBaskets),
                 MenuItem::action("主题与账本", ViewJournal),
                 MenuItem::separator(),
                 MenuItem::action("财报与活研报", ViewDossier),
                 MenuItem::action("Research Desk · Alan", ViewAgent),
-                MenuItem::action("返回篮子总览", BackToBaskets),
+                MenuItem::action("返回能力圈总览", BackToBaskets),
                 MenuItem::separator(),
                 MenuItem::action("切换 TTM / 年报口径", ToggleBasis),
                 MenuItem::action("切换列表与看板视图", ToggleBasketsView),
@@ -164,9 +164,9 @@ fn build_app_menus() -> Vec<Menu> {
                 MenuItem::action("查看本月 AI 预算状态", ShowBudgetStatus),
                 MenuItem::separator(),
                 MenuItem::submenu(Menu {
-                    name: SharedString::from("按芒格篮子筛选"),
+                    name: SharedString::from("按能力圈筛选"),
                     items: vec![
-                        MenuItem::action("全部篮子", FilterBasketAll),
+                        MenuItem::action("全部能力圈", FilterBasketAll),
                         MenuItem::action("CORE · 核心重仓候补", FilterBasketCore),
                         MenuItem::action("WATCH · 持续跟踪", FilterBasketWatch),
                         MenuItem::action("OUT · 超出能力圈", FilterBasketOut),

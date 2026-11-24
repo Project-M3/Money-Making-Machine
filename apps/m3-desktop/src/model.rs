@@ -211,7 +211,7 @@ impl Bucket {
     pub fn description(&self) -> &'static str {
         match self {
             Bucket::Core => "能力圈内确认的好生意 · 耐心等待击球价重仓",
-            Bucket::Watch => "待审讯收件箱 · 完成财报体检与费曼答辩后再分拣进三篮子",
+            Bucket::Watch => "待审讯收件箱 · 完成财报体检与费曼答辩后再分拣进能力圈",
             Bucket::Out => "商业逻辑看懂，但护城河 / 文化 / 资本配置不够好 · 明确说不",
             Bucket::TooHard => "未来 5–10 年现金流无法可靠估算 · 永久入馆防 FOMO",
         }

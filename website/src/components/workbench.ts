@@ -52,7 +52,7 @@ const NAV_ITEMS: Array<{
 }> = [
   { tab: 'inbox', label: 'Briefing Inbox', shortcut: '⌘1', dotColor: 'var(--emerald)' },
   { tab: 'universe', label: 'Universe Radar', shortcut: '⌘2', dotColor: 'var(--sky)' },
-  { tab: 'baskets', label: 'Munger Baskets', shortcut: '⌘3', dotColor: 'var(--ink-hero)' },
+  { tab: 'baskets', label: 'Circle', shortcut: '⌘3', dotColor: 'var(--ink-hero)' },
   { tab: 'themes', label: 'Themes & Journal', shortcut: '⌘4', dotColor: 'var(--gold)' },
 ];
 
@@ -113,8 +113,8 @@ export function mountWorkbench(container: HTMLElement): void {
         return 'Universe Radar · Full-US Ledger (5,142)';
       case 'baskets':
         return state.basketFilter === 'All'
-          ? 'Munger Baskets · Overview'
-          : `Munger Baskets / ${state.basketFilter}`;
+          ? 'Circle · Overview'
+          : `Circle / ${state.basketFilter}`;
       case 'research':
         return `${company.ticker} · ${company.name} · Research Desk`;
       case 'themes':
@@ -152,7 +152,7 @@ export function mountWorkbench(container: HTMLElement): void {
       case 'research':
         return {
           dot: state.companySubTab === 'alan' ? 'var(--violet)' : 'var(--emerald)',
-          legend: '1 Memo · 2 Deep Research & Alan · 3 XBRL · esc back to Baskets',
+          legend: '1 Memo · 2 Deep Research & Alan · 3 XBRL · esc back to Circle',
           mode: state.companySubTab === 'alan' ? 'EMBEDDED ALAN · PAPER ONLY' : 'ZERO-LLM ARITHMETIC',
         };
       case 'themes':
@@ -310,7 +310,7 @@ export function mountWorkbench(container: HTMLElement): void {
         </div>
 
         <div class="m3-sidebar-baskets">
-          <div class="m3-rail-heading">MUNGER BASKETS</div>
+          <div class="m3-rail-heading">CIRCLE</div>
           ${buckets
             .map((b) => {
               const members = COMPANIES.filter((c) => c.bucket === b.key);
@@ -695,7 +695,7 @@ export function mountWorkbench(container: HTMLElement): void {
 
     return `
       <div class="view-toolbar">
-        <div class="chip-group" role="group" aria-label="Filter Munger Baskets">
+        <div class="chip-group" role="group" aria-label="Filter Circle">
           ${tabs
             .map(
               (b) => `
@@ -1000,7 +1000,7 @@ export function mountWorkbench(container: HTMLElement): void {
     const actions: Array<{ label: string; group: string; key: string; cmd: string }> = [
       { label: 'Briefing Inbox (Event-Driven L1)', group: 'VIEW', key: '⌘1', cmd: 'view:inbox' },
       { label: 'Universe Radar (5,142 US Issuers)', group: 'VIEW', key: '⌘2', cmd: 'view:universe' },
-      { label: 'Munger Baskets Overview', group: 'VIEW', key: '⌘3', cmd: 'view:baskets' },
+      { label: 'Circle Overview', group: 'VIEW', key: '⌘3', cmd: 'view:baskets' },
       { label: 'Themes & Decision Journal', group: 'VIEW', key: '⌘4', cmd: 'view:themes' },
       { label: 'Trigger L1 / Core Sync', group: 'ACTION', key: '⌘R', cmd: 'action:sync' },
       ...COMPANIES.map((c) => ({

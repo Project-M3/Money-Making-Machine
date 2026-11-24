@@ -77,15 +77,8 @@ pub fn resolve_repo_root() -> Result<PathBuf> {
     if let Some(configured) = crate::app_config::read_workspace_root() {
         return Ok(configured);
     }
-    let manifest_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    if manifest_root.join("workbench/watchlist.json").exists()
-        && let Ok(canon) = manifest_root.canonicalize()
-    {
-        return Ok(canon);
-    }
-    anyhow::bail!(
-        "未找到 M3 工作区（缺少 workbench/watchlist.json）。请运行 `m3 workspace set <仓库路径>` 或设置环境变量 `M3_REPO_ROOT`。"
-    )
+    let default_ws = crate::app_config::default_workspace_dir()?;
+    crate::app_config::ensure_initialized_workspace(&default_ws)
 }
 
 pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {

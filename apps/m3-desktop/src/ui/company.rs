@@ -27,11 +27,53 @@ impl MungerWorkbench {
             .iter()
             .find(|r| r.ticker == self.selected_ticker)
         else {
-            return div()
-                .p_6()
-                .font_family(self.fonts.ui.clone())
-                .text_color(rgb(INK_SECONDARY))
-                .child("未选择公司");
+            return div().p_6().child(
+                card_shell()
+                    .p_6()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(INK_HERO))
+                            .child("未选择公司"),
+                    )
+                    .child(
+                        div()
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .line_height(px(18.))
+                            .text_color(rgb(INK_SECONDARY))
+                            .child("当前能力圈中暂无已选标的，请先从「全市场雷达」将公司加入能力圈，或在「能力圈总览」中选择一家标的。"),
+                    )
+                    .child(
+                        div().pt_1().child(
+                            div()
+                                .id("empty-dossier-go-universe")
+                                .px_3()
+                                .py_1p5()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .bg(rgba(SKY_BG))
+                                .border_1()
+                                .border_color(rgba(SKY_BORDER))
+                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                .active(|s| s.bg(rgb(BG_ACTIVE)))
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(rgb(SKY_FG))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.switch_view(NavView::Universe);
+                                    cx.notify();
+                                }))
+                                .child("前往全市场雷达 (⌘2)"),
+                        ),
+                    ),
+            );
         };
 
         let row_opt = primary_row(rep, self.use_ttm_basis);
@@ -908,9 +950,9 @@ impl MungerWorkbench {
                             ),
                     ),
             )
-            // 3. Basket 2x2 Switcher
+            // 3. Circle 2x2 Switcher
             .child(
-                prop_section("BASKET · 归入篮子", &self.fonts)
+                prop_section("CIRCLE · 能力圈分层", &self.fonts)
                     .child(
                         div().flex().gap_1p5().children(
                             [Bucket::Core, Bucket::Watch].into_iter().map(|b| {

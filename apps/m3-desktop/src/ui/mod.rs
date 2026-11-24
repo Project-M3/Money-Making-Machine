@@ -328,7 +328,7 @@ impl MungerWorkbench {
             sort_col: SortCol::Default,
             sort_asc: false,
             cursor_index: 0,
-            selected_ticker: "AAPL".into(),
+            selected_ticker: String::new(),
             selected_dossier: None,
             selected_history_wk: None,
             selected_history_1d: None,
@@ -426,7 +426,9 @@ impl MungerWorkbench {
         match store::load_or_compute_reports(&self.paths) {
             Ok(reports) => {
                 self.reports = reports;
-                if !self
+                if self.reports.is_empty() {
+                    self.selected_ticker.clear();
+                } else if !self
                     .reports
                     .iter()
                     .any(|r| r.ticker.eq_ignore_ascii_case(&self.selected_ticker))
@@ -449,21 +451,34 @@ impl MungerWorkbench {
     }
 
     fn load_selection(&mut self, ticker: &str) {
-        self.selected_ticker = ticker.to_owned();
+        let trimmed = ticker.trim();
         self.agent_input_focused = false;
         self.agent_expanded_evidence = None;
+        if trimmed.is_empty() {
+            self.selected_ticker.clear();
+            self.selected_dossier = None;
+            self.selected_history_wk = None;
+            self.selected_history_1d = None;
+            self.selected_memo_raw = None;
+            self.selected_memo_parsed = None;
+            self.selected_research_runs.clear();
+            self.selected_peers = None;
+            self.selected_similar_hits.clear();
+            return;
+        }
+        self.selected_ticker = trimmed.to_owned();
         if let Some(handle) = &self.alan_handle {
             handle.refresh_fs();
         }
-        self.selected_dossier = store::load_dossier(&self.paths, ticker).ok().flatten();
-        self.selected_history_wk = store::load_cached_price_history(&self.paths, ticker, "1wk");
-        self.selected_history_1d = store::load_cached_price_history(&self.paths, ticker, "1d");
-        if let Some(rep) = self.reports.iter().find(|r| r.ticker == ticker) {
+        self.selected_dossier = store::load_dossier(&self.paths, trimmed).ok().flatten();
+        self.selected_history_wk = store::load_cached_price_history(&self.paths, trimmed, "1wk");
+        self.selected_history_1d = store::load_cached_price_history(&self.paths, trimmed, "1d");
+        if let Some(rep) = self.reports.iter().find(|r| r.ticker == trimmed) {
             self.sandbox_multiple = rep.assumptions.multiple_low;
             self.sandbox_target_return = rep.assumptions.target_return_pct;
             self.sandbox_expected_growth = rep.assumptions.expected_growth_pct;
         }
-        self.reload_research_desk_context(ticker);
+        self.reload_research_desk_context(trimmed);
     }
 
     pub fn select_company(&mut self, ticker: &str, open_view: Option<NavView>) {
@@ -515,6 +530,11 @@ impl MungerWorkbench {
     pub fn run_deep_research_selected(&mut self, cx: &mut Context<Self>) {
         let ticker = self.selected_ticker.clone();
         if ticker.trim().is_empty() {
+            self.banner = Some((
+                "当前能力圈为空，请先从「全市场雷达」或「简报收件箱」添加标的".into(),
+                false,
+            ));
+            cx.notify();
             return;
         }
         self.active_view = NavView::Agent;
@@ -707,7 +727,7 @@ impl MungerWorkbench {
                 ));
             }
             Err(err) => {
-                self.banner = Some((format!("切换篮子失败: {err:#}"), true));
+                self.banner = Some((format!("切换能力圈分组失败: {err:#}"), true));
             }
         }
         cx.notify();

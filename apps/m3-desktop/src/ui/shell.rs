@@ -160,7 +160,7 @@ impl MungerWorkbench {
             ),
             (
                 NavView::Baskets,
-                "篮子总览",
+                "能力圈总览",
                 "⌘3",
                 self.active_view == NavView::Baskets && self.basket_filter.is_none(),
                 INK_HERO,
@@ -340,7 +340,7 @@ impl MungerWorkbench {
                             .text_size(px(11.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_MUTED))
-                            .child("芒格篮子"),
+                            .child("能力圈"),
                     )
                     .children(Bucket::display_order().into_iter().map(|b| {
                         let members: Vec<&MungerReport> =
@@ -761,17 +761,21 @@ impl MungerWorkbench {
             NavView::Inbox => "简报收件箱 · Event-Driven L1".to_owned(),
             NavView::Baskets => match (self.basket_filter, &self.circle_filter) {
                 (Some(b), Some(tag)) => {
-                    format!("篮子总览 / {} ({}) / #{tag}", b.code(), b.short_label())
+                    format!("能力圈总览 / {} ({}) / #{tag}", b.code(), b.short_label())
                 }
-                (Some(b), None) => format!("篮子总览 / {} ({})", b.code(), b.short_label()),
-                (None, Some(tag)) => format!("篮子总览 / #{tag}"),
-                (None, None) => "篮子总览".to_owned(),
+                (Some(b), None) => format!("能力圈总览 / {} ({})", b.code(), b.short_label()),
+                (None, Some(tag)) => format!("能力圈总览 / #{tag}"),
+                (None, None) => "能力圈总览".to_owned(),
             },
             NavView::Dossier | NavView::Agent => {
-                format!(
-                    "{} · {} · Research Desk",
-                    self.selected_ticker, selected_name
-                )
+                if self.selected_ticker.is_empty() {
+                    "Research Desk".to_owned()
+                } else {
+                    format!(
+                        "{} · {} · Research Desk",
+                        self.selected_ticker, selected_name
+                    )
+                }
             }
             NavView::Journal => "主题图谱与决策账本 · Themes & Journal".to_owned(),
             NavView::Universe => "全市场雷达 · US Lakehouse L0/L1".to_owned(),
@@ -1020,7 +1024,7 @@ impl MungerWorkbench {
                 ),
                 NavView::Baskets => (
                     EMERALD_FG,
-                    "v 列表/看板 · 1-4 切篮子 · 0 全部 · j/k 移动 · ↵ 打开 · ⌘K 命令",
+                    "v 列表/看板 · 1-4 切分组 · 0 全部 · j/k 移动 · ↵ 打开 · ⌘K 命令",
                 ),
                 NavView::Dossier | NavView::Agent => (
                     if self.active_view == NavView::Agent {

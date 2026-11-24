@@ -59,8 +59,8 @@ impl MungerWorkbench {
         });
         items.push(PaletteItem {
             group: "VIEW".into(),
-            title: "篮子总览 (IN / WATCH / OUT / TOO HARD)".into(),
-            subtitle: "今日信号与芒格四篮子筛选".into(),
+            title: "能力圈总览 (CORE / WATCH / OUT / TOO HARD)".into(),
+            subtitle: "今日信号与能力圈四层分拣筛选".into(),
             shortcut: Some("⌘3"),
             dot_color: INK_PRIMARY,
             action: PaletteAction::FocusBasket(None),
@@ -77,33 +77,35 @@ impl MungerWorkbench {
             dot_color: SKY_FG,
             action: PaletteAction::ToggleBasketsView,
         });
-        items.push(PaletteItem {
-            group: "VIEW".into(),
-            title: format!("财报与 K 线 · {}", self.selected_ticker),
-            subtitle: "值锚定 K 线、查理沙盒、ROIC 与人类判词".into(),
-            shortcut: None,
-            dot_color: EMERALD_FG,
-            action: PaletteAction::SwitchView(NavView::Dossier),
-        });
-        items.push(PaletteItem {
-            group: "VIEW".into(),
-            title: format!(
-                "Research Desk · Deep Research & Alan ({})",
-                self.selected_ticker
-            ),
-            subtitle: "4 视角并行深研、Living Research Memo 与费曼审讯".into(),
-            shortcut: None,
-            dot_color: VIOLET_FG,
-            action: PaletteAction::SwitchView(NavView::Agent),
-        });
-        items.push(PaletteItem {
-            group: "RESEARCH".into(),
-            title: format!("Deep Research · 4 视角并行深研 ({})", self.selected_ticker),
-            subtitle: "受预算硬门控：护城河 / 会计排雷 / 隐空间同行 / 5年逆向验尸".into(),
-            shortcut: None,
-            dot_color: VIOLET_FG,
-            action: PaletteAction::RunDeepResearch(self.selected_ticker.clone()),
-        });
+        if !self.selected_ticker.is_empty() {
+            items.push(PaletteItem {
+                group: "VIEW".into(),
+                title: format!("财报与 K 线 · {}", self.selected_ticker),
+                subtitle: "值锚定 K 线、查理沙盒、ROIC 与人类判词".into(),
+                shortcut: None,
+                dot_color: EMERALD_FG,
+                action: PaletteAction::SwitchView(NavView::Dossier),
+            });
+            items.push(PaletteItem {
+                group: "VIEW".into(),
+                title: format!(
+                    "Research Desk · Deep Research & Alan ({})",
+                    self.selected_ticker
+                ),
+                subtitle: "4 视角并行深研、Living Research Memo 与费曼审讯".into(),
+                shortcut: None,
+                dot_color: VIOLET_FG,
+                action: PaletteAction::SwitchView(NavView::Agent),
+            });
+            items.push(PaletteItem {
+                group: "RESEARCH".into(),
+                title: format!("Deep Research · 4 视角并行深研 ({})", self.selected_ticker),
+                subtitle: "受预算硬门控：护城河 / 会计排雷 / 隐空间同行 / 5年逆向验尸".into(),
+                shortcut: None,
+                dot_color: VIOLET_FG,
+                action: PaletteAction::RunDeepResearch(self.selected_ticker.clone()),
+            });
+        }
         items.push(PaletteItem {
             group: "BUDGET".into(),
             title: "Budget Status · 查看本月 AI 预算与配额".into(),
@@ -120,14 +122,16 @@ impl MungerWorkbench {
             dot_color: SKY_FG,
             action: PaletteAction::SyncThemes,
         });
-        items.push(PaletteItem {
-            group: "VIEW".into(),
-            title: "XBRL 底表 · 多年原账与公式审计".into(),
-            subtitle: format!("查看 {} 算术推导与 SHA-256 溯源", self.selected_ticker),
-            shortcut: Some("i"),
-            dot_color: SKY_FG,
-            action: PaletteAction::ToggleInspector,
-        });
+        if !self.selected_ticker.is_empty() {
+            items.push(PaletteItem {
+                group: "VIEW".into(),
+                title: "XBRL 底表 · 多年原账与公式审计".into(),
+                subtitle: format!("查看 {} 算术推导与 SHA-256 溯源", self.selected_ticker),
+                shortcut: Some("i"),
+                dot_color: SKY_FG,
+                action: PaletteAction::ToggleInspector,
+            });
+        }
         items.push(PaletteItem {
             group: "VIEW".into(),
             title: "主题与账本 · Themes & Journal".into(),
@@ -148,34 +152,36 @@ impl MungerWorkbench {
             let (fg, _, _) = bucket_colors(b);
             items.push(PaletteItem {
                 group: "BASKET".into(),
-                title: format!("聚焦篮子 · {} ({})", b.code(), b.short_label()),
+                title: format!("聚焦能力圈 · {} ({})", b.code(), b.short_label()),
                 subtitle: b.description().into(),
                 shortcut: None,
                 dot_color: fg,
                 action: PaletteAction::FocusBasket(Some(b)),
             });
         }
-        for b in Bucket::display_order() {
-            let (fg, _, _) = bucket_colors(b);
-            items.push(PaletteItem {
-                group: "MOVE".into(),
-                title: format!(
-                    "将 {} 归入 [{} · {}]",
-                    self.selected_ticker,
-                    b.code(),
-                    b.short_label()
-                ),
-                subtitle: "写入 workbench/watchlist.json 并重算状态".into(),
-                shortcut: None,
-                dot_color: fg,
-                action: PaletteAction::MoveCompanyBucket(self.selected_ticker.clone(), b),
-            });
+        if !self.selected_ticker.is_empty() {
+            for b in Bucket::display_order() {
+                let (fg, _, _) = bucket_colors(b);
+                items.push(PaletteItem {
+                    group: "MOVE".into(),
+                    title: format!(
+                        "将 {} 归入 [{} · {}]",
+                        self.selected_ticker,
+                        b.code(),
+                        b.short_label()
+                    ),
+                    subtitle: "写入 workbench/watchlist.json 并重算状态".into(),
+                    shortcut: None,
+                    dot_color: fg,
+                    action: PaletteAction::MoveCompanyBucket(self.selected_ticker.clone(), b),
+                });
+            }
         }
         for (tag, cnt) in collect_circle_tags(&self.reports) {
             items.push(PaletteItem {
                 group: "TAG".into(),
                 title: format!("按标签筛选 #{tag}"),
-                subtitle: format!("跨篮子关联 {cnt} 家标的"),
+                subtitle: format!("跨能力圈关联 {cnt} 家标的"),
                 shortcut: None,
                 dot_color: SKY_FG,
                 action: PaletteAction::FilterCircle(Some(tag)),
@@ -521,7 +527,7 @@ impl MungerWorkbench {
                                             }))
                                             .truncate()
                                             .child(if self.palette_query.is_empty() {
-                                                "输入标的、篮子 (IN/OUT/TOO HARD)、#标签 或命令…"
+                                                "输入标的、能力圈 (CORE/WATCH/OUT/TOO HARD)、#标签 或命令…"
                                                     .to_owned()
                                             } else {
                                                 format!("{}_", self.palette_query)
