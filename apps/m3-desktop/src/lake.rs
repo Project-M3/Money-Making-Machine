@@ -1769,6 +1769,34 @@ impl LakeDb {
         })
     }
 
+    pub fn load_drawer_details_by_ticker(
+        &self,
+        ticker: &str,
+        peer_limit: usize,
+    ) -> Result<Option<UniverseDrawerDetails>> {
+        let trimmed = ticker.trim();
+        if trimmed.is_empty() || !self.table_exists("universe_snapshot")? {
+            return Ok(None);
+        }
+        let _tx = ReadSnapshotTx::begin(&self.conn)?;
+        let Some(cik) = self
+            .conn
+            .query_row(
+                "SELECT cik
+                 FROM universe_snapshot
+                 WHERE UPPER(ticker) = UPPER(?)
+                 ORDER BY in_watchlist DESC, quality_score DESC, cik ASC
+                 LIMIT 1",
+                [trimmed],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        self.load_drawer_details_by_cik_inner(&cik, peer_limit)
+    }
+
     pub fn load_drawer_details_by_cik(
         &self,
         cik: &str,

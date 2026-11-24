@@ -41,14 +41,28 @@ const MAX_CHUNKS_PER_FILING: usize = 40;
 const SEC_RATE_LIMIT_MS: u64 = 185;
 const NEWS_RATE_LIMIT_MS: u64 = 150;
 const LOOKBACK_DAYS_10KQ: i64 = 400;
+const LOOKBACK_DAYS_10KQ_ON_DEMAND: i64 = 365 * 5;
 const LOOKBACK_DAYS_8K_FORM4: i64 = 90;
 const MAX_ERRORS_SAMPLE: usize = 20;
 const CANDIDATE_POOL_QUERY_LIMIT: usize = 1000;
 const MAX_STRIKE_SIGNALS: usize = 30;
-const MAX_DISCOVERY_SIGNALS: usize = 40;
+const MAX_DISCOVERY_SIGNALS: usize = 25;
 const MAX_WARNING_RED_FLAGS: usize = 25;
+const MAX_RIPPLE_SIGNALS_PER_RUN: usize = 20;
+const MAX_UNREAD_RIPPLES_TOTAL: usize = 25;
+const RIPPLE_MIN_SCORE: f32 = 0.30;
+const RIPPLE_LIMIT_PER_EVENT: usize = 2;
 const FORM4_CLUSTER_WINDOW_DAYS: i64 = 14;
 const FORM4_CLUSTER_MIN_COUNT: usize = 3;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompanyProfileFetchReport {
+    pub ticker: String,
+    pub cik: String,
+    pub filing_date: Option<String>,
+    pub chunks_indexed: usize,
+    pub from_cache: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventCatchupOptions {
@@ -810,6 +824,16 @@ fn parse_submissions_json_bytes(
     ticker: &str,
     env: &CatchupEnv,
 ) -> Result<(Vec<LakeFilingRow>, Vec<LakeEventRow>)> {
+    parse_submissions_json_bytes_with_lookback(bytes, cik, ticker, env, LOOKBACK_DAYS_10KQ)
+}
+
+fn parse_submissions_json_bytes_with_lookback(
+    bytes: &[u8],
+    cik: &str,
+    ticker: &str,
+    env: &CatchupEnv,
+    lookback_10kq_days: i64,
+) -> Result<(Vec<LakeFilingRow>, Vec<LakeEventRow>)> {
     let norm_cik = edgar::normalize_cik(cik)?;
     let doc: SecSubmissionDoc =
         serde_json::from_slice(bytes).context("decode SEC submissions JSON")?;
@@ -861,7 +885,10 @@ fn parse_submissions_json_bytes(
             continue;
         };
         let age_days = today_days - filing_days;
-        let max_lookback = form_lookback_days(form);
+        let max_lookback = match form {
+            "10-K" | "10-K/A" | "10-Q" | "10-Q/A" => lookback_10kq_days,
+            _ => form_lookback_days(form),
+        };
         if age_days > max_lookback || age_days < -7 {
             continue;
         }
@@ -1351,6 +1378,191 @@ fn index_candidate_filings_text(
     Ok((attempted, docs_indexed, chunks_indexed))
 }
 
+/// Fetches and locally indexes the latest 10-K `item_1` / `item_1a` / `item_7` text for one company
+/// (Zero-LLM tokens) so the Inbox decision card displays a readable business overview immediately.
+pub fn fetch_company_10k_profile(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    cik: &str,
+) -> Result<CompanyProfileFetchReport> {
+    let norm_cik = edgar::normalize_cik(cik)?;
+    let upper_ticker = ticker.trim().to_ascii_uppercase();
+    let db = LakeDb::open(paths)?;
+    let client = sec_events_http_client()?;
+    let env = CatchupEnv::live(store::now_ms());
+
+    let mut ten_k = db
+        .list_filings_for_cik(&norm_cik, 20)?
+        .into_iter()
+        .find(|f| {
+            matches!(f.form.as_str(), "10-K" | "10-K/A")
+                && f.primary_document
+                    .as_deref()
+                    .is_some_and(|d| !d.trim().is_empty())
+        });
+
+    if ten_k.is_none() {
+        let sub_url = format!("{}/CIK{norm_cik}.json", env.sec_submissions_base_url);
+        let resp = client
+            .get(&sub_url)
+            .send()
+            .with_context(|| format!("fetch SEC submissions for {upper_ticker}"))?;
+        let status = resp.status();
+        anyhow::ensure!(
+            status.is_success(),
+            "SEC submissions HTTP {status} for {upper_ticker} ({norm_cik})"
+        );
+        let bytes = read_bounded_reader(resp, MAX_SUBMISSION_ENTRY_BYTES as usize)?;
+        let (filings, events) = parse_submissions_json_bytes_with_lookback(
+            &bytes,
+            &norm_cik,
+            &upper_ticker,
+            &env,
+            LOOKBACK_DAYS_10KQ_ON_DEMAND,
+        )?;
+        if !filings.is_empty() {
+            db.upsert_filings(&filings)?;
+        }
+        if !events.is_empty() {
+            db.upsert_events(&events)?;
+        }
+        ten_k = filings.into_iter().find(|f| {
+            matches!(f.form.as_str(), "10-K" | "10-K/A")
+                && f.primary_document
+                    .as_deref()
+                    .is_some_and(|d| !d.trim().is_empty())
+        });
+    }
+
+    let filing = ten_k.with_context(|| {
+        format!("no recent 10-K filing metadata available on SEC EDGAR for {upper_ticker}")
+    })?;
+
+    let cache_path = filing_doc_cache_path(paths, &filing.cik, &filing.accession_no);
+    let from_cache = cache_path.exists();
+    let raw_text = if from_cache {
+        let f = File::open(&cache_path)
+            .with_context(|| format!("open cached 10-K {}", cache_path.display()))?;
+        let bytes = read_bounded_reader(f, MAX_PRIMARY_DOC_BYTES)?;
+        String::from_utf8_lossy(&bytes).into_owned()
+    } else {
+        let fetch_url = if filing.filing_url.starts_with("http") {
+            filing.filing_url.clone()
+        } else {
+            build_sec_filing_url(
+                &env.sec_archives_data_base_url,
+                &filing.cik,
+                &filing.accession_no,
+                filing.primary_document.as_deref(),
+            )
+        };
+        let resp = client
+            .get(&fetch_url)
+            .send()
+            .with_context(|| format!("fetch 10-K document for {upper_ticker}"))?;
+        let status = resp.status();
+        anyhow::ensure!(
+            status.is_success(),
+            "SEC 10-K document HTTP {status} for {upper_ticker}"
+        );
+        let bytes = read_bounded_reader(resp, MAX_PRIMARY_DOC_BYTES)?;
+        if let Some(parent) = cache_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let tmp = store::atomic_temp_path(&cache_path);
+        if fs::write(&tmp, &bytes)
+            .and_then(|_| fs::rename(&tmp, &cache_path))
+            .is_err()
+        {
+            let _ = fs::remove_file(&tmp);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+
+    let extracted = latent::extract_sec_sections(&filing.form, &raw_text);
+    anyhow::ensure!(
+        !extracted.sections.is_empty(),
+        "unable to extract Item 1 / business sections from 10-K for {upper_ticker}"
+    );
+
+    let preferred: Vec<_> = extracted
+        .sections
+        .iter()
+        .filter(|s| matches!(s.section.as_str(), "item_1" | "item_1a" | "item_7"))
+        .collect();
+    let chosen_sections: Vec<_> = if preferred.is_empty() {
+        extracted.sections.iter().collect()
+    } else {
+        preferred
+    };
+
+    let mut all_chunks = Vec::new();
+    for sec in chosen_sections {
+        let mut sec_chunks = latent::chunk_text(
+            &sec.section,
+            &sec.title,
+            &sec.text,
+            DEFAULT_CHUNK_CHARS,
+            DEFAULT_CHUNK_OVERLAP,
+        );
+        all_chunks.append(&mut sec_chunks);
+        if all_chunks.len() >= MAX_CHUNKS_PER_FILING {
+            all_chunks.truncate(MAX_CHUNKS_PER_FILING);
+            break;
+        }
+    }
+
+    let existing_hashes = db.existing_chunk_hashes(&norm_cik)?;
+    let mut to_embed = Vec::new();
+    for ch in all_chunks {
+        let chunk_id = format!(
+            "sec:{}:{}:{}",
+            filing.accession_no, ch.section, ch.chunk_index
+        );
+        if existing_hashes.get(&chunk_id) == Some(&ch.content_sha256) {
+            continue;
+        }
+        to_embed.push((chunk_id, ch));
+    }
+
+    let chunks_indexed = if to_embed.is_empty() {
+        0
+    } else {
+        let embedder = Embedder::from_env();
+        let text_refs: Vec<&str> = to_embed.iter().map(|(_, c)| c.content.as_str()).collect();
+        let embeddings = embedder.embed_batch(&text_refs)?;
+        let mut rows = Vec::with_capacity(to_embed.len());
+        for ((chunk_id, ch), emb) in to_embed.into_iter().zip(embeddings) {
+            rows.push(DocChunkRow {
+                chunk_id,
+                cik: norm_cik.clone(),
+                ticker: upper_ticker.clone(),
+                doc_type: normalize_doc_type(&filing.form).to_owned(),
+                source_id: filing.accession_no.clone(),
+                period_end: filing.report_date.clone(),
+                filing_date: Some(filing.filing_date.clone()),
+                section: ch.section,
+                title: format!("{upper_ticker} {} · {}", filing.form, ch.title),
+                content: ch.content,
+                content_sha256: ch.content_sha256,
+                source_url: filing.filing_url.clone(),
+                embedding_model: emb.model,
+                embedding_dim: emb.dim,
+                embedding_json: latent::encode_embedding_json(&emb.vector),
+            });
+        }
+        db.upsert_doc_chunks(&rows)?
+    };
+
+    Ok(CompanyProfileFetchReport {
+        ticker: upper_ticker,
+        cik: norm_cik,
+        filing_date: Some(filing.filing_date),
+        chunks_indexed,
+        from_cache,
+    })
+}
+
 fn ingest_candidate_news(
     db: &LakeDb,
     candidates: &[UniverseRow],
@@ -1770,13 +1982,13 @@ fn generate_signals_and_ripples(
         .map(|r| (r.ticker.to_ascii_uppercase(), r))
         .collect();
 
-    // 1. Strike signals (candidates in or near strike zone without Red warnings or TooHard/Out)
+    // 1. Strike signals (ONLY Circle companies in CORE/WATCH with real valuation assumptions)
     let mut strike_rows: Vec<&UniverseRow> = candidates
         .iter()
         .filter(|row| {
-            !row.is_financial
-                && row.bucket_opt != Some(Bucket::TooHard)
-                && row.bucket_opt != Some(Bucket::Out)
+            row.in_watchlist
+                && matches!(row.bucket_opt, Some(Bucket::Core) | Some(Bucket::Watch))
+                && !row.is_financial
                 && row.latest_price.is_some()
                 && row.strike_price.is_some()
                 && !has_red_warning(row)
@@ -1791,6 +2003,7 @@ fn generate_signals_and_ripples(
             .then_with(|| a.distance_to_strike_pct.cmp(&b.distance_to_strike_pct))
             .then_with(|| b.quality_score.cmp(&a.quality_score))
     });
+    let mut active_strike_ids: HashSet<String> = HashSet::new();
     for row in strike_rows.into_iter().take(MAX_STRIKE_SIGNALS) {
         let dist = row.distance_to_strike_pct.unwrap_or(Decimal::ZERO);
         let dist_f = decimal_to_f64(dist);
@@ -1806,8 +2019,10 @@ fn generate_signals_and_ripples(
         } else {
             "接近击球区"
         };
+        let signal_id = format!("strike:{}", row.ticker);
+        active_strike_ids.insert(signal_id.clone());
         signals.push(SignalInboxRow {
-            signal_id: format!("strike:{}", row.ticker),
+            signal_id,
             kind: SignalKind::Strike,
             score: round_score(score),
             primary_ticker: row.ticker.clone(),
@@ -1835,7 +2050,7 @@ fn generate_signals_and_ripples(
         });
     }
 
-    // 2. Discovery signals (non-watchlist quality companies)
+    // 2. Discovery signals (non-watchlist quantitative candidates; no blind 18x strike claims)
     let mut discovery_rows: Vec<&UniverseRow> = candidates
         .iter()
         .filter(|row| {
@@ -1854,6 +2069,7 @@ fn generate_signals_and_ripples(
             .then_with(|| b.roic_5y_avg_pct.cmp(&a.roic_5y_avg_pct))
             .then_with(|| a.ticker.cmp(&b.ticker))
     });
+    let mut active_discovery_ids: HashSet<String> = HashSet::new();
     for row in discovery_rows.into_iter().take(MAX_DISCOVERY_SIGNALS) {
         let q_f = decimal_to_f64(row.quality_score);
         let roic_f = decimal_to_f64(row.roic_5y_avg_pct.unwrap_or(Decimal::ZERO));
@@ -1864,14 +2080,16 @@ fn generate_signals_and_ripples(
             + fcf_f.clamp(0.0, 12.0) * 0.5)
             .clamp(55.0, 96.0);
         let evidence = best_evidence_for_ticker(db, row);
+        let signal_id = format!("discovery:{}", row.ticker);
+        active_discovery_ids.insert(signal_id.clone());
         signals.push(SignalInboxRow {
-            signal_id: format!("discovery:{}", row.ticker),
+            signal_id,
             kind: SignalKind::Discovery,
             score: round_score(score),
             primary_ticker: row.ticker.clone(),
             tickers: vec![row.ticker.clone()],
             title: format!(
-                "{} 高质量候选 · 5Y ROIC {}%",
+                "{} 量化候选 · 5Y ROIC {}%",
                 row.ticker,
                 row.roic_5y_avg_pct
                     .unwrap_or(Decimal::ZERO)
@@ -1879,9 +2097,13 @@ fn generate_signals_and_ripples(
                     .normalize()
             ),
             summary: format!(
-                "{} ({}) · 连续 {} 年数据，5Y ROIC {}%，SBC/OCF {}%，3Y 股本变化 {}%，严苛股东盈余 {}。",
+                "{} ({}) · {} · 连续 {} 年数据，5Y ROIC {}%，SBC/OCF {}%，3Y 股本变化 {}%，严苛股东盈余 {}。",
                 row.name,
                 row.ticker,
+                row.sic_description
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("未分类行业"),
                 row.years_of_data,
                 format_opt_decimal(row.roic_5y_avg_pct, ""),
                 format_opt_decimal(row.sbc_to_ocf_pct, ""),
@@ -1951,8 +2173,22 @@ fn generate_signals_and_ripples(
         });
     }
 
-    // 4. Process unprocessed events -> 8-K/Form 4 red flags + cross-company Ripples
-    let unprocessed = db.list_events(None, None, true, 200)?;
+    // 4. Process unprocessed events -> 8-K/Form 4 red flags + bounded cross-company Ripples
+    let mut unprocessed = db.list_events(None, None, true, 200)?;
+    unprocessed.sort_by(|a, b| {
+        let a_wl = a
+            .ticker
+            .as_deref()
+            .and_then(|t| candidate_by_ticker.get(&t.trim().to_ascii_uppercase()))
+            .is_some_and(|r| r.in_watchlist);
+        let b_wl = b
+            .ticker
+            .as_deref()
+            .and_then(|t| candidate_by_ticker.get(&t.trim().to_ascii_uppercase()))
+            .is_some_and(|r| r.in_watchlist);
+        b_wl.cmp(&a_wl)
+            .then_with(|| b.occurred_at_ms.cmp(&a.occurred_at_ms))
+    });
     let mut form4_by_ticker: HashMap<String, Vec<LakeEventRow>> = HashMap::new();
     let mut ripple_emitted = 0usize;
 
@@ -2066,11 +2302,13 @@ fn generate_signals_and_ripples(
             }
         }
 
-        // Cross-company ripple generation for 8-K / 10-K / news
-        if matches!(
-            ev.event_type.as_str(),
-            "8-K" | "8-K/A" | "10-K" | "10-K/A" | "news"
-        ) {
+        // Cross-company ripple generation for 8-K / 10-K / news (strictly capped)
+        if ripple_emitted < MAX_RIPPLE_SIGNALS_PER_RUN
+            && matches!(
+                ev.event_type.as_str(),
+                "8-K" | "8-K/A" | "10-K" | "10-K/A" | "news"
+            )
+        {
             let source_text = build_ripple_source_text(db, ev);
             if !source_text.trim().is_empty() {
                 let source_vec = match embedder.embed(&source_text) {
@@ -2083,7 +2321,13 @@ fn generate_signals_and_ripples(
                         latent::local_embed(&source_text)
                     }
                 };
-                match db.find_ripple_targets(&ticker_upper, &source_text, &source_vec, 0.15, 3) {
+                match db.find_ripple_targets(
+                    &ticker_upper,
+                    &source_text,
+                    &source_vec,
+                    RIPPLE_MIN_SCORE,
+                    RIPPLE_LIMIT_PER_EVENT,
+                ) {
                     Ok(targets) => {
                         let source_citation = SignalEvidence {
                             chunk_id: None,
@@ -2097,6 +2341,9 @@ fn generate_signals_and_ripples(
                             similarity: 1.0,
                         };
                         for hit in targets {
+                            if ripple_emitted >= MAX_RIPPLE_SIGNALS_PER_RUN {
+                                break;
+                            }
                             if hit.evidence.is_empty() {
                                 continue;
                             }
@@ -2185,6 +2432,11 @@ fn generate_signals_and_ripples(
     if !signals.is_empty() {
         db.upsert_signals(&signals)?;
     }
+    db.prune_stale_unread_signals(
+        &active_strike_ids,
+        &active_discovery_ids,
+        MAX_UNREAD_RIPPLES_TOTAL,
+    )?;
     Ok((count, ripple_emitted))
 }
 
@@ -2573,7 +2825,19 @@ mod tests {
             Some(-4),
             vec![],
         );
-        seed_universe(&paths, vec![adsk, ptc]);
+        let cprt = make_universe_row(
+            "CPRT",
+            "0000900075",
+            "Copart Inc",
+            "Online vehicle auctions",
+            32,
+            11,
+            true,
+            true,
+            Some(-2),
+            vec![],
+        );
+        seed_universe(&paths, vec![adsk, ptc, cprt]);
 
         // Place submissions.zip under a CURRENT.json generation
         let gen_id = "gen-00000000000000000001-1795000000000-1";
@@ -2664,10 +2928,17 @@ mod tests {
                 .iter()
                 .any(|s| s.kind == SignalKind::Discovery && s.primary_ticker == "PTC")
         );
+        // Non-watchlist company PTC must NEVER emit a mechanical Strike signal even when dist = -4%.
+        assert!(
+            !inbox
+                .iter()
+                .any(|s| s.kind == SignalKind::Strike && s.primary_ticker == "PTC")
+        );
+        // Watchlist Watch/Core company CPRT emits a Strike signal when dist = -2%.
         assert!(
             inbox
                 .iter()
-                .any(|s| s.kind == SignalKind::Strike && s.primary_ticker == "PTC")
+                .any(|s| s.kind == SignalKind::Strike && s.primary_ticker == "CPRT")
         );
         assert!(
             inbox
@@ -2942,6 +3213,118 @@ mod tests {
         assert_eq!(rep.flagship_tokens_used, 0);
         assert_eq!(rep.candidate_pool_count, 0);
         assert_eq!(rep.signals_created_or_updated, 0);
+        let _ = fs::remove_dir_all(paths.repo_root);
+    }
+
+    #[test]
+    fn prune_stale_unread_signals_removes_non_circle_strikes_and_caps_ripples_while_keeping_triage()
+    {
+        let paths = temp_paths("prune_stale_signals");
+        let cprt = make_universe_row(
+            "CPRT",
+            "0000900075",
+            "Copart Inc",
+            "Online vehicle auctions",
+            32,
+            11,
+            true,
+            true,
+            Some(-2),
+            vec![],
+        );
+        let par = make_universe_row(
+            "PARR",
+            "0000821483",
+            "Par Pacific Holdings",
+            "Petroleum refining",
+            12,
+            4,
+            false,
+            true,
+            Some(-82),
+            vec![],
+        );
+        seed_universe(&paths, vec![cprt, par]);
+
+        let now_ms = 1_795_500_000_000u64;
+        let db = LakeDb::open(&paths).unwrap();
+        let mut stale_seed = vec![
+            SignalInboxRow {
+                signal_id: "strike:PARR".to_owned(),
+                kind: SignalKind::Strike,
+                score: 99.3,
+                primary_ticker: "PARR".to_owned(),
+                tickers: vec!["PARR".to_owned()],
+                title: "PARR 进入击球区".to_owned(),
+                summary: "stale non-circle strike".to_owned(),
+                evidence: Vec::new(),
+                status: SignalStatus::Unread,
+                event_id: None,
+                created_at_ms: now_ms,
+                updated_at_ms: now_ms,
+            },
+            SignalInboxRow {
+                signal_id: "strike:OLDWATCH".to_owned(),
+                kind: SignalKind::Strike,
+                score: 90.0,
+                primary_ticker: "OLD".to_owned(),
+                tickers: vec!["OLD".to_owned()],
+                title: "OLD triaged".to_owned(),
+                summary: "must keep".to_owned(),
+                evidence: Vec::new(),
+                status: SignalStatus::Watch,
+                event_id: None,
+                created_at_ms: now_ms,
+                updated_at_ms: now_ms,
+            },
+        ];
+        for idx in 0..35usize {
+            stale_seed.push(SignalInboxRow {
+                signal_id: format!("ripple:ev{idx}:CPRT"),
+                kind: SignalKind::Ripple,
+                score: 60.0 + (idx as f64) * 0.5,
+                primary_ticker: "CPRT".to_owned(),
+                tickers: vec!["CPRT".to_owned()],
+                title: format!("ripple {idx}"),
+                summary: "ripple".to_owned(),
+                evidence: Vec::new(),
+                status: SignalStatus::Unread,
+                event_id: None,
+                created_at_ms: now_ms,
+                updated_at_ms: now_ms + idx as u64,
+            });
+        }
+        db.upsert_signals(&stale_seed).unwrap();
+        drop(db);
+
+        let opts = EventCatchupOptions {
+            bootstrap: false,
+            skip_sec: true,
+            skip_news: true,
+            skip_docs: true,
+            max_ciks: 0,
+            max_docs: 0,
+            max_news_tickers: 0,
+        };
+        let env = CatchupEnv {
+            sec_rate_limit_ms: 0,
+            news_rate_limit_ms: 0,
+            now_ms: now_ms + 10_000,
+            ..CatchupEnv::live(now_ms + 10_000)
+        };
+        catchup_events_with_env(&paths, &opts, &env, |_| {}).unwrap();
+
+        let db2 = LakeDb::open(&paths).unwrap();
+        let all_signals = db2.list_inbox_signals(None, None, 200).unwrap();
+        assert!(!all_signals.iter().any(|s| s.signal_id == "strike:PARR"));
+        assert!(all_signals.iter().any(|s| s.signal_id == "strike:CPRT"));
+        assert!(all_signals.iter().any(|s| s.signal_id == "strike:OLDWATCH"));
+        let unread_ripples = all_signals
+            .iter()
+            .filter(|s| s.kind == SignalKind::Ripple && s.status == SignalStatus::Unread)
+            .count();
+        assert_eq!(unread_ripples, MAX_UNREAD_RIPPLES_TOTAL);
+
         let _ = fs::remove_dir_all(paths.repo_root);
     }
 }

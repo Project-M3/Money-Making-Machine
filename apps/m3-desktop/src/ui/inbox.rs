@@ -1,13 +1,17 @@
 use super::{
-    FontRoles, MungerWorkbench, NavView, components::*, format::*, theme::*,
-    universe::UniverseSearchMode,
+    FontRoles, MungerWorkbench, NavView,
+    components::*,
+    format::*,
+    theme::*,
+    universe::{UniverseSearchMode, format_sic_line},
 };
 use crate::{
-    events::{EventCatchupOptions, catchup_events_with_progress},
-    lake::{LakeDb, UniverseFilter},
+    events::{EventCatchupOptions, catchup_events_with_progress, fetch_company_10k_profile},
+    i18n::UiLang,
+    lake::{LakeDb, UniverseDrawerDetails, UniverseFilter},
     lake_l1::{SignalEvidence, SignalInboxRow, SignalKind, SignalStatus},
     lake_l2::BudgetStatusReport,
-    model::Bucket,
+    model::{Bucket, WarningSeverity},
     store::{self, WorkspacePaths},
 };
 use gpui::{Context, div, prelude::*, px, rgb, rgba};
@@ -36,7 +40,7 @@ impl InboxFilter {
         match self {
             Self::Unread => lang.t("未读", "Unread"),
             Self::All => lang.t("全部", "All"),
-            Self::Discovery => lang.t("新浮现", "Discovery"),
+            Self::Discovery => lang.t("量化候选", "Quant Screen"),
             Self::Ripple => lang.t("隐空间传导", "Ripple"),
             Self::StrikeAndRedFlag => lang.t("击球与红灯", "Strike & Red"),
             Self::Archived => lang.t("已归档", "Archived"),
@@ -139,7 +143,12 @@ pub fn signal_kind_badge_for(
     lang: crate::i18n::UiLang,
 ) -> (&'static str, u32, u32, u32) {
     match kind {
-        SignalKind::Discovery => (lang.t("新浮现", "Discovery"), SKY_FG, SKY_BG, SKY_BORDER),
+        SignalKind::Discovery => (
+            lang.t("量化候选", "Quant Screen"),
+            SKY_FG,
+            SKY_BG,
+            SKY_BORDER,
+        ),
         SignalKind::Ripple => (
             lang.t("隐空间传导", "Ripple"),
             VIOLET_FG,
@@ -419,6 +428,145 @@ impl MungerWorkbench {
         dirty
     }
 
+    /// Starts a zero-LLM background SEC 10-K Item 1/1A/7 fetch & local index for one company.
+    pub(super) fn start_fetch_company_10k_profile(
+        &mut self,
+        ticker: &str,
+        cik: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let l = self.lang;
+        if self.universe_syncing || self.inbox_catching_up || self.syncing {
+            self.banner = Some((
+                l.t(
+                    "后台同步或事件追平进行中，请稍候再拉取 10-K 原文",
+                    "Background sync active — try fetching 10-K in a moment",
+                )
+                .into(),
+                false,
+            ));
+            cx.notify();
+            return;
+        }
+        if self.inbox_profile_fetching_ticker.is_some() {
+            return;
+        }
+        let upper = ticker.trim().to_ascii_uppercase();
+        let cik_owned = cik.trim().to_owned();
+        if upper.is_empty() || cik_owned.is_empty() {
+            return;
+        }
+        self.inbox_profile_fetching_ticker = Some(upper.clone());
+        let (tx, rx) = mpsc::channel();
+        self.inbox_profile_fetch_rx = Some(rx);
+        let root = self.paths.repo_root.clone();
+        let ticker_thread = upper.clone();
+        std::thread::spawn(move || {
+            let paths = WorkspacePaths::from_root(root);
+            let res = fetch_company_10k_profile(&paths, &ticker_thread, &cik_owned)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(res);
+        });
+        self.banner = Some((
+            match l {
+                UiLang::Zh => format!("正在从 SEC EDGAR 拉取 {upper} 最新 10-K 业务简介…"),
+                UiLang::En => format!("Fetching {upper} latest 10-K business profile from SEC…"),
+            },
+            false,
+        ));
+        cx.notify();
+    }
+
+    /// Non-blocking poll for single-company 10-K business profile fetch completion.
+    pub(super) fn poll_inbox_profile_fetch(&mut self) -> bool {
+        let Some(rx) = self.inbox_profile_fetch_rx.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(Ok(rep)) => {
+                self.inbox_profile_fetching_ticker = None;
+                self.inbox_profile_fetch_rx = None;
+                self.reload_inbox_from_lake();
+                self.reload_inbox_selection_details();
+                self.banner = Some((
+                    match self.lang {
+                        UiLang::Zh => format!(
+                            "已拉取 {} 10-K 业务简介（{} 个文本片段，0 LLM Token）",
+                            rep.ticker, rep.chunks_indexed
+                        ),
+                        UiLang::En => format!(
+                            "Fetched {} 10-K business profile ({} chunks, 0 LLM tokens)",
+                            rep.ticker, rep.chunks_indexed
+                        ),
+                    },
+                    false,
+                ));
+                true
+            }
+            Ok(Err(err)) => {
+                self.inbox_profile_fetching_ticker = None;
+                self.inbox_profile_fetch_rx = None;
+                self.banner = Some((
+                    match self.lang {
+                        UiLang::Zh => format!("拉取 10-K 业务简介失败：{err}"),
+                        UiLang::En => format!("Failed to fetch 10-K profile: {err}"),
+                    },
+                    true,
+                ));
+                true
+            }
+            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.inbox_profile_fetching_ticker = None;
+                self.inbox_profile_fetch_rx = None;
+                true
+            }
+        }
+    }
+
+    /// Reloads L0/L1 financial snapshot and SEC business profile excerpts for the selected signal.
+    pub(super) fn reload_inbox_selection_details(&mut self) {
+        let Some(ticker) = self
+            .active_inbox_signal()
+            .map(|s| s.primary_ticker.trim().to_ascii_uppercase())
+            .filter(|t| !t.is_empty())
+        else {
+            self.inbox_selected_details = None;
+            self.inbox_selected_business_chunks.clear();
+            return;
+        };
+        if self.universe_syncing || self.inbox_catching_up {
+            if !self
+                .inbox_selected_details
+                .as_ref()
+                .is_some_and(|d| d.row.ticker.eq_ignore_ascii_case(&ticker))
+            {
+                self.inbox_selected_details = None;
+                self.inbox_selected_business_chunks.clear();
+            }
+            return;
+        }
+        match LakeDb::open_read_only_if_exists(&self.paths) {
+            Ok(Some(db)) => match db.load_drawer_details_by_ticker(&ticker, 5) {
+                Ok(Some(details)) => {
+                    let chunks = db
+                        .load_company_business_chunks(&details.row.cik, 6)
+                        .unwrap_or_default();
+                    self.inbox_selected_details = Some(details);
+                    self.inbox_selected_business_chunks = chunks;
+                }
+                Ok(None) | Err(_) => {
+                    self.inbox_selected_details = None;
+                    self.inbox_selected_business_chunks.clear();
+                }
+            },
+            Ok(None) | Err(_) => {
+                self.inbox_selected_details = None;
+                self.inbox_selected_business_chunks.clear();
+            }
+        }
+    }
+
     /// Reloads L1 summary & inbox signals from `m3.duckdb` in read-only mode.
     pub(super) fn reload_inbox_from_lake(&mut self) {
         if self.universe_syncing {
@@ -477,6 +625,7 @@ impl MungerWorkbench {
             self.inbox_state.cursor_index = 0;
             self.inbox_state.selected_signal_id = None;
         }
+        self.reload_inbox_selection_details();
     }
 
     pub(super) fn set_inbox_filter(&mut self, filter: InboxFilter) {
@@ -496,6 +645,7 @@ impl MungerWorkbench {
         ) {
             self.inbox_state.cursor_index = idx;
             self.inbox_state.selected_signal_id = Some(id);
+            self.reload_inbox_selection_details();
         }
     }
 
@@ -1042,6 +1192,7 @@ impl MungerWorkbench {
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.inbox_state.cursor_index = idx;
                 this.inbox_state.selected_signal_id = Some(sig_id.clone());
+                this.reload_inbox_selection_details();
                 cx.notify();
             }))
             .flex()
@@ -1159,10 +1310,43 @@ impl MungerWorkbench {
         let id_archive = sig.signal_id.clone();
         let id_unread = sig.signal_id.clone();
 
-        let in_watchlist = self
+        let report_opt = self
             .reports
             .iter()
-            .any(|r| r.ticker.eq_ignore_ascii_case(&sig.primary_ticker));
+            .find(|r| r.ticker.eq_ignore_ascii_case(&sig.primary_ticker));
+        let in_watchlist = report_opt.is_some();
+        let details_opt = self
+            .inbox_selected_details
+            .as_ref()
+            .filter(|d| d.row.ticker.eq_ignore_ascii_case(&sig.primary_ticker));
+
+        let (circle_badge_label, cb_fg, cb_bg, cb_br) = if let Some(rep) = report_opt {
+            let (fg, bg, br) = bucket_colors(rep.bucket);
+            (
+                match l {
+                    UiLang::Zh => format!("能力圈 · {}", rep.bucket.code()),
+                    UiLang::En => format!("Circle · {}", rep.bucket.code()),
+                },
+                fg,
+                bg,
+                br,
+            )
+        } else if let Some(det) = details_opt {
+            let lbl = match (l, det.row.sic) {
+                (UiLang::Zh, Some(sic)) => format!("未研究行业 · SIC {sic}"),
+                (UiLang::En, Some(sic)) => format!("Unstudied · SIC {sic}"),
+                (UiLang::Zh, None) => "未研究行业".into(),
+                (UiLang::En, None) => "Unstudied Industry".into(),
+            };
+            (lbl, SLATE_FG, SLATE_BG, SLATE_BORDER)
+        } else {
+            (
+                l.t("未入能力圈", "Outside Circle").into(),
+                SLATE_FG,
+                SLATE_BG,
+                SLATE_BORDER,
+            )
+        };
 
         div()
             .flex()
@@ -1194,6 +1378,7 @@ impl MungerWorkbench {
                                         &self.fonts,
                                     ))
                                     .child(badge(st_label.into(), st_fg, st_bg, st_br, &self.fonts))
+                                    .child(badge(circle_badge_label, cb_fg, cb_bg, cb_br, &self.fonts))
                                     .child(
                                         div()
                                             .font_family(self.fonts.mono_num.clone())
@@ -1276,6 +1461,27 @@ impl MungerWorkbench {
                                 &self.fonts,
                                 cx.listener(move |this, _, _, cx| {
                                     this.open_inbox_signal_target(&ticker_open, cx);
+                                }),
+                            ))
+                            .child(Self::inbox_action_button(
+                                "inbox-act-industry",
+                                l.t("研究所在行业", "Research Industry"),
+                                "⌘4",
+                                false,
+                                (SKY_FG, SKY_BG, SKY_BORDER),
+                                &self.fonts,
+                                cx.listener(|this, _, _, cx| {
+                                    this.switch_view(NavView::Journal);
+                                    this.banner = Some((
+                                        this.lang
+                                            .t(
+                                                "已打开主题图谱（即将升级为独立「行业研究」工作台）",
+                                                "Opened Themes view (upgrading to Industry Research Studio next)",
+                                            )
+                                            .into(),
+                                        false,
+                                    ));
+                                    cx.notify();
                                 }),
                             ))
                             .child(Self::inbox_action_button(
@@ -1367,6 +1573,10 @@ impl MungerWorkbench {
                             }),
                     ),
             )
+            .child(self.render_inbox_business_profile_card(sig, details_opt, cx))
+            .when_some(details_opt, |d, det| {
+                d.child(self.render_inbox_financial_snapshot_card(det, in_watchlist, cx))
+            })
             .child(
                 div()
                     .flex()
@@ -1399,6 +1609,542 @@ impl MungerWorkbench {
                         self.render_evidence_card(ev, &sig.signal_id, e_idx, cx)
                     })),
             )
+    }
+
+    fn render_inbox_business_profile_card(
+        &self,
+        sig: &SignalInboxRow,
+        details_opt: Option<&UniverseDrawerDetails>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let l = self.lang;
+        let ticker_upper = sig.primary_ticker.trim().to_ascii_uppercase();
+        let narrative_chunks: Vec<&SignalEvidence> = self
+            .inbox_selected_business_chunks
+            .iter()
+            .filter(|c| {
+                c.ticker.eq_ignore_ascii_case(&ticker_upper)
+                    && !c.section.eq_ignore_ascii_case("company_profile")
+            })
+            .collect();
+
+        let item1_chunks: Vec<&&SignalEvidence> = narrative_chunks
+            .iter()
+            .filter(|c| c.section == "item_1")
+            .take(2)
+            .collect();
+        let risk_chunk = narrative_chunks
+            .iter()
+            .find(|c| c.section == "item_1a" || c.section == "item_7")
+            .copied();
+
+        let cik_opt = details_opt.map(|d| d.row.cik.clone());
+        let sic_line = details_opt.map(|d| format_sic_line(&d.row, l));
+        let is_fetching = self
+            .inbox_profile_fetching_ticker
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case(&ticker_upper));
+        let id_alan = sig.signal_id.clone();
+
+        let filing_tag = narrative_chunks
+            .first()
+            .and_then(|c| c.filing_date.as_deref())
+            .map(|d| format!("SEC 10-K · {d}"))
+            .unwrap_or_else(|| l.t("公司业务与行业档案", "BUSINESS & SECTOR").into());
+
+        let mut card = card_shell()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(section_header(
+                l.t(
+                    "公司业务简介 · Business Profile",
+                    "Business Profile · 10-K Item 1",
+                ),
+                filing_tag,
+                &self.fonts,
+            ));
+
+        if let Some(sic) = sic_line {
+            card = card.child(
+                div()
+                    .font_family(self.fonts.mono_term.clone())
+                    .text_size(px(11.))
+                    .text_color(rgb(INK_SECONDARY))
+                    .child(sic),
+            );
+        }
+
+        if !item1_chunks.is_empty() || risk_chunk.is_some() {
+            for ch in item1_chunks {
+                card = card.child(
+                    div()
+                        .p_3()
+                        .rounded_md()
+                        .bg(rgb(BG_VIEWPORT))
+                        .border_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .font_family(self.fonts.mono_term.clone())
+                                .text_size(px(10.))
+                                .text_color(rgb(SKY_FG))
+                                .child(ch.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .line_height(px(20.))
+                                .text_color(rgb(INK_PRIMARY))
+                                .child(ch.quote.clone()),
+                        ),
+                );
+            }
+            if let Some(rc) = risk_chunk {
+                card = card.child(
+                    div()
+                        .p_3()
+                        .rounded_md()
+                        .bg(rgb(BG_SHELL))
+                        .border_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .font_family(self.fonts.mono_term.clone())
+                                .text_size(px(10.))
+                                .text_color(rgb(GOLD_FG))
+                                .child(rc.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .font_family(self.fonts.ui.clone())
+                                .text_xs()
+                                .line_height(px(19.))
+                                .text_color(rgb(INK_SECONDARY))
+                                .child(rc.quote.clone()),
+                        ),
+                );
+            }
+            return card;
+        }
+
+        card.child(
+            div()
+                .font_family(self.fonts.ui.clone())
+                .text_xs()
+                .line_height(px(19.))
+                .text_color(rgb(INK_MUTED))
+                .child(l.t(
+                    "本地仅缓存了代码与行业元数据，尚未下载最新 SEC 10-K 业务原文。可一键零 LLM 拉取 10-K Item 1 业务说明与核心风险，或直接派 Alan 快速梳理。",
+                    "Only registration metadata is indexed locally; latest 10-K Item 1 business text has not been fetched yet. Pull 10-K sections below (0 LLM tokens) or ask Alan.",
+                )),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap_2()
+                .when_some(cik_opt, |d, cik_val| {
+                    let tk_fetch = ticker_upper.clone();
+                    d.child(
+                        div()
+                            .id("inbox-fetch-10k-btn")
+                            .px_3()
+                            .py_1p5()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .bg(rgba(SKY_BG))
+                            .border_1()
+                            .border_color(rgba(SKY_BORDER))
+                            .hover(|s| s.bg(rgb(BG_HOVER)))
+                            .font_family(self.fonts.ui.clone())
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(SKY_FG))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.start_fetch_company_10k_profile(&tk_fetch, &cik_val, cx);
+                            }))
+                            .child(if is_fetching {
+                                l.t("正在拉取 10-K 业务原文…", "Fetching 10-K Profile…")
+                            } else {
+                                l.t(
+                                    "拉取 10-K 业务简介 (0 LLM)",
+                                    "Fetch 10-K Profile (0 LLM)",
+                                )
+                            }),
+                    )
+                })
+                .child(
+                    div()
+                        .id("inbox-profile-ask-alan")
+                        .px_3()
+                        .py_1p5()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .bg(rgba(VIOLET_BG))
+                        .border_1()
+                        .border_color(rgba(VIOLET_BORDER))
+                        .hover(|s| s.bg(rgb(BG_HOVER)))
+                        .font_family(self.fonts.ui.clone())
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(rgb(VIOLET_FG))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.triage_inbox_signal(
+                                &id_alan,
+                                SignalStatus::Researching,
+                                false,
+                                true,
+                                cx,
+                            );
+                        }))
+                        .child(l.t("派 Alan 快速解读", "Ask Alan")),
+                ),
+        )
+    }
+
+    fn render_inbox_financial_snapshot_card(
+        &self,
+        details: &UniverseDrawerDetails,
+        in_watchlist: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let l = self.lang;
+        let row = &details.row;
+        let roic_txt = row
+            .roic_5y_avg_pct
+            .map(|v| format!("{:.1}%", v.round_dp(1)))
+            .unwrap_or_else(|| "—".into());
+        let gm_txt = row
+            .gross_margin_5y_avg_pct
+            .map(|v| format!("{:.1}%", v.round_dp(1)))
+            .unwrap_or_else(|| "—".into());
+        let (fcf_txt, fcf_pol) = fmt_pct_clean(row.strict_fcf_yield_pct, false);
+        let (sbc_txt, _) = fmt_pct_clean(row.sbc_to_ocf_pct, false);
+        let (share_txt, share_pol) = fmt_pct_clean(row.share_change_3y_pct, true);
+        let nd_txt = row
+            .net_debt_to_oe
+            .map(|v| format!("{v:.2}x"))
+            .unwrap_or_else(|| "—".into());
+
+        let kpi_tile = |label: &str, val: String, val_col: u32| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .p_2p5()
+                .rounded_md()
+                .bg(rgb(BG_VIEWPORT))
+                .border_1()
+                .border_color(rgb(BORDER_HAIRLINE))
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(
+                    div()
+                        .font_family(self.fonts.ui.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(INK_MUTED))
+                        .child(label.to_owned()),
+                )
+                .child(
+                    div()
+                        .font_family(self.fonts.mono_num.clone())
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(rgb(val_col))
+                        .truncate()
+                        .child(val),
+                )
+        };
+
+        let mut card = card_shell()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(section_header(
+                l.t(
+                    "确定性 5Y 财务快照 & 同业对照",
+                    "Deterministic 5Y Financials & Peers",
+                ),
+                "DUCKDB L0 · 0 LLM TOKEN".into(),
+                &self.fonts,
+            ));
+
+        if !in_watchlist {
+            card = card.child(
+                div()
+                    .px_3()
+                    .py_1p5()
+                    .rounded_sm()
+                    .bg(rgb(BG_SHELL))
+                    .border_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .font_family(self.fonts.ui.clone())
+                    .text_size(px(11.))
+                    .text_color(rgb(INK_MUTED))
+                    .child(l.t(
+                        "未入能力圈 · 仅展示历史确定性财务与同业分位；认可行业与商业模式后再入观察池并设定个人击球倍数。",
+                        "Outside Circle · showing historical deterministic metrics and peers only; add to Watch and set personal multiples after understanding the business.",
+                    )),
+            );
+        }
+
+        card = card
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(kpi_tile(
+                        l.t("最新股价", "Price"),
+                        fmt_price(row.latest_price, "USD"),
+                        INK_HERO,
+                    ))
+                    .child(kpi_tile("5Y ROIC", roic_txt, EMERALD_FG))
+                    .child(kpi_tile(
+                        l.t("严苛 FCF%", "Strict FCF%"),
+                        fcf_txt,
+                        if fcf_pol < 0 { CORAL_FG } else { INK_PRIMARY },
+                    ))
+                    .child(kpi_tile(
+                        l.t("5Y 毛利率", "5Y Gross Margin"),
+                        gm_txt,
+                        INK_PRIMARY,
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(kpi_tile("SBC / OCF", sbc_txt, INK_SECONDARY))
+                    .child(kpi_tile(
+                        l.t("3Y 股本变化", "3Y Shrs Δ"),
+                        share_txt,
+                        share_delta_color(row.share_change_3y_pct, share_pol),
+                    ))
+                    .child(kpi_tile(
+                        l.t("净负债 / OE", "Net Debt / OE"),
+                        nd_txt,
+                        INK_SECONDARY,
+                    ))
+                    .child(kpi_tile(
+                        l.t("质量综合分", "Quality Score"),
+                        format!("{:.1}", row.quality_score),
+                        SKY_FG,
+                    )),
+            );
+
+        if in_watchlist && (row.strike_price.is_some() || row.distance_to_strike_pct.is_some()) {
+            let (dist_txt, _) = fmt_pct_clean(row.distance_to_strike_pct, true);
+            let dist_col = if row
+                .distance_to_strike_pct
+                .is_some_and(|d| d <= Decimal::ZERO)
+            {
+                EMERALD_FG
+            } else {
+                GOLD_FG
+            };
+            card = card.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(kpi_tile(
+                        l.t("个人击球价", "Strike Price"),
+                        fmt_price(row.strike_price, "USD"),
+                        INK_HERO,
+                    ))
+                    .child(kpi_tile(
+                        l.t("距击球价", "Dist. to Strike"),
+                        dist_txt,
+                        dist_col,
+                    )),
+            );
+        }
+
+        if !details.annuals.is_empty() {
+            let recent: Vec<_> = details.annuals.iter().rev().take(5).collect();
+            let recent_len = recent.len();
+            let mut tbl = div()
+                .rounded_md()
+                .bg(rgb(BG_VIEWPORT))
+                .border_1()
+                .border_color(rgb(BORDER_HAIRLINE))
+                .px_3()
+                .py_1p5()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .font_family(self.fonts.mono_term.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(INK_MUTED))
+                        .child(div().w(px(82.)).flex_shrink_0().child(l.t("财年", "FY")))
+                        .child(div().flex_1().text_right().child(l.t("营收", "Revenue")))
+                        .child(div().w(px(64.)).text_right().child(l.t("毛利%", "GM%")))
+                        .child(div().w(px(64.)).text_right().child("ROIC"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_right()
+                                .child(l.t("严苛OE", "Strict OE")),
+                        ),
+                );
+            for (idx, a) in recent.into_iter().enumerate() {
+                let gm = a
+                    .gross_margin_pct
+                    .map(|v| format!("{:.1}%", v.round_dp(1)))
+                    .unwrap_or_else(|| "—".into());
+                let roic = a
+                    .roic_pct
+                    .map(|v| format!("{:.1}%", v.round_dp(1)))
+                    .unwrap_or_else(|| "—".into());
+                let oe_col = match a.strict_owner_earnings {
+                    Some(v) if v > Decimal::ZERO => EMERALD_FG,
+                    Some(_) => CORAL_FG,
+                    None => INK_MUTED,
+                };
+                tbl = tbl.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .py_1()
+                        .when(idx + 1 < recent_len, |d| {
+                            d.border_b_1().border_color(rgb(BORDER_HAIRLINE))
+                        })
+                        .font_family(self.fonts.mono_num.clone())
+                        .text_size(px(11.))
+                        .child(
+                            div()
+                                .w(px(82.))
+                                .flex_shrink_0()
+                                .text_color(rgb(INK_SECONDARY))
+                                .child(a.period_end.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_right()
+                                .text_color(rgb(INK_PRIMARY))
+                                .child(fmt_money_compact(a.revenue, "USD")),
+                        )
+                        .child(
+                            div()
+                                .w(px(64.))
+                                .text_right()
+                                .text_color(rgb(INK_PRIMARY))
+                                .child(gm),
+                        )
+                        .child(
+                            div()
+                                .w(px(64.))
+                                .text_right()
+                                .text_color(rgb(EMERALD_FG))
+                                .child(roic),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_right()
+                                .text_color(rgb(oe_col))
+                                .child(fmt_money_compact_opt(a.strict_owner_earnings, "USD")),
+                        ),
+                );
+            }
+            card = card.child(tbl);
+        }
+
+        if let Some(peers) = details.peers.as_ref().filter(|p| p.peer_count > 1) {
+            let roic_p = peers
+                .roic_percentile
+                .map(|p| format!("P{p:.0}"))
+                .unwrap_or_else(|| "—".into());
+            let gm_p = peers
+                .gross_margin_percentile
+                .map(|p| format!("P{p:.0}"))
+                .unwrap_or_else(|| "—".into());
+            let fcf_p = peers
+                .strict_fcf_yield_percentile
+                .map(|p| format!("P{p:.0}"))
+                .unwrap_or_else(|| "—".into());
+
+            card = card.child(
+                div()
+                    .pt_1()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        div()
+                            .font_family(self.fonts.mono_term.clone())
+                            .text_size(px(11.))
+                            .text_color(rgb(SKY_FG))
+                            .child(match l {
+                                UiLang::Zh => format!(
+                                    "{} · {} 家同业分位: ROIC {roic_p} · 毛利 {gm_p} · FCF {fcf_p}",
+                                    peers.sic_group, peers.peer_count
+                                ),
+                                UiLang::En => format!(
+                                    "{} · {} peers: ROIC {roic_p} · GM {gm_p} · FCF {fcf_p}",
+                                    peers.sic_group, peers.peer_count
+                                ),
+                            }),
+                    )
+                    .when(!peers.top_peers.is_empty(), |d| {
+                        d.child(div().flex().items_center().flex_wrap().gap_1p5().children(
+                            peers.top_peers.iter().take(4).enumerate().map(|(i, p)| {
+                                let jump = p.ticker.clone();
+                                div()
+                                    .id(("inbox-peer-chip", i))
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_xs()
+                                    .bg(rgb(BG_WELL))
+                                    .border_1()
+                                    .border_color(rgb(BORDER_SUBTLE))
+                                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                                    .cursor_pointer()
+                                    .font_family(self.fonts.mono_num.clone())
+                                    .text_size(px(10.))
+                                    .text_color(rgb(INK_SECONDARY))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.open_inbox_signal_target(&jump, cx);
+                                    }))
+                                    .child(p.ticker.clone())
+                            }),
+                        ))
+                    }),
+            );
+        }
+
+        let warnings = row.parsed_warnings();
+        if !warnings.is_empty() {
+            card = card.child(div().flex().flex_wrap().gap_1p5().children(
+                warnings.into_iter().map(|w| {
+                    let (fg, bg, br) = match w.severity {
+                        WarningSeverity::Red => (CORAL_FG, CORAL_BG, CORAL_BORDER),
+                        WarningSeverity::Amber => (GOLD_FG, GOLD_BG, GOLD_BORDER),
+                        WarningSeverity::Info => (SLATE_FG, SLATE_BG, SLATE_BORDER),
+                    };
+                    badge(w.title, fg, bg, br, &self.fonts)
+                }),
+            ));
+        }
+
+        card
     }
 
     fn inbox_action_button(

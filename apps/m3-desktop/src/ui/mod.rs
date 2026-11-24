@@ -25,10 +25,10 @@ use crate::{
     alan_interrogator::{AcmeEvidenceToken, M3InterrogatorHandle, TuringTapeEntry},
     app_config,
     budget::{self, BudgetConfig, ThemesFile},
-    events::EventCatchupReport,
+    events::{CompanyProfileFetchReport, EventCatchupReport},
     i18n::UiLang,
-    lake::{LakeAnnualRow, PeerComparison, UniverseRow, UniverseSummary},
-    lake_l1::{L1Summary, SignalInboxRow, SignalStatus, SimilarCompanyHit},
+    lake::{LakeAnnualRow, PeerComparison, UniverseDrawerDetails, UniverseRow, UniverseSummary},
+    lake_l1::{L1Summary, SignalEvidence, SignalInboxRow, SignalStatus, SimilarCompanyHit},
     lake_l2::{BudgetStatusReport, ResearchRunRow},
     model::{
         Bucket, DecisionJournal, Dossier, MungerReport, PriceHistorySnapshot, PriceSnapshot,
@@ -267,6 +267,10 @@ pub struct MungerWorkbench {
     inbox_state: InboxViewState,
     inbox_summary: Option<L1Summary>,
     inbox_signals: Vec<SignalInboxRow>,
+    inbox_selected_details: Option<UniverseDrawerDetails>,
+    inbox_selected_business_chunks: Vec<SignalEvidence>,
+    inbox_profile_fetching_ticker: Option<String>,
+    inbox_profile_fetch_rx: Option<mpsc::Receiver<Result<CompanyProfileFetchReport, String>>>,
     inbox_error: Option<String>,
     inbox_catching_up: bool,
     inbox_catchup_progress: Option<String>,
@@ -403,6 +407,10 @@ impl MungerWorkbench {
             inbox_state: InboxViewState::default(),
             inbox_summary: None,
             inbox_signals: Vec::new(),
+            inbox_selected_details: None,
+            inbox_selected_business_chunks: Vec::new(),
+            inbox_profile_fetching_ticker: None,
+            inbox_profile_fetch_rx: None,
             inbox_error: None,
             inbox_catching_up: false,
             inbox_catchup_progress: None,
@@ -998,6 +1006,9 @@ impl MungerWorkbench {
     pub fn poll_background_sync(&mut self) -> bool {
         let mut dirty = self.poll_universe_sync();
         if self.poll_l1_catchup() {
+            dirty = true;
+        }
+        if self.poll_inbox_profile_fetch() {
             dirty = true;
         }
         if self.poll_themes_sync() {

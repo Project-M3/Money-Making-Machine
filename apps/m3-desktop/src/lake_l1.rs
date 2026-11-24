@@ -1,4 +1,5 @@
 use crate::{
+    edgar,
     lake::{
         LakeDb, ReadSnapshotTx, UNIVERSE_SELECT_COLS, UniverseRow, escape_sql_literal,
         read_universe_row, round_for_sql,
@@ -382,7 +383,7 @@ impl LakeDb {
         Ok(())
     }
 
-    fn table_exists(&self, table_name: &str) -> Result<bool> {
+    pub(crate) fn table_exists(&self, table_name: &str) -> Result<bool> {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
             [table_name],
@@ -814,6 +815,119 @@ impl LakeDb {
             params![status.as_str(), updated_at_ms, signal_id],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Removes stale `unread` Strike/Discovery rows no longer emitted by the current rules and
+    /// caps `unread` Ripple rows to `max_unread_ripples`, while preserving all user-triaged rows.
+    pub fn prune_stale_unread_signals(
+        &self,
+        active_strike_ids: &HashSet<String>,
+        active_discovery_ids: &HashSet<String>,
+        max_unread_ripples: usize,
+    ) -> Result<usize> {
+        if !self.table_exists("signal_inbox")? {
+            return Ok(0);
+        }
+        let tx = WriteTx::begin(&self.conn)?;
+        let mut to_delete: Vec<String> = Vec::new();
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT signal_id, LOWER(kind)
+                 FROM signal_inbox
+                 WHERE LOWER(status) = 'unread'
+                   AND (
+                       (LOWER(kind) = 'strike' AND signal_id LIKE 'strike:%')
+                       OR (LOWER(kind) = 'discovery' AND signal_id LIKE 'discovery:%')
+                   )",
+            )?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (sid, kind) = row?;
+                let keep = match kind.as_str() {
+                    "strike" => active_strike_ids.contains(&sid),
+                    "discovery" => active_discovery_ids.contains(&sid),
+                    _ => true,
+                };
+                if !keep {
+                    to_delete.push(sid);
+                }
+            }
+        }
+
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT signal_id
+                 FROM signal_inbox
+                 WHERE LOWER(status) = 'unread' AND LOWER(kind) = 'ripple'
+                 ORDER BY score DESC, updated_at_ms DESC, signal_id ASC",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            for (idx, row) in rows.enumerate() {
+                let sid = row?;
+                if idx >= max_unread_ripples {
+                    to_delete.push(sid);
+                }
+            }
+        }
+
+        let mut deleted = 0usize;
+        if !to_delete.is_empty() {
+            let mut del_stmt = self.conn.prepare(
+                "DELETE FROM signal_inbox WHERE signal_id = ? AND LOWER(status) = 'unread'",
+            )?;
+            for sid in &to_delete {
+                deleted += del_stmt.execute([sid.as_str()])?;
+            }
+        }
+        tx.commit()?;
+        Ok(deleted)
+    }
+
+    /// Loads readable business overview / risk / MD&A excerpts (`item_1`, `item_1a`, `item_7`,
+    /// or fallback `company_profile`) for one company by CIK.
+    pub fn load_company_business_chunks(
+        &self,
+        cik: &str,
+        limit: usize,
+    ) -> Result<Vec<SignalEvidence>> {
+        if limit == 0 || !self.table_exists("doc_chunks")? {
+            return Ok(Vec::new());
+        }
+        let norm_cik = edgar::normalize_cik(cik)?;
+        let _tx = ReadSnapshotTx::begin(&self.conn)?;
+        let sql_limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut stmt = self.conn.prepare(
+            "SELECT chunk_id, ticker, doc_type, section, filing_date, title, content, source_url
+             FROM doc_chunks
+             WHERE cik = ? AND section IN ('item_1', 'item_1a', 'item_7', 'company_profile')
+             ORDER BY
+                CASE section
+                    WHEN 'item_1' THEN 0
+                    WHEN 'item_1a' THEN 1
+                    WHEN 'item_7' THEN 2
+                    ELSE 3
+                END ASC,
+                chunk_id ASC
+             LIMIT ?",
+        )?;
+        let rows = stmt.query_map(params![norm_cik.as_str(), sql_limit], |r| {
+            let raw_content = r.get::<_, String>(6)?;
+            Ok(SignalEvidence {
+                chunk_id: Some(r.get::<_, String>(0)?),
+                ticker: r.get::<_, String>(1)?,
+                doc_type: r.get::<_, String>(2)?,
+                section: r.get::<_, String>(3)?,
+                filing_date: r.get::<_, Option<String>>(4)?,
+                title: r.get::<_, String>(5)?,
+                quote: truncate_clean_chars(&raw_content, 900),
+                source_url: r.get::<_, String>(7)?,
+                similarity: 1.0,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to load company business chunks")
     }
 
     pub fn l1_summary(&self) -> Result<L1Summary> {
@@ -1447,6 +1561,21 @@ fn read_signal_inbox_row(row: &duckdb::Row<'_>) -> duckdb::Result<SignalInboxRow
         created_at_ms,
         updated_at_ms,
     })
+}
+
+fn truncate_clean_chars(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let total = trimmed.chars().count();
+    if total <= max_chars {
+        return trimmed.to_owned();
+    }
+    let prefix: String = trimmed.chars().take(max_chars).collect();
+    if let Some(pos) = prefix.rfind(['.', '。', ';', '\n', ' '])
+        && pos > prefix.len() / 2
+    {
+        return format!("{}…", prefix[..pos].trim_end());
+    }
+    format!("{prefix}…")
 }
 
 #[cfg(test)]

@@ -462,7 +462,7 @@ fn universe_distance_color(row: &UniverseRow, strike_zone_ciks: &HashSet<String>
     }
 }
 
-fn format_sic_line(row: &UniverseRow, lang: UiLang) -> String {
+pub(super) fn format_sic_line(row: &UniverseRow, lang: UiLang) -> String {
     match (
         row.sic,
         row.sic_description
@@ -2784,7 +2784,11 @@ impl MungerWorkbench {
             .child(
                 prop_section("5Y DETERMINISTIC SNAPSHOT", &self.fonts)
                     .child(kv_line(
-                        self.lang.t("现价 / 击球价", "Price / Strike"),
+                        if live_bkt.is_some() {
+                            self.lang.t("现价 / 击球价", "Price / Strike")
+                        } else {
+                            self.lang.t("现价 / 参考价 (18x)", "Price / Ref (18x)")
+                        },
                         format!(
                             "{} / {}",
                             fmt_price(row.latest_price, "USD"),
@@ -2794,7 +2798,11 @@ impl MungerWorkbench {
                         &self.fonts,
                     ))
                     .child(kv_line(
-                        self.lang.t("距击球价", "Dist. to Strike"),
+                        if live_bkt.is_some() {
+                            self.lang.t("距击球价", "Dist. to Strike")
+                        } else {
+                            self.lang.t("距参考价", "Dist. to Ref")
+                        },
                         dist_txt,
                         universe_distance_color(row, &self.universe_strike_zone_ciks),
                         &self.fonts,
