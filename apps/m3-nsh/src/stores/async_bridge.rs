@@ -8,6 +8,53 @@ use nsh_core::prelude::spawn;
 use std::sync::Arc;
 use tokio::sync::{Notify, mpsc, oneshot};
 
+fn format_panic_payload(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        format!("worker panicked: {s}")
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        format!("worker panicked: {s}")
+    } else {
+        "worker panicked".to_owned()
+    }
+}
+
+/// Runs a blocking closure on a plain OS worker thread and delivers the result (or a worker/panic
+/// error) back on the engine thread. Guaranteed to invoke `on_done` once even if spawning fails
+/// or the worker panics.
+pub fn run_blocking_or_err<T, F, C>(work: F, on_done: C)
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+    C: FnOnce(Result<T, String>) + 'static,
+{
+    let (tx, rx) = oneshot::channel::<Result<T, String>>();
+    if let Err(err) = std::thread::Builder::new()
+        .name("m3-worker".into())
+        .spawn(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+                .map_err(format_panic_payload);
+            let _ = tx.send(outcome);
+        })
+    {
+        log::warn!("m3-nsh failed to spawn worker thread: {err}");
+        let msg = format!("failed to spawn worker thread: {err}");
+        spawn(async move {
+            on_done(Err(msg));
+        });
+        return;
+    }
+    spawn(async move {
+        let outcome = match rx.await {
+            Ok(res) => res,
+            Err(_) => {
+                log::warn!("m3-nsh blocking worker exited without delivering a result");
+                Err("worker exited unexpectedly".to_owned())
+            }
+        };
+        on_done(outcome);
+    });
+}
+
 /// Runs a blocking closure on a plain OS worker thread and delivers the result back on the engine thread.
 pub fn run_blocking_result<T, F, C>(work: F, on_done: C)
 where
@@ -15,21 +62,9 @@ where
     F: FnOnce() -> T + Send + 'static,
     C: FnOnce(T) + 'static,
 {
-    let (tx, rx) = oneshot::channel::<T>();
-    if let Err(err) = std::thread::Builder::new()
-        .name("m3-worker".into())
-        .spawn(move || {
-            let result = work();
-            let _ = tx.send(result);
-        })
-    {
-        log::warn!("m3-nsh failed to spawn worker thread: {err}");
-    }
-    spawn(async move {
-        if let Ok(result) = rx.await {
+    run_blocking_or_err(work, move |outcome| {
+        if let Ok(result) = outcome {
             on_done(result);
-        } else {
-            log::warn!("m3-nsh blocking worker exited without delivering a result");
         }
     });
 }
@@ -47,7 +82,13 @@ where
     let (tx, mut rx) = mpsc::unbounded_channel::<E>();
     if let Err(err) = std::thread::Builder::new()
         .name("m3-worker".into())
-        .spawn(move || work(tx))
+        .spawn(move || {
+            if let Err(payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(tx)))
+            {
+                log::warn!("m3-nsh streamed {}", format_panic_payload(payload));
+            }
+        })
     {
         log::warn!("m3-nsh failed to spawn streaming worker thread: {err}");
     }

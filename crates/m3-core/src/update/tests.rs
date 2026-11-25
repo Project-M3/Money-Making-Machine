@@ -514,3 +514,26 @@ fn os_worker_thread_drops_reqwest_blocking_client_cleanly_from_tokio_runtime() {
 
     assert!(res.is_ok(), "unexpected error: {res:?}");
 }
+
+#[test]
+fn command_timeout_helper_returns_stdout_quickly_and_kills_stalled_processes() {
+    let fast = super::run_command_stdout_with_timeout(
+        "/bin/echo",
+        &["ok-token"],
+        std::time::Duration::from_secs(2),
+    );
+    assert_eq!(fast.as_deref(), Some("ok-token"));
+
+    let started = std::time::Instant::now();
+    let stalled = super::run_command_stdout_with_timeout(
+        "/bin/sleep",
+        &["5"],
+        std::time::Duration::from_millis(150),
+    );
+    assert!(stalled.is_none());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "timed-out subprocess took too long: {:?}",
+        started.elapsed()
+    );
+}

@@ -86,8 +86,6 @@ use std::io::{BufWriter, Read as _, Write as _};
 use std::path::Path;
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
-use std::process::{Command, Stdio};
-#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
@@ -100,7 +98,11 @@ pub const DEFAULT_GITHUB_REPO: &str = "Project-M3/Money-Making-Machine";
 pub const GITHUB_API_BASE: &str = "https://api.github.com";
 
 #[cfg(target_os = "macos")]
+const MANIFEST_CONNECT_TIMEOUT_SECS: u64 = 10;
+#[cfg(target_os = "macos")]
 const MANIFEST_TIMEOUT_SECS: u64 = 15;
+#[cfg(target_os = "macos")]
+const GH_TOKEN_TIMEOUT_SECS: u64 = 3;
 #[cfg(target_os = "macos")]
 const ARCHIVE_CONNECT_TIMEOUT_SECS: u64 = 30;
 #[cfg(target_os = "macos")]
@@ -248,6 +250,55 @@ struct ResolvedRelease {
     archive_download: DownloadSource,
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn run_command_stdout_with_timeout(
+    program: &str,
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> Option<String> {
+    use std::io::Read as _;
+    use std::process::{Command as StdCommand, Stdio as StdStdio};
+
+    let mut child = StdCommand::new(program)
+        .args(args)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(StdStdio::null())
+        .stdout(StdStdio::piped())
+        .stderr(StdStdio::null())
+        .spawn()
+        .ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut buf = Vec::new();
+                if let Some(mut stdout) = child.stdout.take() {
+                    let _ = stdout.read_to_end(&mut buf);
+                }
+                let text = String::from_utf8_lossy(&buf).trim().to_string();
+                return (!text.is_empty()).then_some(text);
+            }
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 /// Resolve a GitHub bearer token from env vars or `gh auth token` (Finder-safe absolute paths).
 #[cfg(target_os = "macos")]
 pub fn resolve_github_token() -> Option<String> {
@@ -259,20 +310,10 @@ pub fn resolve_github_token() -> Option<String> {
             }
         }
     }
+    let timeout = Duration::from_secs(GH_TOKEN_TIMEOUT_SECS);
     for bin in GH_CANDIDATES {
-        let Ok(out) = Command::new(bin)
-            .args(["auth", "token"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-        else {
-            continue;
-        };
-        if out.status.success() {
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !token.is_empty() {
-                return Some(token);
-            }
+        if let Some(token) = run_command_stdout_with_timeout(bin, &["auth", "token"], timeout) {
+            return Some(token);
         }
     }
     None
@@ -297,22 +338,39 @@ fn github_api_base() -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn build_clients() -> Result<(Client, Client)> {
+struct UpdaterClients {
+    manifest: Client,
+    no_redirect: Client,
+    download: Client,
+}
+
+#[cfg(target_os = "macos")]
+fn build_clients() -> Result<UpdaterClients> {
     let ua = format!("m3/{}", current_binary_version());
-    let standard = Client::builder()
+    let manifest = Client::builder()
         .user_agent(ua.clone())
-        .connect_timeout(Duration::from_secs(ARCHIVE_CONNECT_TIMEOUT_SECS))
-        .timeout(Duration::from_secs(ARCHIVE_MAX_TOTAL_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(MANIFEST_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(MANIFEST_TIMEOUT_SECS))
         .build()
-        .context("build HTTP client for M3 updater")?;
+        .context("build manifest HTTP client for M3 updater")?;
     let no_redirect = Client::builder()
-        .user_agent(ua)
+        .user_agent(ua.clone())
         .redirect(Policy::none())
-        .connect_timeout(Duration::from_secs(MANIFEST_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(MANIFEST_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(MANIFEST_TIMEOUT_SECS))
         .build()
         .context("build no-redirect HTTP client for M3 updater")?;
-    Ok((standard, no_redirect))
+    let download = Client::builder()
+        .user_agent(ua)
+        .connect_timeout(Duration::from_secs(ARCHIVE_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(ARCHIVE_MAX_TOTAL_TIMEOUT_SECS))
+        .build()
+        .context("build download HTTP client for M3 updater")?;
+    Ok(UpdaterClients {
+        manifest,
+        no_redirect,
+        download,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -843,8 +901,14 @@ pub fn run_update_with_progress(
     };
 
     on_progress(UpdateProgress::for_stage(UpdateStage::Resolving, 0, None));
-    let (standard, no_redirect) = build_clients()?;
-    let resolved = resolve_release(&standard, &no_redirect, opts, target_channel, target_triple)?;
+    let clients = build_clients()?;
+    let resolved = resolve_release(
+        &clients.manifest,
+        &clients.no_redirect,
+        opts,
+        target_channel,
+        target_triple,
+    )?;
     let manifest_channel = ReleaseChannel::parse(&resolved.manifest.channel)?;
 
     let is_channel_switch = manifest_channel != binary_channel && opts.version.is_none();
@@ -922,8 +986,8 @@ pub fn run_update_with_progress(
     let archive_total = (resolved.artifact.size > 0).then_some(resolved.artifact.size);
 
     download_and_verify_archive(
-        &standard,
-        &no_redirect,
+        &clients.download,
+        &clients.no_redirect,
         &resolved.archive_download,
         &resolved.artifact,
         &archive_path,
@@ -1016,15 +1080,15 @@ pub fn refresh_passive_cache_once(
     target_channel: ReleaseChannel,
 ) -> Result<Option<PassiveUpdateNotice>> {
     let target_triple = current_target_triple()?;
-    let (standard, no_redirect) = build_clients()?;
+    let clients = build_clients()?;
     let opts = UpdateOptions {
         check_only: true,
         channel: Some(target_channel),
         ..Default::default()
     };
     let resolved = resolve_release(
-        &standard,
-        &no_redirect,
+        &clients.manifest,
+        &clients.no_redirect,
         &opts,
         target_channel,
         target_triple,

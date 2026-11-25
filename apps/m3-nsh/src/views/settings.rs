@@ -292,6 +292,8 @@ fn render_updates_card(store: AppStore, ver_text: &str) -> View {
                         None,
                         || {},
                     )
+                } else if checking {
+                    setting_chip(l.t("检查中…", "Checking…"), false, false, None, || {})
                 } else if let Some(n) = notice {
                     setting_chip(
                         &format!("{} v{}", l.t("安装更新", "Install"), n.latest_version),
@@ -302,11 +304,7 @@ fn render_updates_card(store: AppStore, ver_text: &str) -> View {
                     )
                 } else {
                     setting_chip(
-                        if checking {
-                            l.t("检查中…", "Checking…")
-                        } else {
-                            l.t("检查更新", "Check for Updates")
-                        },
+                        l.t("检查更新", "Check for Updates"),
                         false,
                         false,
                         None,

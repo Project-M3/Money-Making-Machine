@@ -11,8 +11,8 @@ use crate::format::{
     should_skip_auto_catchup, signal_status_badge_for, step_inbox_selection,
 };
 use crate::stores::async_bridge::{
-    can_open_duckdb_read_only, can_start_duckdb_writer, run_blocking_result, run_streamed_blocking,
-    spawn_notify_listener,
+    can_open_duckdb_read_only, can_start_duckdb_writer, run_blocking_or_err, run_blocking_result,
+    run_streamed_blocking, spawn_notify_listener,
 };
 use crate::stores::types::{
     AgentMessageRole, AgentUiMessage, AlanReplyTarget, BasketsViewMode, ChartTimeframe,
@@ -201,6 +201,8 @@ pub struct AppStore {
     pub update_channel: Signal<ReleaseChannel>,
     pub update_notice: Signal<Option<PassiveUpdateNotice>>,
     pub update_checking: Signal<bool>,
+    pub update_check_seq: Signal<u64>,
+    pub update_check_channel: Signal<Option<ReleaseChannel>>,
     pub update_applying: Signal<bool>,
     pub update_progress: Signal<Option<String>>,
     pub update_progress_detail: Signal<Option<update::UpdateProgress>>,
@@ -635,6 +637,8 @@ impl AppStore {
             update_channel: signal(effective_ch),
             update_notice: signal_with(None, SignalEquals::Never),
             update_checking: signal(false),
+            update_check_seq: signal(0),
+            update_check_channel: signal(None),
             update_applying: signal(false),
             update_progress: signal(None),
             update_progress_detail: signal_with(None, SignalEquals::Never),
@@ -830,6 +834,7 @@ impl AppStore {
             }
             if needs_refresh {
                 let effective_ch = self.update_channel.get_untracked();
+                let req_seq = self.update_check_seq.get_untracked();
                 run_blocking_result(
                     move || {
                         update::refresh_passive_cache_once(effective_ch)
@@ -837,7 +842,12 @@ impl AppStore {
                             .flatten()
                     },
                     move |notice_opt| {
-                        if self.update_applied_version.get_untracked().is_none() {
+                        if self.update_check_seq.get_untracked() == req_seq
+                            && !self.update_checking.get_untracked()
+                            && !self.update_applying.get_untracked()
+                            && self.update_applied_version.get_untracked().is_none()
+                            && self.update_channel.get_untracked() == effective_ch
+                        {
                             self.update_notice.set(notice_opt);
                         }
                     },
@@ -4155,12 +4165,12 @@ impl AppStore {
 
     pub fn start_update_check(self, notify_when_up_to_date: bool) {
         let l = self.lang.get_untracked();
-        if self.update_checking.get_untracked() || self.update_applying.get_untracked() {
+        if self.update_applying.get_untracked() {
             if notify_when_up_to_date {
                 self.set_info_notice(
                     l.t(
-                        "正在后台检查或应用更新，请稍候…",
-                        "Update check or install already in progress…",
+                        "正在安装更新，请稍候…",
+                        "Update install already in progress…",
                     )
                     .to_owned(),
                 );
@@ -4168,6 +4178,20 @@ impl AppStore {
             return;
         }
         let target_channel = self.update_channel.get_untracked();
+        if self.update_checking.get_untracked()
+            && self.update_check_channel.get_untracked() == Some(target_channel)
+        {
+            if notify_when_up_to_date {
+                self.set_info_notice(
+                    l.t("正在检查更新，请稍候…", "Update check already in progress…")
+                        .to_owned(),
+                );
+            }
+            return;
+        }
+        let req_seq = self.update_check_seq.get_untracked().wrapping_add(1);
+        self.update_check_seq.set(req_seq);
+        self.update_check_channel.set(Some(target_channel));
         self.update_checking.set(true);
         if notify_when_up_to_date {
             self.set_info_notice(match l {
@@ -4175,7 +4199,7 @@ impl AppStore {
                 UiLang::En => format!("Checking {} channel for updates…", target_channel.as_str()),
             });
         }
-        run_blocking_result(
+        run_blocking_or_err(
             move || {
                 update::run_update(&UpdateOptions {
                     check_only: true,
@@ -4184,61 +4208,87 @@ impl AppStore {
                 })
                 .map_err(|e| format!("{e:#}"))
             },
-            move |res: Result<UpdateReport, String>| {
-                self.update_checking.set(false);
-                let l = self.lang.get_untracked();
-                match res {
-                    Ok(report) => {
-                        if let Ok(ch) = ReleaseChannel::parse(&report.channel) {
-                            self.update_channel.set(ch);
-                        }
-                        if report.update_available {
-                            let ch = ReleaseChannel::parse(&report.channel)
-                                .unwrap_or_else(|_| self.update_channel.get_untracked());
-                            self.update_notice.set(Some(PassiveUpdateNotice {
-                                latest_version: report.target_version.clone(),
-                                channel: ch,
-                                tag: report.tag.clone(),
-                                is_channel_switch: report.previous_channel.is_some(),
-                                release_url: report.release_url.clone(),
-                            }));
-                            self.set_info_notice(match l {
-                                UiLang::Zh => format!(
-                                    "发现可用更新 v{}（{}），点击更新按钮立即安装",
-                                    report.target_version, report.channel
-                                ),
-                                UiLang::En => format!(
-                                    "Update available: v{} ({}) — click Update to install",
-                                    report.target_version, report.channel
-                                ),
-                            });
-                        } else {
-                            self.update_notice.set(None);
-                            if notify_when_up_to_date {
-                                self.set_info_notice(match l {
-                                    UiLang::Zh => format!(
-                                        "当前已是 {} 通道最新版本 (v{})",
-                                        report.channel, report.current_version
-                                    ),
-                                    UiLang::En => format!(
-                                        "Up to date on {} channel (v{})",
-                                        report.channel, report.current_version
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        if notify_when_up_to_date {
-                            self.set_error_notice(format!(
-                                "{}: {err}",
-                                l.t("检查更新失败", "Update check failed")
-                            ));
-                        }
-                    }
-                }
+            move |outcome: Result<Result<UpdateReport, String>, String>| {
+                self.apply_update_check_outcome(
+                    req_seq,
+                    target_channel,
+                    notify_when_up_to_date,
+                    outcome,
+                );
             },
         );
+    }
+
+    pub(crate) fn apply_update_check_outcome(
+        self,
+        req_seq: u64,
+        target_channel: ReleaseChannel,
+        notify_when_up_to_date: bool,
+        outcome: Result<Result<UpdateReport, String>, String>,
+    ) {
+        if self.update_check_seq.get_untracked() != req_seq {
+            return;
+        }
+        self.update_checking.set(false);
+        self.update_check_channel.set(None);
+        let res = match outcome {
+            Ok(inner) => inner,
+            Err(worker_err) => Err(worker_err),
+        };
+        let l = self.lang.get_untracked();
+        match res {
+            Ok(report) => {
+                if self.update_channel.get_untracked() != target_channel {
+                    return;
+                }
+                if let Ok(ch) = ReleaseChannel::parse(&report.channel) {
+                    self.update_channel.set(ch);
+                }
+                if report.update_available {
+                    let ch = ReleaseChannel::parse(&report.channel)
+                        .unwrap_or_else(|_| self.update_channel.get_untracked());
+                    self.update_notice.set(Some(PassiveUpdateNotice {
+                        latest_version: report.target_version.clone(),
+                        channel: ch,
+                        tag: report.tag.clone(),
+                        is_channel_switch: report.previous_channel.is_some(),
+                        release_url: report.release_url.clone(),
+                    }));
+                    self.set_info_notice(match l {
+                        UiLang::Zh => format!(
+                            "发现可用更新 v{}（{}），点击更新按钮立即安装",
+                            report.target_version, report.channel
+                        ),
+                        UiLang::En => format!(
+                            "Update available: v{} ({}) — click Update to install",
+                            report.target_version, report.channel
+                        ),
+                    });
+                } else {
+                    self.update_notice.set(None);
+                    if notify_when_up_to_date {
+                        self.set_info_notice(match l {
+                            UiLang::Zh => format!(
+                                "当前已是 {} 通道最新版本 (v{})",
+                                report.channel, report.current_version
+                            ),
+                            UiLang::En => format!(
+                                "Up to date on {} channel (v{})",
+                                report.channel, report.current_version
+                            ),
+                        });
+                    }
+                }
+            }
+            Err(err) => {
+                if notify_when_up_to_date {
+                    self.set_error_notice(format!(
+                        "{}: {err}",
+                        l.t("检查更新失败", "Update check failed")
+                    ));
+                }
+            }
+        }
     }
 
     pub fn start_update_apply(self) {
@@ -4253,6 +4303,8 @@ impl AppStore {
             );
             return;
         }
+        let next_seq = self.update_check_seq.get_untracked().wrapping_add(1);
+        self.update_check_seq.set(next_seq);
         let target_channel = self.update_channel.get_untracked();
         let initial = update::UpdateProgress::for_stage(update::UpdateStage::Resolving, 0, None);
         self.update_applying.set(true);
@@ -4351,8 +4403,22 @@ impl AppStore {
 
     pub fn switch_update_channel(self, channel: ReleaseChannel) {
         let l = self.lang.get_untracked();
+        if self.update_applying.get_untracked() {
+            self.set_info_notice(
+                l.t(
+                    "正在安装更新，请等待完成后再切换通道…",
+                    "Update install in progress — please wait before switching channels…",
+                )
+                .to_owned(),
+            );
+            return;
+        }
         match update::channel::write_configured_channel(channel) {
             Ok(()) => {
+                let next_seq = self.update_check_seq.get_untracked().wrapping_add(1);
+                self.update_check_seq.set(next_seq);
+                self.update_checking.set(false);
+                self.update_check_channel.set(None);
                 self.update_channel.set(channel);
                 self.update_notice.set(None);
                 self.start_update_check(true);

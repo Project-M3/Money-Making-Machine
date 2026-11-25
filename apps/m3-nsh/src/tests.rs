@@ -1961,3 +1961,93 @@ fn settings_alan_connection_drafts_and_provider_switching() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn update_check_state_machine_handles_channel_switch_and_stale_results() {
+    use m3_core::update::{PassiveUpdateNotice, ReleaseChannel, UpdateReport};
+
+    let root = temp_workspace("update_check_state_machine");
+    let paths = WorkspacePaths::from_root(root.clone());
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        |store| {
+            store.update_channel.set(ReleaseChannel::Beta);
+            store.update_checking.set(true);
+            store.update_check_channel.set(Some(ReleaseChannel::Beta));
+            store.update_check_seq.set(2);
+
+            let stale_report = UpdateReport {
+                status: "update_available".into(),
+                channel: "stable".into(),
+                previous_channel: Some("beta".into()),
+                current_version: "0.4.2".into(),
+                target_version: "0.4.2".into(),
+                tag: "v0.4.2".into(),
+                target: "aarch64-apple-darwin".into(),
+                update_available: true,
+                updated: false,
+                checked_only: true,
+                app_bundle_path: "/Applications/M3.app".into(),
+                cli_link_path: None,
+                source_label: "https://example.invalid".into(),
+                asset: "m3.tar.gz".into(),
+                archive_sha256: "0".repeat(64),
+                binary_sha256: None,
+                release_url: None,
+                signed: false,
+                notarized: false,
+            };
+
+            // Stale callback from seq=1 must be ignored and must not reset active seq=2 check.
+            store.apply_update_check_outcome(1, ReleaseChannel::Stable, true, Ok(Ok(stale_report)));
+            assert!(store.update_checking.get_untracked());
+            assert_eq!(store.update_channel.get_untracked(), ReleaseChannel::Beta);
+            assert!(store.update_notice.get_untracked().is_none());
+
+            // Matching seq worker-panic outcome clears update_checking cleanly and sets error notice.
+            store.apply_update_check_outcome(
+                2,
+                ReleaseChannel::Beta,
+                true,
+                Err("worker panicked: boom".to_owned()),
+            );
+            assert!(!store.update_checking.get_untracked());
+            assert_eq!(store.update_check_channel.get_untracked(), None);
+            assert!(
+                store
+                    .notice
+                    .with_untracked(|n| n.as_ref().is_some_and(|(_, err)| *err))
+            );
+
+            // Switching channel while another check is still pending invalidates the older sequence.
+            store.update_checking.set(true);
+            store.update_check_channel.set(Some(ReleaseChannel::Beta));
+            store.update_check_seq.set(3);
+            store.update_notice.set(Some(PassiveUpdateNotice {
+                latest_version: "0.4.3-beta.1".into(),
+                channel: ReleaseChannel::Beta,
+                tag: "beta".into(),
+                is_channel_switch: false,
+                release_url: None,
+            }));
+            store.update_channel.set(ReleaseChannel::Stable);
+            store.update_check_seq.set(4);
+            store.update_checking.set(false);
+            store.update_check_channel.set(None);
+            store.update_notice.set(None);
+
+            // Older seq=3 response arriving later cannot bring back stale notice or change channel.
+            store.apply_update_check_outcome(
+                3,
+                ReleaseChannel::Beta,
+                false,
+                Err("timed out".to_owned()),
+            );
+            assert!(!store.update_checking.get_untracked());
+            assert_eq!(store.update_channel.get_untracked(), ReleaseChannel::Stable);
+            assert!(store.update_notice.get_untracked().is_none());
+        },
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
