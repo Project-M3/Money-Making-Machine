@@ -1,8 +1,8 @@
 //! Circle Overview (`CORE / WATCH / OUT / TOO HARD`) view (`⌘4`).
 
 use crate::components::{
-    action_button, badge_pill, circle_tag_button, kbd, mono_right, obsidian_card, seg_group,
-    seg_tab, v_divider,
+    action_button, badge_pill, circle_tag_button, cmd_kbd_corner, mono_right, obsidian_card,
+    seg_group, seg_tab, v_divider,
 };
 use crate::format::{
     collect_circle_tags, compute_today_pulse, filter_reports_for_basket, fmt_money_compact_opt,
@@ -271,6 +271,7 @@ fn render_pulse_strip(store: AppStore) -> View {
             let l = store.lang.get();
             let mode = store.baskets_view_mode.get();
             seg_group()
+                .relative()
                 .child(seg_tab(
                     l.t("列表", "List"),
                     mode == BasketsViewMode::List,
@@ -291,7 +292,7 @@ fn render_pulse_strip(store: AppStore) -> View {
                         store.baskets_cursor_index.set(0);
                     },
                 ))
-                .child(view().px(px(4.0)).child(kbd("v")))
+                .child(cmd_kbd_corner(store, "v"))
         }))
 }
 

@@ -6,8 +6,11 @@ use nsh_core::prelude::{Hsla, rgb, rgba};
 use rust_decimal::Decimal;
 
 pub const BG_SHELL: u32 = 0x0B0B0E;
+pub const BG_SHELL_GLASS: u32 = 0x020204DC;
 pub const BG_VIEWPORT: u32 = 0x101015;
 pub const BG_TOOLBAR: u32 = 0x121218;
+pub const BG_COMMAND_PILL: u32 = 0x0A0A0FA0;
+pub const BG_COMMAND_CARD: u32 = 0x111119F2;
 pub const BG_SURFACE: u32 = 0x14141C;
 pub const BG_WELL: u32 = 0x181822;
 pub const BG_ROW_ALT: u32 = 0x121219;
@@ -20,6 +23,8 @@ pub const BG_PALETTE: u32 = 0x13131C;
 pub const RAIL_HOVER: u32 = 0xFFFFFF0D;
 pub const RAIL_ACTIVE: u32 = 0xFFFFFF18;
 pub const RAIL_SELECTED: u32 = 0xFFFFFF14;
+pub const BORDER_GLASS_SUBTLE: u32 = 0xFFFFFF18;
+pub const BORDER_GLASS_STRONG: u32 = 0xFFFFFF2A;
 pub const SCRIM_BACKDROP: u32 = 0x050508AA;
 
 pub const BORDER_VIEWPORT: u32 = 0x1D1D26;
@@ -104,7 +109,7 @@ pub const TEXT_XL: f32 = 20.0;
 
 /// Layout spacing tokens (points).
 pub const SIDEBAR_WIDTH: f32 = 224.0;
-pub const TOOLBAR_HEIGHT: f32 = 40.0;
+pub const TOOLBAR_HEIGHT: f32 = 44.0;
 pub const STATUSLINE_HEIGHT: f32 = 24.0;
 
 /// Converts an opaque `0xRRGGBB` hex token to [`Hsla`].

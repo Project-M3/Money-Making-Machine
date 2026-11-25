@@ -1,10 +1,11 @@
 //! Settings & Guardrails view (`⌘,`) organized into General, AI, and Data tabs.
 
 use crate::components::{
-    action_button, badge_pill, concept_hint, concept_hint_static, obsidian_card, progress_bar,
-    seg_group, seg_tab, styled_input,
+    action_button, animate_shell_spring, badge_pill, concept_hint, concept_hint_static,
+    obsidian_card, progress_bar, seg_group, seg_tab, styled_input,
 };
 use crate::format::fmt_time_cn_for;
+use crate::icons::{ICON_CLOSE, ICON_SETTINGS, icon};
 use crate::platform_desktop::{
     M3_GITHUB_URL, M3_RELEASES_URL, M3_WEBSITE_URL, copy_text_with_notice, open_external_url,
     prompt_choose_workspace, restart_after_update, reveal_workspace_dir,
@@ -21,6 +22,174 @@ use nsh_core::prelude::*;
 use rust_decimal::Decimal;
 
 const ALAN_SETUP_CMD: &str = "alan connection add openrouter --profile main && alan connection set-secret main && alan connection default set main";
+
+fn render_settings_tabs_control(store: AppStore) -> View {
+    view().child(dynamic(move || {
+        let l = store.lang.get();
+        let cur = store.settings_tab.get();
+        seg_group()
+            .child(seg_tab(
+                SettingsTab::General.label_for(l),
+                cur == SettingsTab::General,
+                None,
+                false,
+                move || store.set_settings_tab(SettingsTab::General),
+            ))
+            .child(seg_tab(
+                SettingsTab::Ai.label_for(l),
+                cur == SettingsTab::Ai,
+                Some((VIOLET_FG, VIOLET_BG)),
+                false,
+                move || store.set_settings_tab(SettingsTab::Ai),
+            ))
+            .child(seg_tab(
+                SettingsTab::Data.label_for(l),
+                cur == SettingsTab::Data,
+                Some((SKY_FG, SKY_BG)),
+                false,
+                move || store.set_settings_tab(SettingsTab::Data),
+            ))
+    }))
+}
+
+fn render_settings_tab_body(store: AppStore, ver_for_body: String) -> View {
+    view().child(dynamic(move || match store.settings_tab.get() {
+        SettingsTab::General => view()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(20.0))
+            .child(render_language_card(store))
+            .child(render_workspace_card(store))
+            .child(render_updates_card(store, &ver_for_body)),
+        SettingsTab::Ai => view()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(20.0))
+            .child(render_alan_connection_card(store))
+            .child(render_budget_card(store)),
+        SettingsTab::Data => view()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(20.0))
+            .child(render_datalake_card(store))
+            .child(render_storage_card(store)),
+    }))
+}
+
+/// Renders Preferences & Guardrails (`⌘,`) as a centered Obsidian modal dialog over the workspace.
+pub fn settings_modal_overlay(store: AppStore) -> impl IntoElement {
+    let build_commit = update::current_build_commit();
+    let ver_text = if build_commit.is_empty() {
+        format!("v{}", update::current_binary_version())
+    } else {
+        format!("v{} ({build_commit})", update::current_binary_version())
+    };
+    let ver_for_body = ver_text.clone();
+
+    overlay()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .p(px(28.0))
+        .child(
+            view()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000066))
+                .on_press(move || {
+                    animate_shell_spring();
+                    store.close_settings();
+                }),
+        )
+        .child(
+            view()
+                .w(px(860.0))
+                .max_w(percentage(92.0))
+                .h(px(640.0))
+                .max_h(percentage(86.0))
+                .rounded_xl()
+                .bg(rgb(BG_VIEWPORT))
+                .border_1()
+                .border_color(rgba(BORDER_GLASS_STRONG))
+                .shadow_xl()
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .child(
+                    view()
+                        .flex_shrink_0()
+                        .px(px(22.0))
+                        .py(px(14.0))
+                        .bg(rgb(BG_TOOLBAR))
+                        .border_b_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.0))
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(10.0))
+                                .child(icon(ICON_SETTINGS, 16.0).text_color(rgb(INK_SECONDARY)))
+                                .child(
+                                    text(move || {
+                                        store.lang.get().t("偏好设置", "Settings").to_owned()
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_LG))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_HERO)),
+                                )
+                                .child(badge_pill(ver_text, INK_SECONDARY, SLATE_BG, SLATE_BORDER)),
+                        )
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(10.0))
+                                .child(render_settings_tabs_control(store))
+                                .child(
+                                    view()
+                                        .w(px(28.0))
+                                        .h(px(26.0))
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                                        .active(|s| s.bg(rgba(RAIL_ACTIVE)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_press(move || {
+                                            animate_shell_spring();
+                                            store.close_settings();
+                                        })
+                                        .child(icon(ICON_CLOSE, 14.0).text_color(rgb(INK_MUTED))),
+                                ),
+                        ),
+                )
+                .child(
+                    scroll().flex_1().min_h(px(0.0)).w_full().child(
+                        view()
+                            .w_full()
+                            .p(px(22.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.0))
+                            .child(render_settings_tab_body(store, ver_for_body)),
+                    ),
+                ),
+        )
+}
 
 /// Renders Preferences & Guardrails (`⌘,`) organized into General, AI, and Data tabs.
 pub fn settings_view(store: AppStore) -> impl IntoElement {
@@ -82,58 +251,10 @@ pub fn settings_view(store: AppStore) -> impl IntoElement {
                                         SLATE_BORDER,
                                     )),
                             )
-                            .child(dynamic(move || {
-                                let l = store.lang.get();
-                                let cur = store.settings_tab.get();
-                                seg_group()
-                                    .child(seg_tab(
-                                        SettingsTab::General.label_for(l),
-                                        cur == SettingsTab::General,
-                                        None,
-                                        false,
-                                        move || store.set_settings_tab(SettingsTab::General),
-                                    ))
-                                    .child(seg_tab(
-                                        SettingsTab::Ai.label_for(l),
-                                        cur == SettingsTab::Ai,
-                                        Some((VIOLET_FG, VIOLET_BG)),
-                                        false,
-                                        move || store.set_settings_tab(SettingsTab::Ai),
-                                    ))
-                                    .child(seg_tab(
-                                        SettingsTab::Data.label_for(l),
-                                        cur == SettingsTab::Data,
-                                        Some((SKY_FG, SKY_BG)),
-                                        false,
-                                        move || store.set_settings_tab(SettingsTab::Data),
-                                    ))
-                            })),
+                            .child(render_settings_tabs_control(store)),
                     )
                     // Active tab content
-                    .child(dynamic(move || match store.settings_tab.get() {
-                        SettingsTab::General => view()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap(px(20.0))
-                            .child(render_language_card(store))
-                            .child(render_workspace_card(store))
-                            .child(render_updates_card(store, &ver_for_body)),
-                        SettingsTab::Ai => view()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap(px(20.0))
-                            .child(render_alan_connection_card(store))
-                            .child(render_budget_card(store)),
-                        SettingsTab::Data => view()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap(px(20.0))
-                            .child(render_datalake_card(store))
-                            .child(render_storage_card(store)),
-                    })),
+                    .child(render_settings_tab_body(store, ver_for_body)),
             ),
     )
 }

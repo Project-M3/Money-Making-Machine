@@ -17,7 +17,7 @@ use crate::stores::async_bridge::{
 use crate::stores::types::{
     AgentMessageRole, AgentUiMessage, AlanReplyTarget, BasketsViewMode, ChartTimeframe,
     CompanyViewTab, DeepResearchPerspectiveUi, InboxFilter, InboxViewState, PaletteItem,
-    ParsedResearchMemo, SettingsTab, SortCol, StatusQuickFilter, UniversePreset,
+    ParsedResearchMemo, SettingsTab, SortCol, StatusQuickFilter, StoredAppMessage, UniversePreset,
     UniverseSearchMode, UniverseViewState, WorkspaceTab, apply_ui_row_guards,
     default_deep_research_perspectives,
 };
@@ -87,6 +87,12 @@ pub struct AppStore {
     pub palette_open: Signal<bool>,
     pub palette_query: Signal<String>,
     pub palette_cursor: Signal<usize>,
+    pub palette_expanded_groups: Signal<HashSet<String>>,
+    pub cmd_held: Signal<bool>,
+    pub sidebar_collapsed: Signal<bool>,
+    pub message_box_open: Signal<bool>,
+    pub settings_open: Signal<bool>,
+    pub messages: Signal<Vec<StoredAppMessage>>,
     pub notice: Signal<Option<(String, bool)>>,
     pub sync_running: Signal<bool>,
     pub sync_stage: Signal<Option<String>>,
@@ -229,6 +235,7 @@ pub struct AppStore {
     agent_seq: Stored<usize>,
     universe_search_seq: Stored<u64>,
     inbox_last_auto_catchup_at: Stored<Option<Instant>>,
+    message_seq: Stored<u64>,
 }
 
 struct StartupHydrationSnapshot {
@@ -531,6 +538,12 @@ impl AppStore {
             palette_open: signal(false),
             palette_query: signal(String::new()),
             palette_cursor: signal(0),
+            palette_expanded_groups: signal(HashSet::new()),
+            cmd_held: signal(false),
+            sidebar_collapsed: signal(false),
+            message_box_open: signal(false),
+            settings_open: signal(false),
+            messages: signal_with(Vec::new(), SignalEquals::Never),
             notice: signal(None),
             sync_running: signal(false),
             sync_stage: signal(None),
@@ -673,6 +686,7 @@ impl AppStore {
             agent_seq: stored(1),
             universe_search_seq: stored(0),
             inbox_last_auto_catchup_at: stored(None),
+            message_seq: stored(0),
         }
     }
 
@@ -1013,6 +1027,11 @@ impl AppStore {
     // ── Navigation & Shell Actions ───────────────────────────────────────────
 
     pub fn open_tab(self, tab: WorkspaceTab) {
+        if tab == WorkspaceTab::Settings {
+            self.open_settings();
+            return;
+        }
+        self.settings_open.set(false);
         self.company_open.set(false);
         self.active_tab.set(tab);
         match tab {
@@ -1027,11 +1046,7 @@ impl AppStore {
                 self.reload_industries_from_disk();
                 self.reload_themes_from_disk();
             }
-            WorkspaceTab::Baskets | WorkspaceTab::Journal => {}
-            WorkspaceTab::Settings => {
-                let tab = self.settings_tab.get_untracked();
-                self.refresh_settings_tab_data(tab, true);
-            }
+            WorkspaceTab::Baskets | WorkspaceTab::Journal | WorkspaceTab::Settings => {}
         }
     }
 
@@ -1062,7 +1077,23 @@ impl AppStore {
     }
 
     pub fn open_settings(self) {
-        self.open_tab(WorkspaceTab::Settings);
+        self.palette_open.set(false);
+        self.message_box_open.set(false);
+        self.settings_open.set(true);
+        let tab = self.settings_tab.get_untracked();
+        self.refresh_settings_tab_data(tab, true);
+    }
+
+    pub fn close_settings(self) {
+        self.settings_open.set(false);
+    }
+
+    pub fn toggle_settings(self) {
+        if self.settings_open.get_untracked() {
+            self.close_settings();
+        } else {
+            self.open_settings();
+        }
     }
 
     pub fn open_company(self, ticker: &str, tab: CompanyViewTab) {
@@ -1106,15 +1137,56 @@ impl AppStore {
 
     pub fn toggle_palette(self) {
         let open = !self.palette_open.get_untracked();
+        if open {
+            self.message_box_open.set(false);
+            self.settings_open.set(false);
+        }
         self.palette_open.set(open);
         self.palette_query.set(String::new());
         self.palette_cursor.set(0);
+        self.palette_expanded_groups.set(HashSet::new());
+    }
+
+    pub fn open_palette(self) {
+        self.message_box_open.set(false);
+        self.settings_open.set(false);
+        self.palette_open.set(true);
+        self.palette_query.set(String::new());
+        self.palette_cursor.set(0);
+        self.palette_expanded_groups.set(HashSet::new());
     }
 
     pub fn close_palette(self) {
         self.palette_open.set(false);
         self.palette_query.set(String::new());
         self.palette_cursor.set(0);
+        self.palette_expanded_groups.set(HashSet::new());
+    }
+
+    pub fn toggle_palette_group(self, group: &str) {
+        self.palette_expanded_groups.update(|groups| {
+            if !groups.remove(group) {
+                groups.insert(group.to_owned());
+            }
+        });
+    }
+
+    pub fn toggle_sidebar(self) {
+        self.sidebar_collapsed
+            .set(!self.sidebar_collapsed.get_untracked());
+    }
+
+    pub fn toggle_message_box(self) {
+        let open = !self.message_box_open.get_untracked();
+        if open {
+            self.settings_open.set(false);
+            self.palette_open.set(false);
+        }
+        self.message_box_open.set(open);
+    }
+
+    pub fn close_message_box(self) {
+        self.message_box_open.set(false);
     }
 
     pub fn set_language(self, lang: UiLang) {
@@ -1195,16 +1267,79 @@ impl AppStore {
         }
     }
 
+    fn push_stored_message(self, is_error: bool, message: &str) {
+        let already_head = self.messages.with_untracked(|list| {
+            list.first()
+                .is_some_and(|head| head.is_error == is_error && head.message == message)
+        });
+        if already_head {
+            return;
+        }
+        let next_id = self.message_seq.with(|seq| {
+            *seq = seq.wrapping_add(1);
+            *seq
+        });
+        let entry = StoredAppMessage {
+            id: next_id,
+            is_error,
+            message: message.to_owned(),
+        };
+        self.messages.update(|list| {
+            list.insert(0, entry);
+            if list.len() > 20 {
+                list.truncate(20);
+            }
+        });
+    }
+
     pub fn set_info_notice(self, message: String) {
+        self.push_stored_message(false, &message);
         self.notice.set(Some((message, false)));
     }
 
     pub fn set_error_notice(self, message: String) {
+        self.push_stored_message(true, &message);
         self.notice.set(Some((message, true)));
     }
 
-    pub fn clear_notice(self) {
+    pub fn dismiss_message(self, id: u64) {
+        let mut head_before = None;
+        let mut head_after = None;
+        self.messages.update(|list| {
+            head_before = list.first().cloned();
+            list.retain(|m| m.id != id);
+            head_after = list.first().cloned();
+        });
+        if head_after.is_none() {
+            self.notice.set(None);
+        } else if let Some(prev) = head_before
+            && prev.id == id
+        {
+            self.notice.update(|cur| {
+                if let Some((msg, err)) = cur.as_ref()
+                    && *err == prev.is_error
+                    && *msg == prev.message
+                {
+                    *cur = None;
+                }
+            });
+        }
+    }
+
+    pub fn clear_messages(self) {
+        self.messages.set(Vec::new());
         self.notice.set(None);
+    }
+
+    pub fn clear_notice(self) {
+        let first_id = self
+            .messages
+            .with_untracked(|list| list.first().map(|m| m.id));
+        if let Some(id) = first_id {
+            self.dismiss_message(id);
+        } else {
+            self.notice.set(None);
+        }
     }
 
     /// Scans local workspace & updater storage usage on a background thread.

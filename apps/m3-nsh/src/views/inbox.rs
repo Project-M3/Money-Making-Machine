@@ -1,6 +1,8 @@
 //! Event-Driven L1 Briefing Inbox view (`⌘1`).
 
-use crate::components::{action_button, badge_pill, kbd, obsidian_card, section_header, v_divider};
+use crate::components::{
+    action_button, badge_pill, cmd_kbd_corner, kbd, obsidian_card, section_header, v_divider,
+};
 use crate::format::{
     budget_watermark_summary_for, count_inbox_filter, filter_inbox_signals, fmt_money_compact,
     fmt_money_compact_opt, fmt_pct_clean, fmt_price, fmt_time_cn_for, resolve_active_inbox_signal,
@@ -263,20 +265,27 @@ fn render_inbox_filter_bar(store: AppStore) -> View {
                     btn
                 }))
         }))
-        .child(dynamic(move || {
-            let l = store.lang.get();
+        .child(
             view()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap(px(6.0))
+                .pointer_events(PointerEvents::None)
+                .opacity(move || {
+                    if store.cmd_held.get() {
+                        1.0_f32
+                    } else {
+                        0.0_f32
+                    }
+                })
                 .child(kbd("j/k"))
-                .child(kbd(l.t("w 观察", "w Watch")))
+                .child(kbd(move || store.lang.get().t("w 观察", "w Watch")))
                 .child(kbd("x TooHard"))
-                .child(kbd(l.t("e 归档", "e Archive")))
+                .child(kbd(move || store.lang.get().t("e 归档", "e Archive")))
                 .child(kbd("d Alan"))
-                .child(kbd(l.t("r 追平", "r Catch-Up")))
-        }))
+                .child(kbd(move || store.lang.get().t("r 追平", "r Catch-Up"))),
+        )
 }
 
 fn render_inbox_body(store: AppStore) -> View {
@@ -612,6 +621,7 @@ fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View
         .flex_wrap()
         .gap(px(8.0))
         .child(inbox_action_button(
+            store,
             if in_watchlist {
                 l.t("打开研报 Dossier", "Open Dossier")
             } else {
@@ -623,6 +633,7 @@ fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View
             move || store.open_inbox_signal_target(&ticker_open),
         ))
         .child(inbox_action_button(
+            store,
             l.t("研究所在行业", "Research Industry"),
             "⌘3",
             false,
@@ -637,6 +648,7 @@ fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View
             },
         ))
         .child(inbox_action_button(
+            store,
             l.t("入观察池 WATCH", "Watch"),
             "w",
             false,
@@ -644,6 +656,7 @@ fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View
             move || store.triage_inbox_signal(&id_watch, SignalStatus::Watch, true, false),
         ))
         .child(inbox_action_button(
+            store,
             l.t("Deep Research · Alan", "Deep Research"),
             "d",
             false,
@@ -651,6 +664,7 @@ fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View
             move || store.triage_inbox_signal(&id_alan, SignalStatus::Researching, false, true),
         ))
         .child(inbox_action_button(
+            store,
             "Too Hard",
             "x",
             false,
@@ -658,6 +672,7 @@ fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View
             move || store.triage_inbox_signal(&id_toohard, SignalStatus::TooHard, false, false),
         ))
         .child(inbox_action_button(
+            store,
             l.t("归档", "Archive"),
             "e",
             false,
@@ -667,6 +682,7 @@ fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View
 
     if sig.status != SignalStatus::Unread {
         actions = actions.child(inbox_action_button(
+            store,
             l.t("标为未读", "Unread"),
             "u",
             false,
@@ -1523,6 +1539,7 @@ fn render_evidence_card(store: AppStore, ev: &SignalEvidence, l: UiLang) -> View
 }
 
 fn inbox_action_button(
+    store: AppStore,
     label: &'static str,
     key_hint: &'static str,
     primary: bool,
@@ -1531,6 +1548,7 @@ fn inbox_action_button(
 ) -> View {
     let (fg, bg, border) = colors;
     let mut el = view()
+        .relative()
         .px(px(10.0))
         .py(px(6.0))
         .rounded_sm()
@@ -1562,7 +1580,7 @@ fn inbox_action_button(
             .text_color(rgb(fg))
             .number_of_lines(1),
     )
-    .child(kbd(key_hint))
+    .child(cmd_kbd_corner(store, key_hint))
 }
 
 fn render_inbox_empty_lake_state(store: AppStore, l: UiLang) -> View {

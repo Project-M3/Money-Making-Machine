@@ -7,7 +7,7 @@ use crate::stores::{AppStore, CompanyViewTab, WorkspaceTab};
 use m3_core::i18n::UiLang;
 use m3_core::model::Bucket;
 use m3_core::update::{self, ReleaseChannel};
-use nsh_core::desktop::{MenuRole, TitleBarOptions, TitleBarStyle, WindowAttributes};
+use nsh_core::desktop::{Backdrop, MenuRole, TitleBarOptions, TitleBarStyle, WindowAttributes};
 use nsh_core::element::desktop::{
     MenuItem, popup_menu_at, restart, set_application_menu, title_bar,
 };
@@ -20,16 +20,193 @@ pub const M3_WEBSITE_URL: &str = "https://m3.thinksmart.systems";
 pub const M3_GITHUB_URL: &str = "https://github.com/Project-M3/Money-Making-Machine";
 pub const M3_RELEASES_URL: &str = "https://github.com/Project-M3/Money-Making-Machine/releases";
 
-/// Builds the main desktop window's attributes (`TitleBarStyle::Hidden`, 38pt bar, traffic
-/// light offsets, and 1140x720 minimum size) applied atomically when NSH 0.7.0 opens `window()`.
+/// Low-radius (`12pt`) behind-window Gaussian blur for the fog-free smoked-black glass shell.
+pub const SMOKED_GLASS_BLUR_RADIUS: f32 = 12.0;
+
+#[cfg(target_os = "macos")]
+mod smoked_glass {
+    use super::SMOKED_GLASS_BLUR_RADIUS;
+    use nsh_platform_macos::objc2::{
+        DefinedClass as _, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+        rc::Retained,
+        runtime::{AnyObject, Bool},
+    };
+    use nsh_platform_macos::objc2_app_kit::{
+        NSApplication, NSAutoresizingMaskOptions, NSUserInterfaceItemIdentification as _, NSView,
+        NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+        NSVisualEffectView, NSWindowOrderingMode,
+    };
+    use nsh_platform_macos::objc2_foundation::{
+        NSArray, NSNumber, NSPoint, NSRect, NSString, ns_string,
+    };
+    use std::cell::Cell;
+
+    const GLASS_VIEW_ID: &str = "m3.smoked_glass";
+
+    define_class!(
+        /// `NSVisualEffectView` stripped to a pure, crisp behind-window Gaussian blur (all AppKit
+        /// milky tint/fill sublayers hidden) so our deep obsidian tint controls darkness & clarity.
+        #[unsafe(super(NSVisualEffectView, NSView))]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = Cell<f32>]
+        #[name = "M3SmokedGlassView"]
+        struct M3SmokedGlassView;
+
+        impl M3SmokedGlassView {
+            #[unsafe(method(layout))]
+            fn layout(&self) {
+                let _: () = unsafe { msg_send![super(self), layout] };
+                self.strip();
+            }
+
+            #[unsafe(method(updateLayer))]
+            fn update_layer(&self) {
+                let _: () = unsafe { msg_send![super(self), updateLayer] };
+                self.strip();
+            }
+
+            #[unsafe(method(viewDidChangeEffectiveAppearance))]
+            fn appearance_changed(&self) {
+                let _: () = unsafe { msg_send![super(self), viewDidChangeEffectiveAppearance] };
+                self.strip();
+            }
+
+            #[unsafe(method(viewDidMoveToWindow))]
+            fn moved_to_window(&self) {
+                let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+                self.strip();
+            }
+
+            #[unsafe(method_id(hitTest:))]
+            fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> {
+                None
+            }
+        }
+    );
+
+    impl M3SmokedGlassView {
+        fn new(frame: NSRect, radius: f32, mtm: MainThreadMarker) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(Cell::new(radius));
+            let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+            view.setWantsLayer(true);
+            view.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
+            view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+            view.setState(NSVisualEffectState::Active);
+            view.setMaterial(NSVisualEffectMaterial::UnderWindowBackground);
+            view.setIdentifier(Some(ns_string!(GLASS_VIEW_ID)));
+            view
+        }
+
+        fn strip(&self) {
+            let layer: Option<Retained<AnyObject>> = unsafe { msg_send![self, layer] };
+            if let Some(layer) = layer {
+                strip_material_layer(&layer, self.ivars().get());
+            }
+        }
+    }
+
+    fn strip_material_layer(layer: &AnyObject, radius: f32) {
+        let sublayers: Option<Retained<NSArray<AnyObject>>> =
+            unsafe { msg_send![layer, sublayers] };
+        let Some(subs) = sublayers else {
+            return;
+        };
+        let gaussian = ns_string!("gaussianBlur");
+        for sub in subs.iter() {
+            let is_backdrop = sub
+                .class()
+                .name()
+                .to_str()
+                .is_ok_and(|n| n.contains("Backdrop"));
+            if is_backdrop {
+                let filters: Option<Retained<NSArray<AnyObject>>> =
+                    unsafe { msg_send![&*sub, filters] };
+                let kept: Vec<Retained<AnyObject>> = filters
+                    .map(|f| f.to_vec())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|f| {
+                        let name: Option<Retained<NSString>> = unsafe { msg_send![&**f, name] };
+                        name.is_some_and(|n| &*n == gaussian)
+                    })
+                    .collect();
+                if kept.is_empty() {
+                    continue;
+                }
+                unsafe {
+                    let _: () = msg_send![&*sub, setFilters: &*NSArray::from_retained_slice(&kept)];
+                    let value = NSNumber::new_f32(radius);
+                    let _: () = msg_send![
+                        &*sub,
+                        setValue: &*value,
+                        forKeyPath: ns_string!("filters.gaussianBlur.inputRadius")
+                    ];
+                }
+            } else {
+                let child_subs: Option<Retained<NSArray<AnyObject>>> =
+                    unsafe { msg_send![&*sub, sublayers] };
+                if child_subs.is_some_and(|l| l.count() > 0) {
+                    strip_material_layer(&sub, radius);
+                } else {
+                    unsafe {
+                        let _: () = msg_send![&*sub, setHidden: Bool::YES];
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn install() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        for win in app.windows().iter() {
+            let Some(content_view) = win.contentView() else {
+                continue;
+            };
+            let already = content_view.subviews().iter().any(|v| {
+                v.identifier()
+                    .is_some_and(|id| &*id == ns_string!(GLASS_VIEW_ID))
+            });
+            if already {
+                continue;
+            }
+            let glass =
+                M3SmokedGlassView::new(content_view.bounds(), SMOKED_GLASS_BLUR_RADIUS, mtm);
+            content_view.addSubview_positioned_relativeTo(
+                &glass,
+                NSWindowOrderingMode::Below,
+                None,
+            );
+            glass.strip();
+        }
+    }
+}
+
+/// Installs the fog-free, low-blur smoked-black behind-window glass layer on desktop macOS windows.
+pub fn install_smoked_black_glass_backdrop() {
+    #[cfg(target_os = "macos")]
+    {
+        drop(run_on_main_thread(smoked_glass::install));
+    }
+}
+
+/// Builds the main desktop window's attributes (`TitleBarStyle::Hidden`, 44pt bar, traffic
+/// light offsets, genuine transparent window backing for smoked black glass, and 1140x720 min size).
 pub fn main_window_attributes() -> WindowAttributes {
     let mut tb = TitleBarOptions::default();
     tb.style = TitleBarStyle::Hidden;
-    tb.height = Some(px(38.0));
-    tb.controls_offset = Some(point(px(16.0), px(13.0)));
+    tb.height = Some(px(44.0));
+    tb.controls_offset = Some(point(px(16.0), px(15.0)));
 
     let mut attrs = WindowAttributes::default();
     attrs.title_bar = Some(tb);
+    attrs.transparent = Some(true);
+    attrs.backdrop = Some(Backdrop::None);
     attrs.min_size = Some(Some(size(px(1140.0), px(720.0))));
     attrs
 }
@@ -48,11 +225,11 @@ pub fn titlebar_left_inset() -> f32 {
     }
 }
 
-/// Returns the reactive titlebar height (38pt on desktop, 0 in fullscreen/mobile).
+/// Returns the reactive titlebar height (44pt on desktop, 0 in fullscreen/mobile).
 pub fn titlebar_height() -> f32 {
     if os().is_desktop() {
         let tb = title_bar();
-        if tb.top.0 > 0.0 { tb.top.0 } else { 38.0 }
+        if tb.top.0 > 0.0 { tb.top.0 } else { 44.0 }
     } else {
         0.0
     }

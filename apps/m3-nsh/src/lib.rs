@@ -3,6 +3,7 @@
 pub mod app;
 pub mod components;
 pub mod format;
+pub mod icons;
 pub mod palette;
 pub mod platform_desktop;
 pub mod stores;

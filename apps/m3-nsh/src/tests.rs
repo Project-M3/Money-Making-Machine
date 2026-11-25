@@ -10,8 +10,11 @@ use crate::format::{
     resolve_sidebar_dock_notice_for, should_skip_auto_catchup, should_skip_auto_catchup_with,
     signal_kind_badge_for, signal_status_badge_for, sort_reports, step_inbox_selection,
 };
-use crate::palette::{build_palette_items_from_store, execute_palette_action};
-use crate::platform_desktop::build_app_menus;
+use crate::icons;
+use crate::palette::{
+    build_palette_items_from_store, execute_palette_action, visible_palette_items_for,
+};
+use crate::platform_desktop::{SMOKED_GLASS_BLUR_RADIUS, build_app_menus, main_window_attributes};
 use crate::stores::app_store::apply_interrogator_event;
 use crate::stores::types::{
     AgentMessageRole, AgentUiMessage, PerspectiveUiStatus, SortCol, StatusQuickFilter,
@@ -2252,7 +2255,308 @@ fn settings_tabs_labels_default_and_switching() {
 
             store.set_settings_tab(SettingsTab::General);
             assert_eq!(store.settings_tab.get_untracked(), SettingsTab::General);
+
+            assert!(!store.settings_open.get_untracked());
+            store.open_settings();
+            assert!(store.settings_open.get_untracked());
+            assert_eq!(
+                store.active_tab.get_untracked(),
+                WorkspaceTab::Inbox,
+                "opening Settings modal must preserve the underlying workspace tab"
+            );
+            store.toggle_settings();
+            assert!(!store.settings_open.get_untracked());
+            store.open_tab(WorkspaceTab::Settings);
+            assert!(store.settings_open.get_untracked());
+            store.close_settings();
+            assert!(!store.settings_open.get_untracked());
         },
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn topbar_message_box_prioritizes_tasks_progress_and_dismissal() {
+    use crate::format::{TopbarMessageInputs, build_topbar_messages};
+    use crate::stores::{TopbarMessageAction, TopbarMessageStatus};
+    use m3_core::update::PassiveUpdateNotice;
+
+    let root = temp_workspace("topbar_message_box");
+    let paths = WorkspacePaths::from_root(root.clone());
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        |store| {
+            // Shell toggles start closed/expanded and toggle cleanly.
+            assert!(!store.sidebar_collapsed.get_untracked());
+            assert!(!store.message_box_open.get_untracked());
+            store.toggle_sidebar();
+            assert!(store.sidebar_collapsed.get_untracked());
+            store.toggle_message_box();
+            assert!(store.message_box_open.get_untracked());
+            // Opening Command Palette auto-closes Message Box popover.
+            store.toggle_palette();
+            assert!(store.palette_open.get_untracked());
+            assert!(!store.message_box_open.get_untracked());
+
+            // Stored messages deduplicate consecutive identical messages and support dismiss/clear.
+            store.clear_messages();
+            store.set_info_notice("Saved config".to_owned());
+            store.set_info_notice("Saved config".to_owned());
+            assert_eq!(store.messages.with_untracked(|v| v.len()), 1);
+            store.set_error_notice("Network timeout".to_owned());
+            assert_eq!(store.messages.with_untracked(|v| v.len()), 2);
+
+            let update_notice = PassiveUpdateNotice {
+                latest_version: "0.5.0".into(),
+                channel: ReleaseChannel::Beta,
+                tag: "beta".into(),
+                is_channel_switch: false,
+                release_url: None,
+            };
+            let stored_msgs = store.messages.get_untracked();
+
+            // Active update + running sync + stored notices keep strict priority ordering and progress.
+            let synthesized = build_topbar_messages(&TopbarMessageInputs {
+                lang: UiLang::Zh,
+                update_applied_version: None,
+                update_applying: true,
+                update_progress: Some("正在下载 v0.5.0 (4.2 MB / 10.0 MB)"),
+                update_progress_fraction: Some(0.42),
+                update_checking: false,
+                update_notice: Some(&update_notice),
+                universe_syncing: false,
+                universe_progress: None,
+                inbox_catching_up: false,
+                inbox_progress: None,
+                deep_research_running: true,
+                deep_research_ticker: Some("COST"),
+                industry_research_running: false,
+                industry_progress: None,
+                syncing: true,
+                sync_stage: Some("更新行情快照"),
+                sync_progress: Some(0.75),
+                themes_syncing: false,
+                storage_scanning: false,
+                messages: &stored_msgs,
+            });
+            assert_eq!(synthesized.len(), 5);
+            assert_eq!(synthesized[0].tag, "UPDATING");
+            assert_eq!(synthesized[0].status, TopbarMessageStatus::Running);
+            assert_eq!(synthesized[0].progress, Some(0.42));
+            assert!(!synthesized[0].dismissible);
+
+            assert_eq!(synthesized[1].tag, "ALAN L2");
+            assert!(synthesized[1].title.contains("COST"));
+
+            assert_eq!(synthesized[2].tag, "SYNCING");
+            assert_eq!(synthesized[2].progress, Some(0.75));
+
+            assert_eq!(synthesized[3].tag, "ERROR");
+            assert_eq!(synthesized[3].status, TopbarMessageStatus::Error);
+            assert!(synthesized[3].dismissible);
+
+            assert_eq!(synthesized[4].tag, "NOTICE");
+            assert_eq!(synthesized[4].status, TopbarMessageStatus::Info);
+
+            // Applied update offers RestartAfterUpdate action at the top.
+            let applied = build_topbar_messages(&TopbarMessageInputs {
+                lang: UiLang::En,
+                update_applied_version: Some("0.5.0"),
+                update_applying: false,
+                update_progress: None,
+                update_progress_fraction: None,
+                update_checking: false,
+                update_notice: None,
+                universe_syncing: false,
+                universe_progress: None,
+                inbox_catching_up: false,
+                inbox_progress: None,
+                deep_research_running: false,
+                deep_research_ticker: None,
+                industry_research_running: false,
+                industry_progress: None,
+                syncing: false,
+                sync_stage: None,
+                sync_progress: None,
+                themes_syncing: false,
+                storage_scanning: false,
+                messages: &[],
+            });
+            assert_eq!(applied.len(), 1);
+            assert_eq!(applied[0].status, TopbarMessageStatus::ActionRequired);
+            assert_eq!(
+                applied[0].action,
+                Some(TopbarMessageAction::RestartAfterUpdate)
+            );
+
+            // Dismissing one stored message removes only that entry; clearing removes all.
+            let first_id = stored_msgs[0].id;
+            store.dismiss_message(first_id);
+            assert_eq!(store.messages.with_untracked(|v| v.len()), 1);
+            store.clear_messages();
+            assert!(store.messages.with_untracked(|v| v.is_empty()));
+            assert!(store.notice.get_untracked().is_none());
+        },
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn iconmcp_svg_assets_are_valid_current_color_markup() {
+    let all_icons = [
+        ("ICON_SIDEBAR_LEFT", icons::ICON_SIDEBAR_LEFT),
+        ("ICON_ARROW_LEFT", icons::ICON_ARROW_LEFT),
+        ("ICON_SEARCH", icons::ICON_SEARCH),
+        ("ICON_BELL", icons::ICON_BELL),
+        ("ICON_REFRESH", icons::ICON_REFRESH),
+        ("ICON_SETTINGS", icons::ICON_SETTINGS),
+        ("ICON_INBOX", icons::ICON_INBOX),
+        ("ICON_RADAR", icons::ICON_RADAR),
+        ("ICON_LAYERS", icons::ICON_LAYERS),
+        ("ICON_TARGET", icons::ICON_TARGET),
+        ("ICON_JOURNAL", icons::ICON_JOURNAL),
+        ("ICON_CLOSE", icons::ICON_CLOSE),
+        ("ICON_ARROW_CIRCLE_UP", icons::ICON_ARROW_CIRCLE_UP),
+        ("ICON_CHECK", icons::ICON_CHECK),
+        ("ICON_CIRCLE_CHECK", icons::ICON_CIRCLE_CHECK),
+        ("ICON_ALERT", icons::ICON_ALERT),
+        ("ICON_ENTER", icons::ICON_ENTER),
+        ("ICON_CHEVRON_DOWN", icons::ICON_CHEVRON_DOWN),
+        ("ICON_CHEVRON_RIGHT", icons::ICON_CHEVRON_RIGHT),
+    ];
+
+    for (name, markup) in all_icons {
+        assert!(markup.starts_with("<svg "), "{name} must start with <svg");
+        assert!(markup.ends_with("</svg>"), "{name} must end with </svg>");
+        assert!(
+            markup.contains("currentColor"),
+            "{name} must inherit currentColor"
+        );
+    }
+}
+
+#[test]
+fn main_window_attributes_uses_transparent_window_for_dark_frosted_glass() {
+    let attrs = main_window_attributes();
+    assert_eq!(attrs.transparent, Some(true));
+    assert_eq!(
+        attrs.backdrop,
+        Some(nsh_core::desktop::Backdrop::None),
+        "window backdrop must be None so M3SmokedGlassView + deep obsidian tint shine through cleanly"
+    );
+    assert!(
+        (8.0..=20.0).contains(&SMOKED_GLASS_BLUR_RADIUS),
+        "blur radius must stay low for crystal-clear translucency"
+    );
+    let glass_alpha = crate::theme::BG_SHELL_GLASS & 0xFF;
+    assert!(
+        (0xB0..0xE8).contains(&glass_alpha),
+        "BG_SHELL_GLASS alpha must stay deep obsidian yet translucent"
+    );
+}
+
+#[test]
+fn cmd_held_defaults_false_and_palette_groups_reset_on_close() {
+    let root = temp_workspace("m3_nsh_cmd_held_and_groups");
+    let paths = WorkspacePaths::from_root(root.clone());
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        |store| {
+            assert!(!store.cmd_held.get_untracked());
+            store.cmd_held.set(true);
+            assert!(store.cmd_held.get_untracked());
+            store.cmd_held.set(false);
+            assert!(!store.cmd_held.get_untracked());
+
+            store.open_palette();
+            assert!(store.palette_open.get_untracked());
+            assert!(
+                store
+                    .palette_expanded_groups
+                    .with_untracked(|g| g.is_empty())
+            );
+            store.toggle_palette_group("ACTIONS");
+            assert!(
+                store
+                    .palette_expanded_groups
+                    .with_untracked(|g| g.contains("ACTIONS"))
+            );
+            store.toggle_palette_group("ACTIONS");
+            assert!(
+                store
+                    .palette_expanded_groups
+                    .with_untracked(|g| !g.contains("ACTIONS"))
+            );
+
+            store.toggle_palette_group("CIRCLE");
+            store.close_palette();
+            assert!(!store.palette_open.get_untracked());
+            assert!(
+                store
+                    .palette_expanded_groups
+                    .with_untracked(|g| g.is_empty())
+            );
+        },
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn visible_palette_items_respects_silicon_group_expansion() {
+    let items = vec![
+        PaletteItem {
+            group: "VIEW".into(),
+            title: "Inbox".into(),
+            subtitle: "Signals".into(),
+            shortcut: Some("⌘1"),
+            dot_color: EMERALD_FG,
+            action: PaletteAction::SwitchTab(WorkspaceTab::Inbox),
+        },
+        PaletteItem {
+            group: "DATA".into(),
+            title: "Sync".into(),
+            subtitle: "Sync financials".into(),
+            shortcut: Some("⌘R"),
+            dot_color: SKY_FG,
+            action: PaletteAction::SyncNow,
+        },
+        PaletteItem {
+            group: "DATA".into(),
+            title: "Catchup".into(),
+            subtitle: "Catchup L1".into(),
+            shortcut: None,
+            dot_color: SKY_FG,
+            action: PaletteAction::CatchupEvents,
+        },
+        PaletteItem {
+            group: "DOSSIER".into(),
+            title: "COST Costco".into(),
+            subtitle: "#Retail".into(),
+            shortcut: Some("↵"),
+            dot_color: EMERALD_FG,
+            action: PaletteAction::OpenDossier("COST".into()),
+        },
+        PaletteItem {
+            group: "DOSSIER".into(),
+            title: "ODFL Old Dominion".into(),
+            subtitle: "#Freight".into(),
+            shortcut: Some("↵"),
+            dot_color: SKY_FG,
+            action: PaletteAction::OpenDossier("ODFL".into()),
+        },
+    ];
+
+    let collapsed = std::collections::HashSet::new();
+    let vis_collapsed = visible_palette_items_for(&items, "", &collapsed);
+    assert_eq!(vis_collapsed.len(), 3, "1 View + 1 Action + 1 Circle");
+
+    let mut expanded = std::collections::HashSet::new();
+    expanded.insert("ACTIONS".to_owned());
+    let vis_actions = visible_palette_items_for(&items, "", &expanded);
+    assert_eq!(vis_actions.len(), 4, "1 View + 2 Actions + 1 Circle");
+
+    let vis_query = visible_palette_items_for(&items, "catchup", &collapsed);
+    assert_eq!(vis_query.len(), 1);
+    assert_eq!(vis_query[0].title, "Catchup");
 }

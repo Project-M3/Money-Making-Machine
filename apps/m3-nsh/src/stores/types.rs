@@ -616,6 +616,48 @@ pub struct SidebarDockNotice {
     pub dismissible: bool,
 }
 
+/// Lifecycle state of an item displayed in the unified Topbar Message Box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopbarMessageStatus {
+    Running,
+    ActionRequired,
+    Success,
+    Error,
+    Info,
+}
+
+/// Optional quick action attached to a unified Topbar Message Box entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopbarMessageAction {
+    ApplyUpdate,
+    RestartAfterUpdate,
+    CheckUpdate,
+    OpenSettings,
+}
+
+/// User-facing notification or error stored in `AppStore::messages`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredAppMessage {
+    pub id: u64,
+    pub is_error: bool,
+    pub message: String,
+}
+
+/// Unified activity/status message item rendered in the Topbar Message Box pill and popover.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopbarMessage {
+    pub id: Option<u64>,
+    pub tag: &'static str,
+    pub title: String,
+    pub detail: Option<String>,
+    pub status: TopbarMessageStatus,
+    pub progress: Option<f32>,
+    pub dot_color: u32,
+    pub border_color: u32,
+    pub action: Option<TopbarMessageAction>,
+    pub dismissible: bool,
+}
+
 /// Valuation multiple preset for Industry Research Studio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndustryValuationPreset {

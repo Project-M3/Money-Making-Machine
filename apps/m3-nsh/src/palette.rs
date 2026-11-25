@@ -1,8 +1,13 @@
 //! Bilingual `⌘K` Command Palette backed by native IME-safe `nsh_core::prelude::input()`.
 
-use crate::components::{kbd, styled_input};
+use crate::components::{animate_shell_spring, cmd_kbd_right_overlay, kbd, styled_input};
 use crate::format::{
     build_alan_interrogation_prompt_for, collect_circle_tags, filter_palette_items,
+};
+use crate::icons::{
+    ICON_ALERT, ICON_ARROW_CIRCLE_UP, ICON_CHECK, ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT,
+    ICON_CLOSE, ICON_ENTER, ICON_INBOX, ICON_JOURNAL, ICON_LAYERS, ICON_RADAR, ICON_REFRESH,
+    ICON_SEARCH, ICON_SETTINGS, ICON_TARGET, icon,
 };
 use crate::platform_desktop::{copy_text_with_notice, restart_after_update};
 use crate::stores::{
@@ -690,218 +695,654 @@ pub fn execute_palette_action(store: AppStore, action: PaletteAction) {
     }
 }
 
-/// Renders the `⌘K` Command Palette overlay when `store.palette_open` is `true`.
-pub fn command_palette_overlay(store: AppStore) -> impl IntoElement {
-    let filtered_items = computed(move || {
-        let all = build_palette_items_from_store(store);
-        let q = store.palette_query.get();
-        filter_palette_items(&all, &q)
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>()
-    });
+fn is_view_palette_item(item: &PaletteItem) -> bool {
+    matches!(
+        item.action,
+        PaletteAction::SwitchTab(_)
+            | PaletteAction::OpenSettings
+            | PaletteAction::OpenCompanyTab(_)
+    )
+}
 
-    overlay()
+fn is_circle_palette_item(item: &PaletteItem) -> bool {
+    matches!(
+        item.action,
+        PaletteAction::OpenDossier(_)
+            | PaletteAction::OpenAgent(_)
+            | PaletteAction::RunDeepResearch(_)
+            | PaletteAction::FocusBasket(_)
+            | PaletteAction::MoveCompanyBucket(_, _)
+            | PaletteAction::FilterCircle(_)
+    )
+}
+
+fn palette_item_icon(item: &PaletteItem) -> &'static str {
+    match &item.action {
+        PaletteAction::SwitchTab(WorkspaceTab::Inbox) => ICON_INBOX,
+        PaletteAction::SwitchTab(WorkspaceTab::Universe) | PaletteAction::FocusSimilarSearch => {
+            ICON_RADAR
+        }
+        PaletteAction::SwitchTab(WorkspaceTab::Industry) => ICON_LAYERS,
+        PaletteAction::SwitchTab(WorkspaceTab::Baskets) => ICON_TARGET,
+        PaletteAction::SwitchTab(WorkspaceTab::Journal) => ICON_JOURNAL,
+        PaletteAction::SwitchTab(WorkspaceTab::Settings) | PaletteAction::OpenSettings => {
+            ICON_SETTINGS
+        }
+        PaletteAction::OpenCompanyTab(_)
+        | PaletteAction::OpenDossier(_)
+        | PaletteAction::FocusBasket(_)
+        | PaletteAction::MoveCompanyBucket(_, _)
+        | PaletteAction::FilterCircle(_) => ICON_TARGET,
+        PaletteAction::OpenAgent(_) | PaletteAction::RunDeepResearch(_) => ICON_LAYERS,
+        PaletteAction::SyncNow
+        | PaletteAction::CatchupEvents
+        | PaletteAction::SyncUniverseNow
+        | PaletteAction::SyncThemes => ICON_REFRESH,
+        PaletteAction::CheckUpdate
+        | PaletteAction::ApplyUpdate
+        | PaletteAction::RestartApp
+        | PaletteAction::SwitchUpdateChannel(_) => ICON_ARROW_CIRCLE_UP,
+        PaletteAction::SetLanguage(_) => ICON_SEARCH,
+        PaletteAction::ShowBudgetStatus
+        | PaletteAction::ToggleBasis
+        | PaletteAction::ShowM3Engraving => ICON_CHECK,
+        PaletteAction::ToggleBasketsView | PaletteAction::ToggleInspector => ICON_LAYERS,
+        PaletteAction::CopyCli(_, _) => ICON_ALERT,
+    }
+}
+
+/// Computes the exact flattened list of visible Command Box rows matching the current query
+/// and collapsible Silicon-style group expansion state so keyboard `Up`/`Down`/`Enter` stay synced.
+pub fn visible_palette_items_for<'a>(
+    all: &'a [PaletteItem],
+    query: &str,
+    expanded_groups: &std::collections::HashSet<String>,
+) -> Vec<&'a PaletteItem> {
+    let trimmed = query.trim();
+    if !trimmed.is_empty() {
+        return filter_palette_items(all, trimmed);
+    }
+
+    let views: Vec<&PaletteItem> = all.iter().filter(|i| is_view_palette_item(i)).collect();
+    let actions: Vec<&PaletteItem> = all
+        .iter()
+        .filter(|i| !is_view_palette_item(i) && !is_circle_palette_item(i))
+        .collect();
+    let circles: Vec<&PaletteItem> = all.iter().filter(|i| is_circle_palette_item(i)).collect();
+
+    let mut out = Vec::with_capacity(views.len() + actions.len() + 8);
+    out.extend(views);
+    if expanded_groups.contains("ACTIONS") {
+        out.extend(actions);
+    } else if let Some(first) = actions.first() {
+        out.push(*first);
+    }
+    if expanded_groups.contains("CIRCLE") {
+        out.extend(circles.into_iter().take(10));
+    } else if let Some(first) = circles.first() {
+        out.push(*first);
+    }
+    out
+}
+
+fn render_palette_row(store: AppStore, item: PaletteItem, is_active: bool) -> impl IntoElement {
+    let action = item.action.clone();
+    let row_bg = if is_active {
+        rgb(BG_SELECTED_ROW)
+    } else {
+        rgba(0x00000000)
+    };
+    let icon_svg = palette_item_icon(&item);
+
+    let mut right = view().flex().flex_row().items_center().gap(px(6.0)).child(
+        text(item.group)
+            .font_family(FONT_MONO_TERM)
+            .text_size(px(TEXT_2XS))
+            .text_color(rgb(INK_MUTED)),
+    );
+    if is_active {
+        right = right.child(icon(ICON_ENTER, 13.0).text_color(rgb(SKY_FG)));
+    } else if let Some(sc) = item.shortcut {
+        right = right.child(kbd(sc));
+    }
+
+    view()
+        .px(px(12.0))
+        .py(px(7.0))
+        .mx(px(6.0))
+        .rounded_md()
+        .cursor_pointer()
+        .bg(row_bg)
+        .hover(|s| s.bg(rgb(BG_HOVER)))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(10.0))
+        .on_press(move || {
+            animate_shell_spring();
+            execute_palette_action(store, action.clone());
+        })
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(9.0))
+                .child(icon(icon_svg, 14.0).text_color(rgb(if is_active {
+                    item.dot_color
+                } else {
+                    INK_SECONDARY
+                })))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.0))
+                        .child(
+                            text(item.title)
+                                .font_family(FONT_UI)
+                                .text_size(px(TEXT_SM))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(if is_active { INK_HERO } else { INK_PRIMARY }))
+                                .truncate()
+                                .number_of_lines(1),
+                        )
+                        .child(
+                            text(item.subtitle)
+                                .font_family(FONT_UI)
+                                .text_size(px(TEXT_XS))
+                                .text_color(rgb(INK_MUTED))
+                                .truncate()
+                                .number_of_lines(1),
+                        ),
+                ),
+        )
+        .child(right)
+}
+
+fn render_group_header(
+    store: AppStore,
+    title: String,
+    count: usize,
+    collapsible_key: Option<(&'static str, bool)>,
+) -> View {
+    let mut header = view()
+        .px(px(14.0))
+        .pt(px(8.0))
+        .pb(px(3.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .child(
+            text(title)
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_2XS))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(INK_MUTED)),
+        );
+
+    let mut right = view().flex().flex_row().items_center().gap(px(6.0)).child(
+        text(format!("{count}"))
+            .font_family(FONT_MONO_NUM)
+            .text_size(px(TEXT_2XS))
+            .text_color(rgb(INK_MUTED)),
+    );
+    if let Some((key, expanded)) = collapsible_key {
+        right = right.child(
+            view()
+                .p(px(2.0))
+                .rounded_xs()
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                .on_press(move || {
+                    animate_shell_spring();
+                    store.toggle_palette_group(key);
+                })
+                .child(
+                    icon(
+                        if expanded {
+                            ICON_CHEVRON_DOWN
+                        } else {
+                            ICON_CHEVRON_RIGHT
+                        },
+                        12.0,
+                    )
+                    .text_color(rgb(INK_MUTED)),
+                ),
+        );
+    }
+    header = header.child(right);
+    header
+}
+
+fn render_expand_group_pill(
+    store: AppStore,
+    group_key: &'static str,
+    label: String,
+    extra: usize,
+) -> View {
+    view()
+        .mx(px(12.0))
+        .my(px(4.0))
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded_md()
+        .cursor_pointer()
+        .bg(rgba(RAIL_HOVER))
+        .border_1()
+        .border_color(rgba(BORDER_GLASS_SUBTLE))
+        .hover(|s| s.bg(rgba(RAIL_ACTIVE)))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .on_press(move || {
+            animate_shell_spring();
+            store.toggle_palette_group(group_key);
+        })
+        .child(
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(icon(ICON_CHEVRON_RIGHT, 12.0).text_color(rgb(INK_SECONDARY)))
+                .child(
+                    text(label)
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_XS))
+                        .text_color(rgb(INK_SECONDARY)),
+                ),
+        )
+        .child(
+            text(format!("+{extra}"))
+                .font_family(FONT_MONO_NUM)
+                .text_size(px(TEXT_2XS))
+                .text_color(rgb(INK_MUTED)),
+        )
+}
+
+/// Renders the Silicon-style persistent top-centered morphing Command Box (`⌘K`).
+///
+/// Sits dead center in the unified topbar when collapsed (`400×30px`), and springs smoothly in-place
+/// into a `560px` elevated command box with collapsible Silicon-style groups when opened.
+pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) -> impl IntoElement {
+    view()
         .absolute()
         .inset_0()
-        .flex()
-        .flex_col()
-        .items_center()
-        .pt(px(88.0))
+        .pointer_events(PointerEvents::None)
+        .child(when(
+            move || store.palette_open.get(),
+            move || {
+                view()
+                    .absolute()
+                    .inset_0()
+                    .pointer_events(PointerEvents::Auto)
+                    .bg(rgba(0x00000038))
+                    .on_press(move || {
+                        animate_shell_spring();
+                        store.close_palette();
+                    })
+            },
+        ))
         .child(
             view()
                 .absolute()
-                .inset_0()
-                .bg(rgba(SCRIM_BACKDROP))
-                .on_press(move || store.close_palette()),
-        )
-        .child(
-            view()
-                .w(px(600.0))
-                .max_h(px(470.0))
-                .rounded_xl()
-                .bg(rgb(BG_PALETTE))
-                .border_1()
-                .border_color(rgb(BORDER_PALETTE))
-                .overflow_hidden()
+                .top(px(7.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .pointer_events(PointerEvents::None)
                 .flex()
                 .flex_col()
+                .items_center()
                 .child(
                     view()
-                        .flex_shrink_0()
-                        .px(px(16.0))
-                        .py(px(10.0))
-                        .border_b_1()
-                        .border_color(rgb(BORDER_HAIRLINE))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(10.0))
-                        .child(
-                            text(">")
-                                .font_family(FONT_MONO_TERM)
-                                .text_size(px(TEXT_MD))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(SKY_FG)),
-                        )
-                        .child(
-                            styled_input(
-                                move || store.palette_query.get(),
-                                move || {
-                                    store
-                                        .lang
-                                        .get()
-                                        .t(
-                                            "输入 Ticker、公司名、行业或命令…",
-                                            "Type ticker, company, industry, or command…",
-                                        )
-                                        .to_owned()
-                                },
-                                false,
-                            )
-                            .auto_focus(true)
-                            .border_none()
-                            .bg(rgba(0x00000000))
-                            .flex_1()
-                            .on_change(move |val: &str| {
-                                store.palette_query.set(val.to_owned());
-                                store.palette_cursor.set(0);
-                            })
-                            .on_submit(move |_: &str| {
-                                let list = filtered_items.get_untracked();
-                                let cur = store.palette_cursor.get_untracked();
-                                let idx = cur.min(list.len().saturating_sub(1));
-                                if let Some(it) = list.get(idx) {
-                                    execute_palette_action(store, it.action.clone());
-                                }
-                            }),
-                        )
-                        .child(kbd("ESC")),
-                )
-                .child(
-                    scroll()
-                        .w_full()
-                        .h(move || {
-                            let count = filtered_items.get().len();
-                            if count == 0 {
-                                px(72.0)
+                        .w(move || px(if store.palette_open.get() { 560.0 } else { 400.0 }))
+                        .max_h(px(460.0))
+                        .rounded_lg()
+                        .bg(move || {
+                            if store.palette_open.get() {
+                                rgba(BG_COMMAND_CARD)
                             } else {
-                                px(((count as f32) * 52.0 + 12.0).min(400.0))
+                                rgba(BG_COMMAND_PILL)
                             }
                         })
-                        .child(dynamic(move || {
-                            let list = filtered_items.get();
-                            let active_idx =
-                                store.palette_cursor.get().min(list.len().saturating_sub(1));
-                            if list.is_empty() {
-                                return view()
-                                    .w_full()
-                                    .p(px(24.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        text(
-                                            store
-                                                .lang
-                                                .get()
-                                                .t(
-                                                    "未匹配到命令或标的",
-                                                    "No matching command or ticker",
-                                                )
-                                                .to_owned(),
-                                        )
-                                        .font_family(FONT_UI)
-                                        .text_size(px(TEXT_SM))
-                                        .text_color(rgb(INK_MUTED)),
-                                    );
+                        .border_1()
+                        .border_color(move || {
+                            if store.palette_open.get() {
+                                rgba(BORDER_GLASS_STRONG)
+                            } else {
+                                rgba(BORDER_GLASS_SUBTLE)
                             }
-                            view().w_full().flex().flex_col().py(px(6.0)).children(
-                                list.into_iter().enumerate().map(|(idx, item)| {
-                                    let is_active = idx == active_idx;
-                                    let action = item.action.clone();
-                                    let row_bg = if is_active {
-                                        rgb(BG_SELECTED_ROW)
-                                    } else {
-                                        rgba(0x00000000)
-                                    };
-                                    let mut row = view()
-                                        .px(px(14.0))
-                                        .py(px(8.0))
-                                        .mx(px(6.0))
-                                        .rounded_md()
-                                        .cursor_pointer()
-                                        .bg(row_bg)
-                                        .hover(|s| s.bg(rgb(BG_HOVER)))
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_between()
-                                        .gap(px(12.0))
-                                        .on_press(move || {
-                                            execute_palette_action(store, action.clone());
-                                        })
-                                        .child(
-                                            view()
-                                                .flex_1()
-                                                .min_w(px(0.0))
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .gap(px(10.0))
-                                                .child(
-                                                    view()
-                                                        .w(px(6.0))
-                                                        .h(px(6.0))
-                                                        .rounded_full()
-                                                        .flex_shrink_0()
-                                                        .bg(rgb(item.dot_color)),
+                        })
+                        .shadow_md()
+                        .overflow_hidden()
+                        .pointer_events(PointerEvents::Auto)
+                        .window_drag(false)
+                        .flex()
+                        .flex_col()
+                        .child(when(
+                            move || !store.palette_open.get(),
+                            move || {
+                                view()
+                                    .relative()
+                                    .w_full()
+                                    .h(px(30.0))
+                                    .px(px(12.0))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                                    .active(|s| s.bg(rgba(RAIL_ACTIVE)))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(8.0))
+                                    .on_press(move || {
+                                        animate_shell_spring();
+                                        store.open_palette();
+                                    })
+                                    .child(
+                                        view()
+                                            .flex_1()
+                                            .min_w(px(0.0))
+                                            .overflow_hidden()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(7.0))
+                                            .child(
+                                                icon(ICON_SEARCH, 13.0)
+                                                    .text_color(rgb(INK_MUTED)),
+                                            )
+                                            .child(
+                                                text(move || breadcrumb.get())
+                                                    .font_family(FONT_UI)
+                                                    .text_size(px(TEXT_XS))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(rgb(INK_PRIMARY))
+                                                    .truncate()
+                                                    .number_of_lines(1),
+                                            ),
+                                    )
+                                    .child(cmd_kbd_right_overlay(store, "⌘K"))
+                            },
+                        ))
+                        .child(when(
+                            move || store.palette_open.get(),
+                            move || {
+                                view()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        view()
+                                            .flex_shrink_0()
+                                            .h(px(40.0))
+                                            .px(px(14.0))
+                                            .border_b_1()
+                                            .border_color(rgb(BORDER_HAIRLINE))
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(9.0))
+                                            .child(
+                                                icon(ICON_SEARCH, 14.0)
+                                                    .text_color(rgb(SKY_FG)),
+                                            )
+                                            .child(
+                                                styled_input(
+                                                    move || store.palette_query.get(),
+                                                    move || {
+                                                        store
+                                                            .lang
+                                                            .get()
+                                                            .t(
+                                                                "输入 Ticker、公司名、行业或命令…",
+                                                                "Type ticker, company, industry, or command…",
+                                                            )
+                                                            .to_owned()
+                                                    },
+                                                    false,
                                                 )
-                                                .child(
+                                                .auto_focus(true)
+                                                .border_none()
+                                                .bg(rgba(0x00000000))
+                                                .flex_1()
+                                                .on_change(move |val: &str| {
+                                                    animate_shell_spring();
+                                                    store.palette_query.set(val.to_owned());
+                                                    store.palette_cursor.set(0);
+                                                })
+                                                .on_submit(move |_: &str| {
+                                                    let all = build_palette_items_from_store(store);
+                                                    let q = store.palette_query.get_untracked();
+                                                    let exp = store
+                                                        .palette_expanded_groups
+                                                        .get_untracked();
+                                                    let visible =
+                                                        visible_palette_items_for(&all, &q, &exp);
+                                                    let cur = store.palette_cursor.get_untracked();
+                                                    let idx = cur
+                                                        .min(visible.len().saturating_sub(1));
+                                                    if let Some(it) = visible.get(idx) {
+                                                        animate_shell_spring();
+                                                        execute_palette_action(
+                                                            store,
+                                                            it.action.clone(),
+                                                        );
+                                                    }
+                                                }),
+                                            )
+                                            .child(
+                                                view()
+                                                    .p(px(4.0))
+                                                    .rounded_sm()
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                                                    .on_press(move || {
+                                                        animate_shell_spring();
+                                                        store.close_palette();
+                                                    })
+                                                    .child(
+                                                        icon(ICON_CLOSE, 13.0)
+                                                            .text_color(rgb(INK_MUTED)),
+                                                    ),
+                                            )
+                                            .child(kbd("ESC")),
+                                    )
+                                    .child(dynamic(move || {
+                                        let l = store.lang.get();
+                                        let all = build_palette_items_from_store(store);
+                                        let q = store.palette_query.get();
+                                        let exp = store.palette_expanded_groups.get();
+
+                                        if !q.trim().is_empty() {
+                                            let filtered: Vec<PaletteItem> =
+                                                filter_palette_items(&all, &q)
+                                                    .into_iter()
+                                                    .cloned()
+                                                    .collect();
+                                            let active_idx = store
+                                                .palette_cursor
+                                                .get()
+                                                .min(filtered.len().saturating_sub(1));
+                                            if filtered.is_empty() {
+                                                return view()
+                                                    .w_full()
+                                                    .p(px(22.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        text(
+                                                            l.t(
+                                                                "未匹配到命令或标的",
+                                                                "No matching command or ticker",
+                                                            )
+                                                            .to_owned(),
+                                                        )
+                                                        .font_family(FONT_UI)
+                                                        .text_size(px(TEXT_SM))
+                                                        .text_color(rgb(INK_MUTED)),
+                                                    );
+                                            }
+                                            let h = ((filtered.len() as f32) * 46.0 + 12.0)
+                                                .min(390.0);
+                                            return view().w_full().h(px(h)).child(
+                                                scroll().w_full().h_full().child(
                                                     view()
-                                                        .flex_1()
-                                                        .min_w(px(0.0))
+                                                        .w_full()
                                                         .flex()
                                                         .flex_col()
-                                                        .gap(px(2.0))
-                                                        .child(
-                                                            text(item.title)
-                                                                .font_family(FONT_UI)
-                                                                .text_size(px(TEXT_SM))
-                                                                .font_weight(FontWeight::MEDIUM)
-                                                                .text_color(rgb(if is_active {
-                                                                    INK_HERO
-                                                                } else {
-                                                                    INK_PRIMARY
-                                                                }))
-                                                                .truncate()
-                                                                .number_of_lines(1),
-                                                        )
-                                                        .child(
-                                                            text(item.subtitle)
-                                                                .font_family(FONT_UI)
-                                                                .text_size(px(TEXT_XS))
-                                                                .text_color(rgb(INK_MUTED))
-                                                                .truncate()
-                                                                .number_of_lines(1),
+                                                        .py(px(6.0))
+                                                        .children(
+                                                            filtered.into_iter().enumerate().map(
+                                                                |(idx, item)| {
+                                                                    render_palette_row(
+                                                                        store,
+                                                                        item,
+                                                                        idx == active_idx,
+                                                                    )
+                                                                },
+                                                            ),
                                                         ),
                                                 ),
-                                        );
-                                    let mut right =
-                                        view().flex().flex_row().items_center().gap(px(6.0)).child(
-                                            text(item.group)
-                                                .font_family(FONT_MONO_TERM)
-                                                .text_size(px(TEXT_2XS))
-                                                .text_color(rgb(INK_MUTED)),
-                                        );
-                                    if let Some(sc) = item.shortcut {
-                                        right = right.child(kbd(sc));
-                                    }
-                                    row = row.child(right);
-                                    row
-                                }),
-                            )
-                        })),
+                                            );
+                                        }
+
+                                        let views: Vec<PaletteItem> = all
+                                            .iter()
+                                            .filter(|i| is_view_palette_item(i))
+                                            .cloned()
+                                            .collect();
+                                        let actions: Vec<PaletteItem> = all
+                                            .iter()
+                                            .filter(|i| {
+                                                !is_view_palette_item(i)
+                                                    && !is_circle_palette_item(i)
+                                            })
+                                            .cloned()
+                                            .collect();
+                                        let circles: Vec<PaletteItem> = all
+                                            .iter()
+                                            .filter(|i| is_circle_palette_item(i))
+                                            .cloned()
+                                            .collect();
+
+                                        let actions_exp = exp.contains("ACTIONS");
+                                        let circles_exp = exp.contains("CIRCLE");
+                                        let actions_total = actions.len();
+                                        let circles_total = circles.len();
+                                        let shown_actions: Vec<PaletteItem> = if actions_exp {
+                                            actions
+                                        } else {
+                                            actions.into_iter().take(1).collect()
+                                        };
+                                        let shown_circles: Vec<PaletteItem> = if circles_exp {
+                                            circles.into_iter().take(10).collect()
+                                        } else {
+                                            circles.into_iter().take(1).collect()
+                                        };
+
+                                        let visible_len = views.len()
+                                            + shown_actions.len()
+                                            + shown_circles.len();
+                                        let active_idx = store
+                                            .palette_cursor
+                                            .get()
+                                            .min(visible_len.saturating_sub(1));
+
+                                        let mut list_col =
+                                            view().w_full().flex().flex_col().pb(px(6.0));
+                                        let mut flat_idx = 0usize;
+
+                                        if !views.is_empty() {
+                                            list_col = list_col.child(render_group_header(
+                                                store,
+                                                l.t("工作台视图", "WORKSPACE VIEWS").to_owned(),
+                                                views.len(),
+                                                None,
+                                            ));
+                                            for item in views {
+                                                list_col = list_col.child(render_palette_row(
+                                                    store,
+                                                    item,
+                                                    flat_idx == active_idx,
+                                                ));
+                                                flat_idx += 1;
+                                            }
+                                        }
+
+                                        if actions_total > 0 {
+                                            list_col = list_col.child(render_group_header(
+                                                store,
+                                                l.t("常用操作", "COMMANDS & SYNC").to_owned(),
+                                                actions_total,
+                                                (actions_total > 1)
+                                                    .then_some(("ACTIONS", actions_exp)),
+                                            ));
+                                            let shown_cnt = shown_actions.len();
+                                            for item in shown_actions {
+                                                list_col = list_col.child(render_palette_row(
+                                                    store,
+                                                    item,
+                                                    flat_idx == active_idx,
+                                                ));
+                                                flat_idx += 1;
+                                            }
+                                            if !actions_exp && actions_total > shown_cnt {
+                                                list_col = list_col.child(render_expand_group_pill(
+                                                    store,
+                                                    "ACTIONS",
+                                                    l.t("展开全部操作", "More commands")
+                                                        .to_owned(),
+                                                    actions_total - shown_cnt,
+                                                ));
+                                            }
+                                        }
+
+                                        if circles_total > 0 {
+                                            list_col = list_col.child(render_group_header(
+                                                store,
+                                                l.t("能力圈标的", "CIRCLE DOSSIERS").to_owned(),
+                                                circles_total,
+                                                (circles_total > 1)
+                                                    .then_some(("CIRCLE", circles_exp)),
+                                            ));
+                                            let shown_cnt = shown_circles.len();
+                                            for item in shown_circles {
+                                                list_col = list_col.child(render_palette_row(
+                                                    store,
+                                                    item,
+                                                    flat_idx == active_idx,
+                                                ));
+                                                flat_idx += 1;
+                                            }
+                                            if !circles_exp && circles_total > shown_cnt {
+                                                list_col = list_col.child(render_expand_group_pill(
+                                                    store,
+                                                    "CIRCLE",
+                                                    l.t("展开能力圈标的", "More companies")
+                                                        .to_owned(),
+                                                    circles_total - shown_cnt,
+                                                ));
+                                            }
+                                        }
+
+                                        let est_h = (visible_len as f32 * 45.0 + 96.0).min(410.0);
+                                        view()
+                                            .w_full()
+                                            .h(px(est_h))
+                                            .child(scroll().w_full().h_full().child(list_col))
+                                    }))
+                            },
+                        )),
                 ),
         )
 }

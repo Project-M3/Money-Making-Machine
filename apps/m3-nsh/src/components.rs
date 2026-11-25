@@ -1,8 +1,10 @@
 //! Shared Obsidian UI primitives built on native NSH 0.7.0 elements.
 
+use crate::stores::AppStore;
 use crate::theme::*;
 use m3_core::i18n::UiLang;
 use m3_core::model::{AnnualMetricRow, WarningFlag, WarningSeverity};
+use nsh_core::element::{LayoutAnimation, LayoutCurve, LayoutTransition};
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
 
@@ -97,6 +99,19 @@ pub fn seg_tab<M>(
     el
 }
 
+/// Configures an NSH spring layout transition for the next UI commit (sidebar, popovers, Command Box).
+pub fn animate_shell_spring() {
+    animate_layout(LayoutAnimation {
+        create: Some(LayoutTransition::spring(
+            Spring::new(220.0).damping_ratio(0.88),
+        )),
+        update: Some(LayoutTransition::spring(
+            Spring::new(250.0).damping_ratio(0.86),
+        )),
+        delete: Some(LayoutTransition::new(LayoutCurve::EaseOut, 140.0)),
+    });
+}
+
 /// Keyboard shortcut pill (`⌘K`, `⌘1`, etc.).
 pub fn kbd(label: impl IntoReactive<SharedString>) -> View {
     view()
@@ -112,6 +127,91 @@ pub fn kbd(label: impl IntoReactive<SharedString>) -> View {
                 .text_size(px(TEXT_2XS))
                 .text_color(rgb(INK_MUTED)),
         )
+}
+
+fn floating_kbd(label: &'static str) -> View {
+    view()
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded_xs()
+        .bg(rgb(0x14141E))
+        .border_1()
+        .border_color(rgba(BORDER_GLASS_STRONG))
+        .shadow_sm()
+        .child(
+            text(label)
+                .font_family(FONT_MONO_TERM)
+                .text_size(px(TEXT_2XS))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(INK_PRIMARY)),
+        )
+}
+
+/// Zero-layout-shift inline shortcut pill hidden via opacity until `⌘` (Command) is held.
+pub fn cmd_kbd(store: AppStore, label: &'static str) -> View {
+    kbd(label)
+        .opacity(move || {
+            if store.cmd_held.get() {
+                1.0_f32
+            } else {
+                0.0_f32
+            }
+        })
+        .pointer_events(PointerEvents::None)
+}
+
+/// Zero-layout-shift keycap badge floating on the top-right corner of a `.relative()` button.
+pub fn cmd_kbd_corner(store: AppStore, label: &'static str) -> View {
+    view()
+        .absolute()
+        .top(px(-7.0))
+        .right(px(-5.0))
+        .pointer_events(PointerEvents::None)
+        .opacity(move || {
+            if store.cmd_held.get() {
+                1.0_f32
+            } else {
+                0.0_f32
+            }
+        })
+        .child(floating_kbd(label))
+}
+
+/// Zero-layout-shift keycap badge floating on the bottom-right corner of topbar icon buttons.
+pub fn cmd_kbd_bottom_corner(store: AppStore, label: &'static str) -> View {
+    view()
+        .absolute()
+        .bottom(px(-7.0))
+        .right(px(-4.0))
+        .pointer_events(PointerEvents::None)
+        .opacity(move || {
+            if store.cmd_held.get() {
+                1.0_f32
+            } else {
+                0.0_f32
+            }
+        })
+        .child(floating_kbd(label))
+}
+
+/// Zero-layout-shift keycap badge floating vertically centered at the right edge of a `.relative()` row.
+pub fn cmd_kbd_right_overlay(store: AppStore, label: &'static str) -> View {
+    view()
+        .absolute()
+        .right(px(8.0))
+        .top(px(0.0))
+        .bottom(px(0.0))
+        .pointer_events(PointerEvents::None)
+        .flex()
+        .items_center()
+        .opacity(move || {
+            if store.cmd_held.get() {
+                1.0_f32
+            } else {
+                0.0_f32
+            }
+        })
+        .child(floating_kbd(label))
 }
 
 /// Semantic pill badge.

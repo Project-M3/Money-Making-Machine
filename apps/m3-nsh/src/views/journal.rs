@@ -1,8 +1,8 @@
 //! Theme Archetype Clusters & Append-Only Decision Journal view (`⌘5`).
 
 use crate::components::{
-    action_button, badge_pill, concept_hint_static, kbd, mono_left, mono_right, obsidian_card,
-    v_divider,
+    action_button, badge_pill, cmd_kbd_corner, concept_hint_static, mono_left, mono_right,
+    obsidian_card, v_divider,
 };
 use crate::format::{
     fmt_pct_clean, fmt_price, fmt_time_cn_for, format_theme_member_distance,
@@ -98,10 +98,7 @@ fn render_themes_section(store: AppStore) -> View {
                         ))
                         .child(
                             view()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.0))
+                                .relative()
                                 .child(action_button(
                                     if syncing {
                                         l.t("同步中…", "Syncing…").to_owned()
@@ -111,7 +108,7 @@ fn render_themes_section(store: AppStore) -> View {
                                     !syncing,
                                     move || store.start_themes_sync(),
                                 ))
-                                .child(kbd("s")),
+                                .child(cmd_kbd_corner(store, "s")),
                         )
                 })),
         )
@@ -838,6 +835,7 @@ fn render_entries_card(store: AppStore, journal: &DecisionJournal, l: UiLang) ->
                 )
                 .child(
                     view()
+                        .relative()
                         .px(px(10.0))
                         .py(px(4.0))
                         .rounded_sm()
@@ -849,7 +847,6 @@ fn render_entries_card(store: AppStore, journal: &DecisionJournal, l: UiLang) ->
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap(px(6.0))
                         .on_press(move || {
                             copy_text_with_notice(store, journal_cmd.to_owned(), "journal record");
                         })
@@ -859,7 +856,7 @@ fn render_entries_card(store: AppStore, journal: &DecisionJournal, l: UiLang) ->
                                 .text_size(px(TEXT_XS))
                                 .text_color(rgb(INK_SECONDARY)),
                         )
-                        .child(kbd("c")),
+                        .child(cmd_kbd_corner(store, "c")),
                 ),
         )
         .child(

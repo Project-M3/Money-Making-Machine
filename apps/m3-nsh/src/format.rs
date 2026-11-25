@@ -2,7 +2,8 @@
 
 use crate::stores::types::{
     DeepResearchPerspectiveUi, InboxFilter, MemoSection, PaletteItem, ParsedResearchMemo,
-    PerspectiveUiStatus, SidebarDockNotice, SortCol, StatusQuickFilter, TodayPulse,
+    PerspectiveUiStatus, SidebarDockNotice, SortCol, StatusQuickFilter, StoredAppMessage,
+    TodayPulse, TopbarMessage, TopbarMessageAction, TopbarMessageStatus,
 };
 use crate::theme::{
     BG_WELL, BORDER_SUBTLE, CORAL_BG, CORAL_BORDER, CORAL_FG, EMERALD_BG, EMERALD_BORDER,
@@ -19,6 +20,7 @@ use m3_core::model::{
     WarningSeverity, primary_circle_tag,
 };
 use m3_core::research::{DeepResearchEvent, DeepResearchResult};
+use m3_core::update::PassiveUpdateNotice;
 use rust_decimal::Decimal;
 use std::{cmp::Ordering, collections::BTreeMap};
 
@@ -812,6 +814,288 @@ pub fn resolve_sidebar_dock_notice_for(
         });
     }
     None
+}
+
+/// Snapshot of store signals synthesized into unified [`TopbarMessage`] entries.
+pub struct TopbarMessageInputs<'a> {
+    pub lang: UiLang,
+    pub update_applied_version: Option<&'a str>,
+    pub update_applying: bool,
+    pub update_progress: Option<&'a str>,
+    pub update_progress_fraction: Option<f32>,
+    pub update_checking: bool,
+    pub update_notice: Option<&'a PassiveUpdateNotice>,
+    pub universe_syncing: bool,
+    pub universe_progress: Option<&'a str>,
+    pub inbox_catching_up: bool,
+    pub inbox_progress: Option<&'a str>,
+    pub deep_research_running: bool,
+    pub deep_research_ticker: Option<&'a str>,
+    pub industry_research_running: bool,
+    pub industry_progress: Option<&'a str>,
+    pub syncing: bool,
+    pub sync_stage: Option<&'a str>,
+    pub sync_progress: Option<f32>,
+    pub themes_syncing: bool,
+    pub storage_scanning: bool,
+    pub messages: &'a [StoredAppMessage],
+}
+
+/// Builds the ordered unified list of active tasks, update prompts, errors, and notices
+/// shown inside the Topbar Message Box pill and popover.
+pub fn build_topbar_messages(inputs: &TopbarMessageInputs<'_>) -> Vec<TopbarMessage> {
+    let l = inputs.lang;
+    let mut out = Vec::new();
+
+    if let Some(ver) = inputs.update_applied_version {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "UPDATE",
+            title: match l {
+                UiLang::Zh => format!("M3 v{ver} 已就绪，重启以生效"),
+                UiLang::En => format!("M3 v{ver} ready — restart to apply"),
+            },
+            detail: None,
+            status: TopbarMessageStatus::ActionRequired,
+            progress: Some(1.0),
+            dot_color: EMERALD_FG,
+            border_color: EMERALD_BORDER,
+            action: Some(TopbarMessageAction::RestartAfterUpdate),
+            dismissible: false,
+        });
+    } else if inputs.update_applying {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "UPDATING",
+            title: inputs
+                .update_progress
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| {
+                    l.t(
+                        "正在下载并校验新版 M3.app…",
+                        "Downloading and verifying M3.app update…",
+                    )
+                })
+                .to_owned(),
+            detail: None,
+            status: TopbarMessageStatus::Running,
+            progress: inputs.update_progress_fraction,
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            action: None,
+            dismissible: false,
+        });
+    } else if inputs.update_checking {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "UPDATE",
+            title: l.t("正在检查软件更新…", "Checking for updates…").to_owned(),
+            detail: None,
+            status: TopbarMessageStatus::Running,
+            progress: None,
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            action: None,
+            dismissible: false,
+        });
+    } else if let Some(notice) = inputs.update_notice {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "UPDATE",
+            title: match l {
+                UiLang::Zh => format!(
+                    "发现新版本 v{}（{}）",
+                    notice.latest_version,
+                    notice.channel.as_str()
+                ),
+                UiLang::En => format!(
+                    "Update v{} available ({})",
+                    notice.latest_version,
+                    notice.channel.as_str()
+                ),
+            },
+            detail: None,
+            status: TopbarMessageStatus::ActionRequired,
+            progress: None,
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            action: Some(TopbarMessageAction::ApplyUpdate),
+            dismissible: false,
+        });
+    }
+
+    if inputs.universe_syncing {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "LAKE SYNC",
+            title: inputs
+                .universe_progress
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| {
+                    l.t(
+                        "正在后台同步全美股 L0 确定性湖仓…",
+                        "Syncing US L0 deterministic lakehouse…",
+                    )
+                })
+                .to_owned(),
+            detail: None,
+            status: TopbarMessageStatus::Running,
+            progress: None,
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            action: None,
+            dismissible: false,
+        });
+    }
+    if inputs.inbox_catching_up {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "CATCH-UP",
+            title: inputs
+                .inbox_progress
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| l.t("正在追平 SEC 事件流…", "Catching up L1 SEC event feed…"))
+                .to_owned(),
+            detail: None,
+            status: TopbarMessageStatus::Running,
+            progress: None,
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            action: None,
+            dismissible: false,
+        });
+    }
+    if inputs.deep_research_running {
+        let title = match (
+            l,
+            inputs.deep_research_ticker.filter(|t| !t.trim().is_empty()),
+        ) {
+            (UiLang::Zh, Some(t)) => format!("Alan 4 视角深研 {t} 运行中…"),
+            (UiLang::En, Some(t)) => format!("Running 4-lens Deep Research on {t}…"),
+            (UiLang::Zh, None) => "4 视角并行深研运行中…".to_owned(),
+            (UiLang::En, None) => "Running 4-perspective Deep Research…".to_owned(),
+        };
+        out.push(TopbarMessage {
+            id: None,
+            tag: "ALAN L2",
+            title,
+            detail: None,
+            status: TopbarMessageStatus::Running,
+            progress: None,
+            dot_color: VIOLET_FG,
+            border_color: VIOLET_BORDER,
+            action: None,
+            dismissible: false,
+        });
+    }
+    if inputs.industry_research_running {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "INDUSTRY L2",
+            title: inputs
+                .industry_progress
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| {
+                    l.t(
+                        "Alan 4 视角行业深研运行中…",
+                        "Running 4-perspective industry research…",
+                    )
+                })
+                .to_owned(),
+            detail: None,
+            status: TopbarMessageStatus::Running,
+            progress: None,
+            dot_color: VIOLET_FG,
+            border_color: VIOLET_BORDER,
+            action: None,
+            dismissible: false,
+        });
+    }
+    if inputs.syncing {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "SYNCING",
+            title: inputs
+                .sync_stage
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| {
+                    l.t(
+                        "正在同步核心池行情与财务档案…",
+                        "Syncing Circle quotes and SEC financials…",
+                    )
+                })
+                .to_owned(),
+            detail: None,
+            status: TopbarMessageStatus::Running,
+            progress: inputs.sync_progress.map(|p| p.clamp(0.0, 1.0)),
+            dot_color: EMERALD_FG,
+            border_color: EMERALD_BORDER,
+            action: None,
+            dismissible: false,
+        });
+    }
+    if inputs.themes_syncing {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "THEMES",
+            title: l
+                .t(
+                    "正在同步商业原型主题图谱…",
+                    "Syncing business archetype graph…",
+                )
+                .to_owned(),
+            detail: None,
+            status: TopbarMessageStatus::Running,
+            progress: None,
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            action: None,
+            dismissible: false,
+        });
+    }
+    if inputs.storage_scanning {
+        out.push(TopbarMessage {
+            id: None,
+            tag: "STORAGE",
+            title: l
+                .t("正在扫描本地存储占用…", "Scanning local storage usage…")
+                .to_owned(),
+            detail: None,
+            status: TopbarMessageStatus::Running,
+            progress: None,
+            dot_color: SKY_FG,
+            border_color: SKY_BORDER,
+            action: Some(TopbarMessageAction::OpenSettings),
+            dismissible: false,
+        });
+    }
+
+    for msg in inputs.messages {
+        let (tag, status, dot_color, border_color) = if msg.is_error {
+            ("ERROR", TopbarMessageStatus::Error, CORAL_FG, CORAL_BORDER)
+        } else {
+            (
+                "NOTICE",
+                TopbarMessageStatus::Info,
+                EMERALD_FG,
+                EMERALD_BORDER,
+            )
+        };
+        out.push(TopbarMessage {
+            id: Some(msg.id),
+            tag,
+            title: msg.message.clone(),
+            detail: None,
+            status,
+            progress: None,
+            dot_color,
+            border_color,
+            action: None,
+            dismissible: true,
+        });
+    }
+
+    out
 }
 
 fn perspective_title_for(id: &str, fallback_cn: &str, lang: UiLang) -> String {
