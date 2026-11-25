@@ -586,6 +586,19 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
         dot_color: GOLD_FG,
         action: PaletteAction::SwitchUpdateChannel(target_channel),
     });
+    items.push(PaletteItem {
+        group: "M³".into(),
+        title: "M³ · Money Making Machine".into(),
+        subtitle: l
+            .t(
+                "查看 Project M3 铭刻 · 机器读完 6,000 家财报，你只挥击甜区好球",
+                "Inspect the Project M3 caseback engraving · Compound patiently",
+            )
+            .into(),
+        shortcut: None,
+        dot_color: EMERALD_FG,
+        action: PaletteAction::ShowM3Engraving,
+    });
     items
 }
 
@@ -605,6 +618,9 @@ pub fn execute_palette_action(store: AppStore, action: PaletteAction) {
         }
         PaletteAction::ShowBudgetStatus => {
             store.show_budget_status_notice();
+        }
+        PaletteAction::ShowM3Engraving => {
+            store.show_m3_engraving_notice();
         }
         PaletteAction::SyncThemes => {
             store.trigger_themes_sync();

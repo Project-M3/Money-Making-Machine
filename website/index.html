@@ -73,11 +73,14 @@
   <body>
     <header class="topbar">
       <div class="container topbar-inner">
-        <a class="brand" href="#top" aria-label="Project M3 home">
+        <a class="brand" href="#top" aria-label="Project M3 — Money Making Machine home">
           <img class="brand-mark" src="./favicon.svg" alt="" width="28" height="28" />
           <span class="brand-wordmark">
             <span class="brand-name">PROJECT M3</span>
             <span class="badge-preview">Open Source · <span data-m3-version>v0.4.0</span></span>
+            <span class="brand-acronym" aria-hidden="true">
+              <span class="m-init">M</span>oney · <span class="m-init">M</span>aking · <span class="m-init">M</span>achine
+            </span>
           </span>
         </a>
 
@@ -393,7 +396,18 @@
       <div class="container footer-inner">
         <div class="footer-left">
           <img src="./favicon.svg" alt="" width="20" height="20" style="border-radius: 4px" />
-          <span>Project M3 · m3.thinksmart.systems</span>
+          <button
+            type="button"
+            class="caseback-btn"
+            id="m3-caseback-btn"
+            aria-live="polite"
+            title="Click to inspect the M³ engraving"
+          >
+            Project M3
+          </button>
+          <span class="caseback-sep">·</span>
+          <span>m3.thinksmart.systems</span>
+          <span class="caseback-note" id="m3-caseback-note" hidden></span>
         </div>
         <div class="footer-links">
           <a href="https://github.com/Project-M3/Money-Making-Machine" target="_blank" rel="noopener">GitHub</a>

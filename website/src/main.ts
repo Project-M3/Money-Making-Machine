@@ -133,7 +133,39 @@ if (cliListRoot) {
   mountCliDeck(cliListRoot);
 }
 
+function bindCasebackEasterEgg(): void {
+  const btn = document.getElementById("m3-caseback-btn");
+  const note = document.getElementById("m3-caseback-note");
+  if (!btn || !note) return;
+
+  const states = [
+    { label: "Project M3", note: "", engraved: false },
+    { label: "M × M × M", note: "· Compound patiently.", engraved: true },
+    {
+      label: "Money · Making · Machine",
+      note: "· The machine reads 6,000 filings; you swing at fat pitches.",
+      engraved: true,
+    },
+  ];
+  let idx = 0;
+
+  btn.addEventListener("click", () => {
+    idx = (idx + 1) % states.length;
+    const state = states[idx];
+    btn.textContent = state.label;
+    btn.classList.toggle("is-engraved", state.engraved);
+    if (state.note) {
+      note.textContent = state.note;
+      note.hidden = false;
+    } else {
+      note.textContent = "";
+      note.hidden = true;
+    }
+  });
+}
+
 bindInstallChannelToggle();
+bindCasebackEasterEgg();
 bindCopyButtons();
 setupRevealObserver();
 void hydrateLatestVersion();

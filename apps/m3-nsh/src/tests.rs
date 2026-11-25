@@ -10,6 +10,7 @@ use crate::format::{
     should_skip_auto_catchup, should_skip_auto_catchup_with, signal_kind_badge_for,
     signal_status_badge_for, sort_reports, step_inbox_selection,
 };
+use crate::palette::{build_palette_items_from_store, execute_palette_action};
 use crate::platform_desktop::build_app_menus;
 use crate::stores::app_store::apply_interrogator_event;
 use crate::stores::types::{
@@ -1712,4 +1713,48 @@ fn bilingual_ui_helpers_and_theme_token_invariants() {
         EMERALD_FG
     );
     assert_eq!(share_delta_color(Some(Decimal::from(-1)), -1), EMERALD_FG);
+}
+
+#[test]
+fn m3_engraving_palette_and_notices_work_bilingually() {
+    let root = temp_workspace("m3_engraving");
+    let paths = WorkspacePaths::from_root(root.clone());
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        |store| {
+            store.set_language(UiLang::En);
+            let items = build_palette_items_from_store(store);
+            let money_hits = filter_palette_items(&items, "money");
+            assert!(
+                money_hits
+                    .iter()
+                    .any(|it| it.action == PaletteAction::ShowM3Engraving),
+                "Command palette should surface M3 · Money Making Machine on 'money' query"
+            );
+            let m3_hits = filter_palette_items(&items, "m3");
+            assert!(
+                m3_hits
+                    .iter()
+                    .any(|it| it.action == PaletteAction::ShowM3Engraving),
+                "Command palette should surface M3 · Money Making Machine on 'm3' query"
+            );
+
+            store.show_about_notice();
+            let about_en = store.notice.get_untracked().expect("about notice");
+            assert!(about_en.0.contains("Money · Making · Machine"));
+
+            execute_palette_action(store, PaletteAction::ShowM3Engraving);
+            let engraving_en = store.notice.get_untracked().expect("en engraving");
+            assert!(engraving_en.0.contains("M³ = Money · Making · Machine"));
+            assert!(engraving_en.0.contains("fat pitches"));
+
+            store.set_language(UiLang::Zh);
+            execute_palette_action(store, PaletteAction::ShowM3Engraving);
+            let engraving_zh = store.notice.get_untracked().expect("zh engraving");
+            assert!(engraving_zh.0.contains("M³ = Money · Making · Machine"));
+            assert!(engraving_zh.0.contains("甜区好球"));
+        },
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -131,6 +131,7 @@ pub enum PaletteAction {
     RestartApp,
     OpenSettings,
     SetLanguage(UiLang),
+    ShowM3Engraving,
 }
 
 /// Single entry shown in the `⌘K` Command Palette.

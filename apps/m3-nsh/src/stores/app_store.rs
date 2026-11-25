@@ -1044,12 +1044,23 @@ impl AppStore {
         let ch = self.update_channel.get_untracked();
         let root = self.paths.get_untracked().repo_root;
         self.set_info_notice(format!(
-            "Project M3 v{} ({}) · Apache-2.0 · {}: {}",
+            "Project M3 (Money · Making · Machine) v{} ({}) · Apache-2.0 · {}: {}",
             update::current_binary_version(),
             ch.as_str(),
             l.t("工作区", "Workspace"),
             root.display()
         ));
+    }
+
+    pub fn show_m3_engraving_notice(self) {
+        let l = self.lang.get_untracked();
+        self.set_info_notice(
+            l.t(
+                "M³ = Money · Making · Machine — 机器读完 6,000 家财报，你只挥击甜区好球。",
+                "M³ = Money · Making · Machine — The machine reads 6,000 filings; you swing at fat pitches.",
+            )
+            .to_owned(),
+        );
     }
 
     pub fn show_budget_status_notice(self) {

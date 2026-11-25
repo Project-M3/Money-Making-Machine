@@ -169,8 +169,9 @@ fn render_sidebar(store: AppStore) -> impl IntoElement {
         .flex()
         .flex_col()
         .bg(rgb(BG_SHELL))
-        // Titlebar + traffic-light spacing + M3 pixel mark
-        .child(
+        // Titlebar + traffic-light spacing + M3 pixel mark (triple-click reveals M³ engraving)
+        .child({
+            let mark_clicks = stored((0u8, None::<std::time::Instant>));
             view()
                 .h(px(40.0))
                 .flex_shrink_0()
@@ -180,8 +181,37 @@ fn render_sidebar(store: AppStore) -> impl IntoElement {
                 .flex_row()
                 .items_center()
                 .window_drag(true)
-                .child(pixel_m3_mark(1.4)),
-        )
+                .child(
+                    view()
+                        .window_drag(false)
+                        .cursor_pointer()
+                        .px(px(4.0))
+                        .py(px(3.0))
+                        .rounded(px(4.0))
+                        .hover(|s| s.bg(rgb(BG_HOVER)))
+                        .on_press(move || {
+                            let now = std::time::Instant::now();
+                            let triggered = mark_clicks.with(|(count, last)| {
+                                let within = last.is_some_and(|prev| {
+                                    now.duration_since(prev)
+                                        <= std::time::Duration::from_millis(1400)
+                                });
+                                *count = if within { count.saturating_add(1) } else { 1 };
+                                *last = Some(now);
+                                if *count >= 3 {
+                                    *count = 0;
+                                    true
+                                } else {
+                                    false
+                                }
+                            });
+                            if triggered {
+                                store.show_m3_engraving_notice();
+                            }
+                        })
+                        .child(pixel_m3_mark(1.4)),
+                )
+        })
         // Command Palette trigger bar
         .child(
             view().px(px(10.0)).pb(px(8.0)).child(

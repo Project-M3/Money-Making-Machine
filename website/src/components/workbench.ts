@@ -128,6 +128,9 @@ export function mountWorkbench(container: HTMLElement): void {
     },
   };
 
+  let markClicks = 0;
+  let markLastClickMs = 0;
+
   function getBreadcrumb(): string {
     const company = COMPANIES.find((c) => c.ticker === state.selectedTicker) || COMPANIES[0];
     const ind = INDUSTRIES.find((i) => i.slug === state.selectedIndustrySlug) || INDUSTRIES[0];
@@ -302,6 +305,8 @@ export function mountWorkbench(container: HTMLElement): void {
             shape-rendering="crispEdges"
             aria-label="M3"
             role="img"
+            data-m3-mark
+            style="cursor: pointer"
           >
             <rect x="0" y="0" width="2" height="10" fill="#FFFFFF" />
             <rect x="6" y="0" width="2" height="10" fill="#FFFFFF" />
@@ -1340,6 +1345,25 @@ export function mountWorkbench(container: HTMLElement): void {
     container.querySelector('[data-dismiss-dock]')?.addEventListener('click', () => {
       state.dockNotice = null;
       render();
+    });
+
+    container.querySelector('[data-m3-mark]')?.addEventListener('click', () => {
+      const now = performance.now();
+      markClicks = now - markLastClickMs <= 1400 ? markClicks + 1 : 1;
+      markLastClickMs = now;
+      if (markClicks >= 3) {
+        markClicks = 0;
+        const zh = state.settingsLang === 'zh';
+        state.dockNotice = {
+          tag: 'M³',
+          message: zh
+            ? 'M³ = Money · Making · Machine — 机器读完 6,000 家财报，你只挥击甜区好球。'
+            : 'M³ = Money · Making · Machine — The machine reads 6,000 filings; you swing at fat pitches.',
+          tone: 'emerald',
+          dismissible: true,
+        };
+        render();
+      }
     });
 
     container.querySelectorAll<HTMLElement>('[data-inbox-filter]').forEach((btn) => {
