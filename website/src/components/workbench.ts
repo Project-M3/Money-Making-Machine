@@ -106,7 +106,7 @@ export function mountWorkbench(container: HTMLElement): void {
     eventStatuses: Object.fromEntries(INBOX_EVENTS.map((e) => [e.id, e.status])),
     universeFilter: 'all',
     universeSearchMode: 'keyword',
-    selectedTicker: 'SNPS',
+    selectedTicker: 'MCO',
     perspective: 'premortem',
     selectedIndustrySlug: INDUSTRIES[0].slug,
     industryPerspective: 'value_chain',
@@ -117,7 +117,7 @@ export function mountWorkbench(container: HTMLElement): void {
     ),
     settingsLang: 'en',
     settingsChannel: 'stable',
-    openProvenanceId: 'snps-oe',
+    openProvenanceId: 'mco-oe',
     paletteOpen: false,
     paletteQuery: '',
     dockNotice: {
