@@ -1,14 +1,21 @@
 //! Canonical Alan Connection Store management for Project M3.
 //!
-//! Reads, writes, and tests connection profiles in Alan's canonical
+//! Reads, writes, signs in, and tests connection profiles in Alan's canonical
 //! System Store (`services/connections/connections.toml`) and Host Store
-//! (`credentials/secrets.toml`) so in-app setup is 100% compatible with
-//! `alan connection` CLI and [`alan_os_host::LlmSource::SharedProductCredentials`].
+//! (`credentials/secrets.toml` & `auth.json`) so in-app setup is 100% compatible with
+//! `alan` and [`alan_os_host::LlmSource::SharedProductCredentials`].
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use alan_agent_engine::{Config, LlmProvider};
+use alan_auth::browser::open_browser;
+use alan_auth::google::{
+    GoogleAuthError, GoogleAuthManager, gcloud_default_project, gcloud_is_available,
+    resolve_adc_credentials_path, resolve_vertex_access_token, run_gcloud_adc_login_streaming,
+};
+use alan_auth::openrouter::{OpenRouterOAuthConfig, PendingOpenRouterBrowserLogin};
+use alan_auth::{AuthStorage, BrowserLoginOptions, ChatgptAuthConfig, ChatgptAuthManager};
 use alan_os_host::{HostStorePaths, SecretStore, SystemStorePaths, apply_profile_to_config};
 use alan_service_manager::{
     ConnectionCredential, ConnectionProfile, ConnectionsFile, CredentialKind,
@@ -18,26 +25,42 @@ use alan_service_manager::{
 use anyhow::{Context, Result, bail, ensure};
 use chrono::Utc;
 use reqwest::StatusCode;
-use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
-const CONNECTION_TEST_TIMEOUT: Duration = Duration::from_secs(8);
+const CONNECTION_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const BROWSER_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Providers directly configurable through M3's in-app Alan Connection form.
+/// All Alan first-party connection providers directly configurable through M3 Settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AlanConnectionProvider {
     #[default]
     OpenRouter,
     OpenAiResponses,
+    Chatgpt,
+    #[serde(alias = "google_gemini_generate_content")]
+    GoogleVertex,
+    Magpie,
 }
 
 impl AlanConnectionProvider {
+    /// Ordered list of all first-party Alan providers supported in M3 Settings.
+    pub const ALL: [Self; 5] = [
+        Self::OpenRouter,
+        Self::OpenAiResponses,
+        Self::Chatgpt,
+        Self::GoogleVertex,
+        Self::Magpie,
+    ];
+
     /// Canonical provider identifier stored in Alan's `connections.toml`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OpenRouter => "openrouter",
             Self::OpenAiResponses => "openai_responses",
+            Self::Chatgpt => "chatgpt",
+            Self::GoogleVertex => "google_gemini_generate_content",
+            Self::Magpie => "magpie",
         }
     }
 
@@ -46,6 +69,9 @@ impl AlanConnectionProvider {
         match self {
             Self::OpenRouter => "OpenRouter",
             Self::OpenAiResponses => "OpenAI",
+            Self::Chatgpt => "ChatGPT",
+            Self::GoogleVertex => "Vertex AI",
+            Self::Magpie => "Magpie",
         }
     }
 
@@ -54,6 +80,33 @@ impl AlanConnectionProvider {
         match self {
             Self::OpenRouter => "openrouter-main",
             Self::OpenAiResponses => "openai-main",
+            Self::Chatgpt => "chatgpt-main",
+            Self::GoogleVertex => "vertex-main",
+            Self::Magpie => "magpie-main",
+        }
+    }
+
+    /// Whether this provider supports interactive browser OAuth/ADC login in Settings.
+    pub const fn supports_browser_login(self) -> bool {
+        matches!(self, Self::Chatgpt | Self::OpenRouter | Self::GoogleVertex)
+    }
+
+    /// Whether a SecretString API key is strictly mandatory when creating a profile.
+    pub const fn requires_api_key(self) -> bool {
+        matches!(self, Self::OpenRouter | Self::OpenAiResponses)
+    }
+
+    /// Whether this provider accepts a `base_url` setting in Alan's Connection schema.
+    pub const fn uses_base_url(self) -> bool {
+        !matches!(self, Self::GoogleVertex)
+    }
+
+    /// Canonical default region/location (`"global"` for Vertex AI, empty otherwise).
+    pub const fn default_location(self) -> &'static str {
+        if matches!(self, Self::GoogleVertex) {
+            "global"
+        } else {
+            ""
         }
     }
 
@@ -68,11 +121,17 @@ impl AlanConnectionProvider {
             .unwrap_or(match self {
                 Self::OpenRouter => "moonshotai/kimi-k2.6",
                 Self::OpenAiResponses => "gpt-5.4",
+                Self::Chatgpt => "gpt-5.3-codex",
+                Self::GoogleVertex => "gemini-2.5-flash",
+                Self::Magpie => "default",
             })
     }
 
-    /// Canonical default API base URL from Alan's provider catalog.
+    /// Canonical default API base URL from Alan's provider catalog (`""` when unused).
     pub fn default_base_url(self) -> &'static str {
+        if !self.uses_base_url() {
+            return "";
+        }
         let descriptor = ConnectionsFile::profile_descriptor(self.to_llm_provider());
         descriptor
             .default_settings
@@ -82,6 +141,9 @@ impl AlanConnectionProvider {
             .unwrap_or(match self {
                 Self::OpenRouter => "https://openrouter.ai/api/v1",
                 Self::OpenAiResponses => "https://api.openai.com/v1",
+                Self::Chatgpt => "https://chatgpt.com/backend-api/codex",
+                Self::Magpie => "http://127.0.0.1:3425/v1",
+                Self::GoogleVertex => "",
             })
     }
 
@@ -90,6 +152,9 @@ impl AlanConnectionProvider {
         match self {
             Self::OpenRouter => LlmProvider::OpenRouter,
             Self::OpenAiResponses => LlmProvider::OpenAiResponses,
+            Self::Chatgpt => LlmProvider::Chatgpt,
+            Self::GoogleVertex => LlmProvider::GoogleGeminiGenerateContent,
+            Self::Magpie => LlmProvider::Magpie,
         }
     }
 
@@ -98,15 +163,23 @@ impl AlanConnectionProvider {
         match provider {
             LlmProvider::OpenRouter => Some(Self::OpenRouter),
             LlmProvider::OpenAiResponses => Some(Self::OpenAiResponses),
+            LlmProvider::Chatgpt => Some(Self::Chatgpt),
+            LlmProvider::GoogleGeminiGenerateContent => Some(Self::GoogleVertex),
+            LlmProvider::Magpie => Some(Self::Magpie),
             _ => None,
         }
     }
 
-    /// Parse a provider identifier string (`openrouter`, `openai_responses`, `openai`).
+    /// Parse a provider identifier string or alias.
     pub fn parse(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "openrouter" => Ok(Self::OpenRouter),
             "openai_responses" | "openai" => Ok(Self::OpenAiResponses),
+            "chatgpt" | "codex" => Ok(Self::Chatgpt),
+            "google_gemini_generate_content" | "vertex" | "vertex_gemini" | "gemini" => {
+                Ok(Self::GoogleVertex)
+            }
+            "magpie" => Ok(Self::Magpie),
             other => bail!("Unsupported Alan connection provider `{other}`"),
         }
     }
@@ -119,6 +192,10 @@ pub struct AlanConnectionProfileSummary {
     pub provider: String,
     pub model: Option<String>,
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
     pub has_secret: bool,
     pub masked_hint: Option<String>,
     pub is_default: bool,
@@ -148,9 +225,37 @@ pub struct SaveAlanConnectionRequest {
     pub model: String,
     /// Optional custom base URL; when `None` or blank, resets to the provider's default URL.
     pub base_url: Option<String>,
-    /// Optional API key; required for new profiles, optional when updating an existing profile with a saved secret.
+    /// Optional API key; required for new OpenRouter/OpenAI profiles, optional for Magpie/updating existing secrets/Vertex Express.
     pub api_key: Option<String>,
+    /// Optional Google Cloud Project ID for Vertex AI ADC/OAuth profiles.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// Optional Google Cloud region/location for Vertex AI (`"global"` by default).
+    #[serde(default)]
+    pub location: Option<String>,
     pub set_as_default: bool,
+}
+
+/// Request payload to launch a browser OAuth/ADC login flow from M3 Settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserLoginAlanConnectionRequest {
+    pub provider: AlanConnectionProvider,
+    pub profile_id: String,
+    pub model: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    pub set_as_default: bool,
+}
+
+/// Result of a completed browser OAuth/ADC sign-in and profile persistence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlanConnectionBrowserLoginResult {
+    pub profile: AlanConnectionProfileSummary,
+    pub message: String,
 }
 
 /// Outcome of validating and probing an Alan connection profile.
@@ -223,6 +328,16 @@ pub fn save_alan_connection_in(
     save_with_paths(&system, &host, req)
 }
 
+/// Run an interactive browser login flow (`Chatgpt`, `OpenRouter`, or `GoogleVertex`),
+/// persist credentials in Alan's Host Store, and save the profile as default.
+pub fn browser_login_alan_connection(
+    req: &BrowserLoginAlanConnectionRequest,
+) -> Result<AlanConnectionBrowserLoginResult> {
+    let system = SystemStorePaths::detect().context("detect Alan System Store paths")?;
+    let host = HostStorePaths::detect().context("detect Alan Host Store paths")?;
+    browser_login_with_paths(&system, &host, req)
+}
+
 /// Validate and probe an Alan connection profile using Alan's canonical System & Host Stores.
 pub fn test_alan_connection(profile_id: Option<&str>) -> Result<AlanConnectionTestResult> {
     let system = SystemStorePaths::detect().context("detect Alan System Store paths")?;
@@ -239,6 +354,19 @@ pub fn test_alan_connection_in(
     let system = SystemStorePaths::from_root(system_root)?;
     let host = HostStorePaths::from_root(host_root)?;
     test_with_paths(&system, &host, profile_id)
+}
+
+fn non_empty_trimmed(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn build_current_thread_runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build async runtime for Alan connection operation")
 }
 
 fn list_status_with_paths(
@@ -285,22 +413,88 @@ fn build_profile_summary(
         .get("base_url")
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
+    let project_id = normalized
+        .get("project_id")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let location = normalized
+        .get("location")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
 
-    let (has_secret, masked_hint) = if profile.provider == LlmProvider::Chatgpt {
-        let has_oauth = std::fs::metadata(&host.managed_auth)
-            .map(|meta| meta.len() > 0)
-            .unwrap_or(false);
-        (has_oauth, has_oauth.then(|| "OAuth".to_owned()))
-    } else if let Some(cred_id) = profile.credential_id.as_deref() {
-        match secret_store.load(cred_id)? {
-            Some(secret) => match mask_secret_hint(&secret) {
-                Some(hint) => (true, Some(hint)),
-                None => (false, None),
-            },
-            None => (false, None),
+    let auth_store = AuthStorage::new(host.managed_auth.clone())
+        .ok()
+        .and_then(|storage| storage.load().ok());
+
+    let (has_secret, masked_hint) = match profile.provider {
+        LlmProvider::Chatgpt => {
+            if let Some(chatgpt) = auth_store.as_ref().and_then(|st| st.chatgpt.as_ref()) {
+                let hint = chatgpt
+                    .email
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("OAuth")
+                    .to_owned();
+                (true, Some(hint))
+            } else {
+                (false, None)
+            }
         }
-    } else {
-        (false, None)
+        LlmProvider::GoogleGeminiGenerateContent => {
+            if let Some(cred_id) = profile.credential_id.as_deref() {
+                match secret_store.load(cred_id)? {
+                    Some(secret) => match mask_secret_hint(&secret) {
+                        Some(hint) => (true, Some(hint)),
+                        None => (false, None),
+                    },
+                    None => (false, None),
+                }
+            } else {
+                let managed_google = auth_store.as_ref().and_then(|st| st.google.as_ref());
+                let adc_ready =
+                    managed_google.is_some() || resolve_adc_credentials_path().is_some();
+                let hint = match (
+                    managed_google
+                        .and_then(|g| g.email.as_deref())
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty()),
+                    project_id.as_deref(),
+                ) {
+                    (Some(email), Some(pid)) => Some(format!("{email} · {pid}")),
+                    (Some(email), None) => Some(email.to_owned()),
+                    (None, Some(pid)) => Some(format!("ADC · {pid}")),
+                    (None, None) => Some("ADC".to_owned()),
+                };
+                (adc_ready && project_id.is_some(), hint)
+            }
+        }
+        LlmProvider::Magpie => {
+            if let Some(cred_id) = profile.credential_id.as_deref() {
+                match secret_store.load(cred_id)? {
+                    Some(secret) => match mask_secret_hint(&secret) {
+                        Some(hint) => (true, Some(hint)),
+                        None => (true, Some("Local".to_owned())),
+                    },
+                    None => (true, Some("Local".to_owned())),
+                }
+            } else {
+                (true, Some("Local".to_owned()))
+            }
+        }
+        _ => {
+            if let Some(cred_id) = profile.credential_id.as_deref() {
+                match secret_store.load(cred_id)? {
+                    Some(secret) => match mask_secret_hint(&secret) {
+                        Some(hint) => (true, Some(hint)),
+                        None => (false, None),
+                    },
+                    None => (false, None),
+                }
+            } else {
+                (false, None)
+            }
+        }
     };
 
     Ok(AlanConnectionProfileSummary {
@@ -308,6 +502,8 @@ fn build_profile_summary(
         provider: profile.provider.as_str().to_owned(),
         model,
         base_url,
+        project_id,
+        location,
         has_secret,
         masked_hint,
         is_default,
@@ -319,7 +515,12 @@ fn save_with_paths(
     host: &HostStorePaths,
     req: &SaveAlanConnectionRequest,
 ) -> Result<AlanConnectionProfileSummary> {
-    let profile_id = sanitize_identifier(&req.profile_id).ok_or_else(|| {
+    let raw_profile_id = if req.profile_id.trim().is_empty() {
+        req.provider.default_profile_id()
+    } else {
+        req.profile_id.as_str()
+    };
+    let profile_id = sanitize_identifier(raw_profile_id).ok_or_else(|| {
         anyhow::anyhow!(
             "Profile ID `{}` must use only ASCII letters, digits, '-' or '_'",
             req.profile_id.trim()
@@ -333,26 +534,25 @@ fn save_with_paths(
     let secret_store = SecretStore::from_directory(&host.credentials)?;
 
     let existing_profile = connections.profiles.get(&profile_id).cloned();
-    let credential_id = existing_profile
+    let base_cred_id = existing_profile
         .as_ref()
         .and_then(|profile| profile.credential_id.as_deref())
         .and_then(sanitize_identifier)
         .unwrap_or_else(|| profile_id.clone());
 
-    let incoming_secret = req
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let existing_secret = secret_store
-        .load(&credential_id)?
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
-
-    let effective_secret = incoming_secret.clone().or(existing_secret).ok_or_else(|| {
-        anyhow::anyhow!("API key is required for new connection profile `{profile_id}`")
-    })?;
+    let incoming_secret = non_empty_trimmed(req.api_key.as_deref());
+    let same_provider_existing_secret = if existing_profile
+        .as_ref()
+        .is_some_and(|p| p.provider == llm_provider)
+    {
+        secret_store
+            .load(&base_cred_id)?
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    let effective_secret = incoming_secret.clone().or(same_provider_existing_secret);
 
     let mut raw_settings = existing_profile
         .as_ref()
@@ -360,51 +560,118 @@ fn save_with_paths(
         .map(|profile| profile.settings.clone())
         .unwrap_or_default();
 
-    let model = {
-        let trimmed = req.model.trim();
-        if trimmed.is_empty() {
-            req.provider.default_model().to_owned()
-        } else {
-            trimmed.to_owned()
-        }
-    };
+    let model = non_empty_trimmed(Some(req.model.as_str()))
+        .unwrap_or_else(|| req.provider.default_model().to_owned());
     raw_settings.insert("model".to_owned(), model);
 
-    match req
-        .base_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(raw_url) => {
-            let parsed = reqwest::Url::parse(raw_url)
-                .with_context(|| format!("Invalid base URL `{raw_url}`"))?;
-            ensure!(
-                matches!(parsed.scheme(), "http" | "https"),
-                "Base URL `{raw_url}` must start with http:// or https://"
-            );
-            raw_settings.insert(
-                "base_url".to_owned(),
-                raw_url.trim_end_matches('/').to_owned(),
-            );
+    if req.provider.uses_base_url() {
+        match non_empty_trimmed(req.base_url.as_deref()) {
+            Some(raw_url) => {
+                let parsed = reqwest::Url::parse(&raw_url)
+                    .with_context(|| format!("Invalid base URL `{raw_url}`"))?;
+                ensure!(
+                    matches!(parsed.scheme(), "http" | "https"),
+                    "Base URL `{raw_url}` must start with http:// or https://"
+                );
+                raw_settings.insert(
+                    "base_url".to_owned(),
+                    raw_url.trim_end_matches('/').to_owned(),
+                );
+            }
+            None => {
+                raw_settings.remove("base_url");
+            }
         }
-        None => {
-            raw_settings.remove("base_url");
+    } else {
+        raw_settings.remove("base_url");
+    }
+
+    if llm_provider == LlmProvider::GoogleGeminiGenerateContent {
+        let loc = non_empty_trimmed(req.location.as_deref()).unwrap_or_else(|| "global".to_owned());
+        raw_settings.insert("location".to_owned(), loc);
+        match non_empty_trimmed(req.project_id.as_deref()) {
+            Some(pid) => {
+                raw_settings.insert("project_id".to_owned(), pid);
+            }
+            None => {
+                raw_settings.remove("project_id");
+            }
         }
     }
 
     let settings = normalize_profile_settings(llm_provider, &raw_settings);
     validate_profile_settings(llm_provider, &settings)?;
 
-    connections.credentials.insert(
-        credential_id.clone(),
-        ConnectionCredential {
-            kind: CredentialKind::SecretString,
-            provider_family: llm_provider,
-            label: format!("{} credential", descriptor.display_name),
-            backend: default_credential_backend(CredentialKind::SecretString).to_owned(),
-        },
-    );
+    let (credential_id, secret_to_write): (Option<String>, Option<String>) = match req.provider {
+        AlanConnectionProvider::OpenRouter | AlanConnectionProvider::OpenAiResponses => {
+            let secret = effective_secret.ok_or_else(|| {
+                anyhow::anyhow!("API key is required for new connection profile `{profile_id}`")
+            })?;
+            connections.credentials.insert(
+                base_cred_id.clone(),
+                ConnectionCredential {
+                    kind: CredentialKind::SecretString,
+                    provider_family: llm_provider,
+                    label: format!("{} credential", descriptor.display_name),
+                    backend: default_credential_backend(CredentialKind::SecretString).to_owned(),
+                },
+            );
+            (Some(base_cred_id), Some(secret))
+        }
+        AlanConnectionProvider::Chatgpt => {
+            connections.credentials.insert(
+                base_cred_id.clone(),
+                ConnectionCredential {
+                    kind: CredentialKind::ManagedOauth,
+                    provider_family: llm_provider,
+                    label: format!("{} credential", descriptor.display_name),
+                    backend: default_credential_backend(CredentialKind::ManagedOauth).to_owned(),
+                },
+            );
+            (Some(base_cred_id), None)
+        }
+        AlanConnectionProvider::GoogleVertex => {
+            if let Some(secret) = effective_secret {
+                connections.credentials.insert(
+                    base_cred_id.clone(),
+                    ConnectionCredential {
+                        kind: CredentialKind::SecretString,
+                        provider_family: llm_provider,
+                        label: format!("{} credential", descriptor.display_name),
+                        backend: default_credential_backend(CredentialKind::SecretString)
+                            .to_owned(),
+                    },
+                );
+                (Some(base_cred_id), Some(secret))
+            } else {
+                let has_project = settings
+                    .get("project_id")
+                    .is_some_and(|pid| !pid.trim().is_empty());
+                ensure!(
+                    has_project,
+                    "Vertex AI requires a GCP Project ID (or a Vertex Express API key) for `{profile_id}`"
+                );
+                (None, None)
+            }
+        }
+        AlanConnectionProvider::Magpie => {
+            if let Some(secret) = effective_secret {
+                connections.credentials.insert(
+                    base_cred_id.clone(),
+                    ConnectionCredential {
+                        kind: CredentialKind::SecretString,
+                        provider_family: llm_provider,
+                        label: format!("{} credential", descriptor.display_name),
+                        backend: default_credential_backend(CredentialKind::SecretString)
+                            .to_owned(),
+                    },
+                );
+                (Some(base_cred_id), Some(secret))
+            } else {
+                (None, None)
+            }
+        }
+    };
 
     let now = Utc::now();
     let created_at = existing_profile
@@ -422,7 +689,7 @@ fn save_with_paths(
     let updated_profile = ConnectionProfile {
         provider: llm_provider,
         label,
-        credential_id: Some(credential_id.clone()),
+        credential_id: credential_id.clone(),
         created_at,
         updated_at: now,
         source,
@@ -439,19 +706,29 @@ fn save_with_paths(
     // Validate full Alan provider projection before writing secrets or metadata to disk.
     let mut validation_config = Config::default();
     connections.apply_profile_metadata_to_config(Some(&profile_id), &mut validation_config)?;
-    match llm_provider {
-        LlmProvider::OpenRouter => {
-            validation_config.openrouter_api_key = Some(effective_secret.clone());
+    if let Some(secret) = secret_to_write.as_ref() {
+        match llm_provider {
+            LlmProvider::OpenRouter => {
+                validation_config.openrouter_api_key = Some(secret.clone());
+            }
+            LlmProvider::OpenAiResponses => {
+                validation_config.openai_responses_api_key = Some(secret.clone());
+            }
+            LlmProvider::GoogleGeminiGenerateContent => {
+                validation_config.google_gemini_generate_content_api_key = Some(secret.clone());
+            }
+            LlmProvider::Magpie => {
+                validation_config.magpie_api_key = Some(secret.clone());
+            }
+            _ => {}
         }
-        LlmProvider::OpenAiResponses => {
-            validation_config.openai_responses_api_key = Some(effective_secret.clone());
-        }
-        _ => {}
     }
     let _ = validation_config.to_provider_config()?;
 
-    if let Some(secret_to_save) = incoming_secret.as_deref() {
-        secret_store.save(&credential_id, secret_to_save)?;
+    if let (Some(cred_id), Some(secret_to_save)) =
+        (credential_id.as_deref(), incoming_secret.as_deref())
+    {
+        secret_store.save(cred_id, secret_to_save)?;
     }
     connections.save_to_path(&metadata_path)?;
 
@@ -466,6 +743,158 @@ fn save_with_paths(
         &secret_store,
         host,
     )
+}
+
+fn browser_login_with_paths(
+    system: &SystemStorePaths,
+    host: &HostStorePaths,
+    req: &BrowserLoginAlanConnectionRequest,
+) -> Result<AlanConnectionBrowserLoginResult> {
+    let rt = build_current_thread_runtime()?;
+    match req.provider {
+        AlanConnectionProvider::Chatgpt => {
+            let manager = ChatgptAuthManager::new(ChatgptAuthConfig::with_storage_path(
+                host.managed_auth.clone(),
+            ))?;
+            let success = rt.block_on(async {
+                let pending = manager.begin_browser_login(BrowserLoginOptions::default())?;
+                open_browser(&pending.auth_url)
+                    .with_context(|| format!("open browser to {}", pending.auth_url))?;
+                let mut receipt = manager.wait_for_browser_callback(&pending).await?;
+                let result = manager
+                    .complete_browser_login(&pending, receipt.completion.clone())
+                    .await;
+                let _ = manager
+                    .write_browser_login_result(&mut receipt.stream, result.as_ref())
+                    .await;
+                result.map_err(anyhow::Error::from)
+            })?;
+            let saved = save_with_paths(
+                system,
+                host,
+                &SaveAlanConnectionRequest {
+                    provider: AlanConnectionProvider::Chatgpt,
+                    profile_id: req.profile_id.clone(),
+                    model: req.model.clone(),
+                    base_url: req.base_url.clone(),
+                    api_key: None,
+                    project_id: None,
+                    location: None,
+                    set_as_default: req.set_as_default,
+                },
+            )?;
+            let message = match success.email {
+                Some(email) => format!("ChatGPT OAuth signed in ({email})"),
+                None => "ChatGPT OAuth signed in".to_owned(),
+            };
+            Ok(AlanConnectionBrowserLoginResult {
+                profile: saved,
+                message,
+            })
+        }
+        AlanConnectionProvider::OpenRouter => {
+            let success = rt.block_on(async {
+                let pending =
+                    PendingOpenRouterBrowserLogin::start(OpenRouterOAuthConfig::default()).await?;
+                if let Err(err) = pending.open_browser() {
+                    bail!("open browser for OpenRouter OAuth: {err}");
+                }
+                pending
+                    .wait_and_exchange(BROWSER_LOGIN_TIMEOUT)
+                    .await
+                    .map_err(anyhow::Error::from)
+            })?;
+            let saved = save_with_paths(
+                system,
+                host,
+                &SaveAlanConnectionRequest {
+                    provider: AlanConnectionProvider::OpenRouter,
+                    profile_id: req.profile_id.clone(),
+                    model: req.model.clone(),
+                    base_url: req.base_url.clone(),
+                    api_key: Some(success.api_key),
+                    project_id: None,
+                    location: None,
+                    set_as_default: req.set_as_default,
+                },
+            )?;
+            Ok(AlanConnectionBrowserLoginResult {
+                profile: saved,
+                message: "OpenRouter connected via PKCE OAuth".to_owned(),
+            })
+        }
+        AlanConnectionProvider::GoogleVertex => {
+            let managed_auth = host.managed_auth.clone();
+            let (resolved, detected_default_proj) = rt.block_on(async {
+                let token = match resolve_vertex_access_token(Some(&managed_auth)).await {
+                    Ok(token) => token,
+                    Err(_) => {
+                        let manager = GoogleAuthManager::with_storage_path(managed_auth.clone())?;
+                        match manager.start_browser_login().await {
+                            Ok(pending) => {
+                                if let Err(err) = pending.open_browser() {
+                                    bail!("open browser for Google Cloud login: {err}");
+                                }
+                                pending.wait_and_exchange(BROWSER_LOGIN_TIMEOUT).await?;
+                                resolve_vertex_access_token(Some(&managed_auth)).await?
+                            }
+                            Err(GoogleAuthError::OAuthClientNotConfigured) => {
+                                if gcloud_is_available() {
+                                    run_gcloud_adc_login_streaming(|url| {
+                                        let _ = open_browser(&url);
+                                    })
+                                    .await?;
+                                    resolve_vertex_access_token(Some(&managed_auth)).await?
+                                } else {
+                                    bail!(
+                                        "No `gcloud` CLI or Google Desktop OAuth client found; paste a Vertex Express API key or install Google Cloud SDK"
+                                    );
+                                }
+                            }
+                            Err(err) => return Err(err.into()),
+                        }
+                    }
+                };
+                let default_proj = gcloud_default_project().await;
+                Ok::<_, anyhow::Error>((token, default_proj))
+            })?;
+
+            let project_id = non_empty_trimmed(req.project_id.as_deref())
+                .or(detected_default_proj)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Google Cloud signed in ({}), now enter your GCP Project ID and save",
+                        resolved.source.label()
+                    )
+                })?;
+
+            let saved = save_with_paths(
+                system,
+                host,
+                &SaveAlanConnectionRequest {
+                    provider: AlanConnectionProvider::GoogleVertex,
+                    profile_id: req.profile_id.clone(),
+                    model: req.model.clone(),
+                    base_url: None,
+                    api_key: None,
+                    project_id: Some(project_id.clone()),
+                    location: req.location.clone(),
+                    set_as_default: req.set_as_default,
+                },
+            )?;
+            Ok(AlanConnectionBrowserLoginResult {
+                profile: saved,
+                message: format!(
+                    "Vertex AI connected (project={project_id}, {})",
+                    resolved.source.label()
+                ),
+            })
+        }
+        other => bail!(
+            "Provider `{}` does not support browser OAuth login",
+            other.display_name()
+        ),
+    }
 }
 
 fn test_with_paths(
@@ -516,28 +945,30 @@ fn test_with_paths(
         });
     }
 
-    if matches!(
-        resolved.provider,
-        LlmProvider::Chatgpt | LlmProvider::GoogleGeminiGenerateContent
-    ) {
-        bail!(
-            "Profile `{target_id}` uses `{}` OAuth/ADC; run `alan connection test {target_id}` in terminal",
-            resolved.provider.as_str()
-        );
-    }
+    let rt = build_current_thread_runtime()?;
+    let (status, latency_ms) = rt.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(CONNECTION_TEST_TIMEOUT)
+            .build()
+            .context("build HTTP client for Alan connection test")?;
 
-    let client = Client::builder()
-        .timeout(CONNECTION_TEST_TIMEOUT)
-        .build()
-        .context("build HTTP client for Alan connection test")?;
+        let req = build_probe_request(
+            &client,
+            &target_id,
+            resolved.provider,
+            &config,
+            &host.managed_auth,
+        )
+        .await?;
 
-    let req = build_probe_request(&client, &target_id, resolved.provider, &config)?;
-    let started = Instant::now();
-    let response = req
-        .send()
-        .with_context(|| format!("connection test failed for profile `{target_id}`"))?;
-    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let status = response.status();
+        let started = Instant::now();
+        let response = req
+            .send()
+            .await
+            .with_context(|| format!("connection test failed for profile `{target_id}`"))?;
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        Ok::<_, anyhow::Error>((response.status(), elapsed_ms))
+    })?;
 
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         bail!("Authentication failed for profile `{target_id}` (HTTP {status})");
@@ -557,12 +988,37 @@ fn test_with_paths(
     })
 }
 
-fn build_probe_request(
-    client: &Client,
+fn vertex_catalog_probe_url(location: &str) -> String {
+    let loc = location.trim();
+    let host = if loc.is_empty() || loc.eq_ignore_ascii_case("global") {
+        "us-central1-aiplatform.googleapis.com".to_owned()
+    } else {
+        format!("{loc}-aiplatform.googleapis.com")
+    };
+    format!("https://{host}/v1beta1/publishers/google/models?pageSize=1")
+}
+
+fn vertex_express_probe_url(model: &str) -> String {
+    let trimmed = model.trim();
+    let slug = trimmed
+        .strip_prefix("publishers/google/models/")
+        .or_else(|| trimmed.strip_prefix("models/"))
+        .unwrap_or(trimmed);
+    let effective = if slug.is_empty() {
+        "gemini-2.5-flash"
+    } else {
+        slug
+    };
+    format!("https://aiplatform.googleapis.com/v1/publishers/google/models/{effective}:countTokens")
+}
+
+async fn build_probe_request(
+    client: &reqwest::Client,
     profile_id: &str,
     provider: LlmProvider,
     config: &Config,
-) -> Result<reqwest::blocking::RequestBuilder> {
+    managed_auth_path: &Path,
+) -> Result<reqwest::RequestBuilder> {
     fn non_empty(value: &Option<String>) -> Option<&str> {
         value
             .as_deref()
@@ -580,6 +1036,26 @@ fn build_probe_request(
     }
 
     match provider {
+        LlmProvider::Chatgpt => {
+            let manager = ChatgptAuthManager::new(ChatgptAuthConfig::with_storage_path(
+                managed_auth_path.to_path_buf(),
+            ))?;
+            let auth = manager
+                .request_auth_for_account(config.chatgpt_account_id.as_deref())
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("ChatGPT profile `{profile_id}` is not signed in: {err}")
+                })?;
+            let base = require_base(profile_id, &config.chatgpt_base_url)?;
+            let mut url = reqwest::Url::parse(&format!("{}/models", base.trim_end_matches('/')))
+                .with_context(|| format!("invalid ChatGPT base URL for `{profile_id}`"))?;
+            url.query_pairs_mut()
+                .append_pair("client_version", "0.159.0");
+            Ok(client
+                .get(url)
+                .bearer_auth(&auth.access_token)
+                .header("chatgpt-account-id", &auth.account_id))
+        }
         LlmProvider::Magpie
         | LlmProvider::OpenAiResponses
         | LlmProvider::OpenAiChatCompletions
@@ -646,13 +1122,38 @@ fn build_probe_request(
             }
             Ok(req)
         }
-        LlmProvider::Chatgpt
-        | LlmProvider::GoogleGeminiGenerateContent
-        | LlmProvider::TypesafeEvaluation => {
-            bail!(
-                "Provider `{}` does not use HTTP bearer probe",
-                provider.as_str()
-            )
+        LlmProvider::GoogleGeminiGenerateContent => {
+            if let Some(key) = non_empty(&config.google_gemini_generate_content_api_key) {
+                let url = vertex_express_probe_url(&config.google_gemini_generate_content_model);
+                Ok(client
+                    .post(&url)
+                    .header("x-goog-api-key", key)
+                    .json(&serde_json::json!({
+                        "contents": [{
+                            "role": "user",
+                            "parts": [{ "text": "ping" }]
+                        }]
+                    })))
+            } else {
+                let resolved = resolve_vertex_access_token(Some(managed_auth_path))
+                    .await
+                    .map_err(|err| {
+                        anyhow::anyhow!(
+                            "Google Vertex credentials unavailable for profile `{profile_id}`: {err}"
+                        )
+                    })?;
+                let url = vertex_catalog_probe_url(&config.google_gemini_generate_content_location);
+                let mut req = client.get(&url).bearer_auth(&resolved.access_token);
+                if let Some(project_id) =
+                    non_empty(&config.google_gemini_generate_content_project_id)
+                {
+                    req = req.header("x-goog-user-project", project_id);
+                }
+                Ok(req)
+            }
+        }
+        LlmProvider::TypesafeEvaluation => {
+            bail!("Provider `typesafe` does not use HTTP probe")
         }
     }
 }
@@ -754,6 +1255,8 @@ mod tests {
                 model: "anthropic/claude-sonnet-4.6".to_owned(),
                 base_url: None,
                 api_key: Some("sk-or-v1-secret-value-9876".to_owned()),
+                project_id: None,
+                location: None,
                 set_as_default: true,
             },
         )
@@ -773,7 +1276,7 @@ mod tests {
         assert_eq!(saved_or.masked_hint.as_deref(), Some("sk-o••••9876"));
         assert!(saved_or.is_default);
 
-        // Save second profile without overwriting default, then switch default.
+        // Save second profile without overwriting default.
         let saved_oai = save_alan_connection_in(
             &stores.system,
             &stores.host,
@@ -783,6 +1286,8 @@ mod tests {
                 model: "gpt-5.4".to_owned(),
                 base_url: Some("https://custom.openai.example/v1/".to_owned()),
                 api_key: Some("sk-proj-openai-secret-1234".to_owned()),
+                project_id: None,
+                location: None,
                 set_as_default: false,
             },
         )
@@ -843,6 +1348,104 @@ mod tests {
     }
 
     #[test]
+    fn save_chatgpt_vertex_and_magpie_profiles_match_alan_schema() {
+        let stores = TempStores::new("all-first-party");
+
+        // 1. ChatGPT OAuth profile (uses ManagedOauth in Host auth.json)
+        let saved_chatgpt = save_alan_connection_in(
+            &stores.system,
+            &stores.host,
+            &SaveAlanConnectionRequest {
+                provider: AlanConnectionProvider::Chatgpt,
+                profile_id: "chatgpt-main".to_owned(),
+                model: "gpt-5.3-codex".to_owned(),
+                base_url: None,
+                api_key: None,
+                project_id: None,
+                location: None,
+                set_as_default: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(saved_chatgpt.provider, "chatgpt");
+        assert!(!saved_chatgpt.has_secret);
+        assert_eq!(saved_chatgpt.masked_hint, None);
+
+        // 2. Vertex AI ADC profile (`project_id` + `location`, no API key required)
+        let saved_vertex_adc = save_alan_connection_in(
+            &stores.system,
+            &stores.host,
+            &SaveAlanConnectionRequest {
+                provider: AlanConnectionProvider::GoogleVertex,
+                profile_id: "vertex-adc".to_owned(),
+                model: "gemini-2.5-flash".to_owned(),
+                base_url: None,
+                api_key: None,
+                project_id: Some("m3-research-prod".to_owned()),
+                location: Some("us-central1".to_owned()),
+                set_as_default: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(saved_vertex_adc.provider, "google_gemini_generate_content");
+        assert_eq!(
+            saved_vertex_adc.project_id.as_deref(),
+            Some("m3-research-prod")
+        );
+        assert_eq!(saved_vertex_adc.location.as_deref(), Some("us-central1"));
+
+        // 3. Vertex AI Express API Key profile (optional project_id)
+        let saved_vertex_express = save_alan_connection_in(
+            &stores.system,
+            &stores.host,
+            &SaveAlanConnectionRequest {
+                provider: AlanConnectionProvider::GoogleVertex,
+                profile_id: "vertex-express".to_owned(),
+                model: "gemini-2.5-pro".to_owned(),
+                base_url: None,
+                api_key: Some("AIzaSyDummyExpressKey9999".to_owned()),
+                project_id: None,
+                location: None,
+                set_as_default: false,
+            },
+        )
+        .unwrap();
+        assert!(saved_vertex_express.has_secret);
+        assert_eq!(
+            saved_vertex_express.masked_hint.as_deref(),
+            Some("AIza••••9999")
+        );
+        assert_eq!(saved_vertex_express.location.as_deref(), Some("global"));
+
+        // 4. Magpie local router without API key (optional secret)
+        let (magpie_base, magpie_handle) = spawn_single_response_server("200 OK", r#"{"data":[]}"#);
+        let saved_magpie = save_alan_connection_in(
+            &stores.system,
+            &stores.host,
+            &SaveAlanConnectionRequest {
+                provider: AlanConnectionProvider::Magpie,
+                profile_id: "magpie-main".to_owned(),
+                model: "default".to_owned(),
+                base_url: Some(magpie_base),
+                api_key: None,
+                project_id: None,
+                location: None,
+                set_as_default: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(saved_magpie.provider, "magpie");
+        assert!(saved_magpie.has_secret);
+        assert_eq!(saved_magpie.masked_hint.as_deref(), Some("Local"));
+
+        let magpie_test =
+            test_alan_connection_in(&stores.system, &stores.host, Some("magpie-main")).unwrap();
+        let req = magpie_handle.join().unwrap();
+        assert_eq!(magpie_test.status_code, 200);
+        assert!(req.starts_with("GET /v1/models "));
+    }
+
+    #[test]
     fn updating_existing_profile_without_api_key_preserves_secret() {
         let stores = TempStores::new("preserve-secret");
 
@@ -855,6 +1458,8 @@ mod tests {
                 model: "moonshotai/kimi-k2.6".to_owned(),
                 base_url: None,
                 api_key: Some("sk-or-v1-keep-me-4321".to_owned()),
+                project_id: None,
+                location: None,
                 set_as_default: true,
             },
         )
@@ -869,6 +1474,8 @@ mod tests {
                 model: "openai/gpt-5.4".to_owned(),
                 base_url: None,
                 api_key: Some("   ".to_owned()),
+                project_id: None,
+                location: None,
                 set_as_default: true,
             },
         )
@@ -900,6 +1507,8 @@ mod tests {
                 model: "moonshotai/kimi-k2.6".to_owned(),
                 base_url: None,
                 api_key: Some("sk-test-123456789".to_owned()),
+                project_id: None,
+                location: None,
                 set_as_default: true,
             },
         )
@@ -916,11 +1525,31 @@ mod tests {
                 model: "moonshotai/kimi-k2.6".to_owned(),
                 base_url: None,
                 api_key: None,
+                project_id: None,
+                location: None,
                 set_as_default: true,
             },
         )
         .unwrap_err();
         assert!(err.to_string().contains("API key is required"));
+
+        // Vertex AI missing both API key and project_id
+        let err = save_alan_connection_in(
+            &stores.system,
+            &stores.host,
+            &SaveAlanConnectionRequest {
+                provider: AlanConnectionProvider::GoogleVertex,
+                profile_id: "vertex-empty".to_owned(),
+                model: "gemini-2.5-flash".to_owned(),
+                base_url: None,
+                api_key: None,
+                project_id: None,
+                location: None,
+                set_as_default: true,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("GCP Project ID"));
 
         // Invalid base URL
         let err = save_alan_connection_in(
@@ -932,6 +1561,8 @@ mod tests {
                 model: "moonshotai/kimi-k2.6".to_owned(),
                 base_url: Some("ftp://invalid.example".to_owned()),
                 api_key: Some("sk-test-123456789".to_owned()),
+                project_id: None,
+                location: None,
                 set_as_default: true,
             },
         )
@@ -964,6 +1595,8 @@ mod tests {
                 model: "moonshotai/kimi-k2.6".to_owned(),
                 base_url: Some(base_ok.clone()),
                 api_key: Some("sk-or-v1-probe-key-1111".to_owned()),
+                project_id: None,
+                location: None,
                 set_as_default: true,
             },
         )
@@ -991,6 +1624,8 @@ mod tests {
                 model: "gpt-5.4".to_owned(),
                 base_url: Some(base_err),
                 api_key: Some("sk-bad-key-2222".to_owned()),
+                project_id: None,
+                location: None,
                 set_as_default: false,
             },
         )
@@ -1001,5 +1636,33 @@ mod tests {
         let _ = handle_err.join().unwrap();
         assert!(auth_err.to_string().contains("Authentication failed"));
         assert!(auth_err.to_string().contains("401"));
+    }
+
+    #[test]
+    fn vertex_probe_urls_map_global_and_regional_catalog_hosts() {
+        assert_eq!(
+            vertex_catalog_probe_url("global"),
+            "https://us-central1-aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=1"
+        );
+        assert_eq!(
+            vertex_catalog_probe_url(""),
+            "https://us-central1-aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=1"
+        );
+        assert_eq!(
+            vertex_catalog_probe_url("europe-west4"),
+            "https://europe-west4-aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=1"
+        );
+        assert_eq!(
+            vertex_express_probe_url("gemini-2.5-pro"),
+            "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-pro:countTokens"
+        );
+        assert_eq!(
+            vertex_express_probe_url("publishers/google/models/gemini-2.5-flash"),
+            "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:countTokens"
+        );
+        assert_eq!(
+            vertex_express_probe_url("   "),
+            "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:countTokens"
+        );
     }
 }

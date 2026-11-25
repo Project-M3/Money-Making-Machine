@@ -4,7 +4,7 @@ use crate::components::{
     action_button, animate_shell_spring, badge_pill, concept_hint, concept_hint_static,
     obsidian_card, progress_bar, seg_group, seg_tab, styled_input,
 };
-use crate::format::fmt_time_cn_for;
+use crate::format::{McpClientTarget, build_mcp_config_snippet, fmt_time_cn_for};
 use crate::icons::{ICON_CLOSE, ICON_SETTINGS, icon};
 use crate::platform_desktop::{
     M3_GITHUB_URL, M3_RELEASES_URL, M3_WEBSITE_URL, copy_text_with_notice, open_external_url,
@@ -20,8 +20,6 @@ use m3_core::storage::{self, StorageCategory};
 use m3_core::update::{self, ReleaseChannel};
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
-
-const ALAN_SETUP_CMD: &str = "alan connection add openrouter --profile main && alan connection set-secret main && alan connection default set main";
 
 fn render_settings_tabs_control(store: AppStore) -> View {
     view().child(dynamic(move || {
@@ -68,6 +66,7 @@ fn render_settings_tab_body(store: AppStore, ver_for_body: String) -> View {
             .flex_col()
             .gap(px(20.0))
             .child(render_alan_connection_card(store))
+            .child(render_mcp_card(store))
             .child(render_budget_card(store)),
         SettingsTab::Data => view()
             .w_full()
@@ -830,6 +829,16 @@ fn render_budget_card(store: AppStore) -> View {
     )
 }
 
+fn alan_provider_accent(provider: AlanConnectionProvider) -> (u32, u32) {
+    match provider {
+        AlanConnectionProvider::OpenRouter => (EMERALD_FG, EMERALD_BG),
+        AlanConnectionProvider::OpenAiResponses => (SKY_FG, SKY_BG),
+        AlanConnectionProvider::Chatgpt => (VIOLET_FG, VIOLET_BG),
+        AlanConnectionProvider::GoogleVertex => (GOLD_FG, GOLD_BG),
+        AlanConnectionProvider::Magpie => (EMERALD_FG, EMERALD_BG),
+    }
+}
+
 fn render_alan_connection_card(store: AppStore) -> View {
     section_block(
         move || {
@@ -844,8 +853,8 @@ fn render_alan_connection_card(store: AppStore) -> View {
                 .lang
                 .get()
                 .t(
-                    "凭据写入 Alan 标准连接库（与 `alan connection` CLI 互通），用于 Deep Research 与 Alan 审讯台。",
-                    "Saved directly to Alan's canonical connection store (compatible with `alan connection` CLI) for Deep Research and Alan.",
+                    "凭据写入 Alan 本地连接库，直接驱动 Deep Research 与 Alan 审讯台。",
+                    "Credentials are saved in Alan's local connection store for Deep Research and Alan.",
                 )
                 .to_owned()
         })),
@@ -858,7 +867,8 @@ fn render_alan_connection_card(store: AppStore) -> View {
                 let active = status_opt.as_ref().and_then(|st| st.active_profile());
 
                 let (hint, badge_el) = if let Some(prof) = active {
-                    let prov_label = AlanConnectionProvider::parse(&prof.provider)
+                    let parsed_prov = AlanConnectionProvider::parse(&prof.provider).ok();
+                    let prov_label = parsed_prov
                         .map(|p| p.display_name())
                         .unwrap_or(prof.provider.as_str());
                     let model_label = prof.model.as_deref().unwrap_or("default");
@@ -886,6 +896,13 @@ fn render_alan_connection_card(store: AppStore) -> View {
                             SLATE_BG,
                             SLATE_BORDER,
                         ));
+                    } else if parsed_prov == Some(AlanConnectionProvider::Chatgpt) {
+                        badges = badges.child(badge_pill(
+                            l.t("需要登录", "Sign-In Required").to_owned(),
+                            GOLD_FG,
+                            GOLD_BG,
+                            GOLD_BORDER,
+                        ));
                     } else {
                         badges = badges.child(badge_pill(
                             l.t("缺少密钥", "Missing Key").to_owned(),
@@ -894,7 +911,13 @@ fn render_alan_connection_card(store: AppStore) -> View {
                             GOLD_BORDER,
                         ));
                     }
-                    (prof.base_url.clone(), badges)
+                    let row_hint = prof.base_url.clone().or_else(|| {
+                        prof.project_id.as_deref().map(|pid| {
+                            let loc = prof.location.as_deref().unwrap_or("global");
+                            format!("{pid} · {loc}")
+                        })
+                    });
+                    (row_hint, badges)
                 } else {
                     (
                         None,
@@ -916,37 +939,22 @@ fn render_alan_connection_card(store: AppStore) -> View {
                 )
                 .child(badge_el)
             }))
-            // 2. Provider Segmented Toggle
+            // 2. All 5 First-Party Alan Providers Segmented Toggle
             .child(dynamic(move || {
                 let l = store.lang.get();
                 let provider = store.alan_conn_provider.get();
-                setting_row_static(l.t("模型服务商", "Provider"), None, None, false, true).child(
-                    view().flex_shrink_0().child(
-                        seg_group()
-                            .child(seg_tab(
-                                "OpenRouter",
-                                provider == AlanConnectionProvider::OpenRouter,
-                                Some((EMERALD_FG, EMERALD_BG)),
-                                false,
-                                move || {
-                                    store.select_alan_conn_provider(
-                                        AlanConnectionProvider::OpenRouter,
-                                    );
-                                },
-                            ))
-                            .child(seg_tab(
-                                "OpenAI",
-                                provider == AlanConnectionProvider::OpenAiResponses,
-                                Some((SKY_FG, SKY_BG)),
-                                false,
-                                move || {
-                                    store.select_alan_conn_provider(
-                                        AlanConnectionProvider::OpenAiResponses,
-                                    );
-                                },
-                            )),
-                    ),
-                )
+                let mut group = seg_group();
+                for cand in AlanConnectionProvider::ALL {
+                    group = group.child(seg_tab(
+                        cand.display_name(),
+                        provider == cand,
+                        Some(alan_provider_accent(cand)),
+                        false,
+                        move || store.select_alan_conn_provider(cand),
+                    ));
+                }
+                setting_row_static(l.t("模型服务商", "Provider"), None, None, false, true)
+                    .child(view().flex_shrink_0().child(group))
             }))
             // 3. Profile ID & Model Inputs (static outside dynamic so IME & focus stay intact)
             .child(
@@ -1027,152 +1035,430 @@ fn render_alan_connection_card(store: AppStore) -> View {
                             ),
                     ),
             )
-            // 4. Masked API Key & Optional Base URL Inputs (static outside dynamic)
-            .child(
-                view()
-                    .w_full()
-                    .px(px(16.0))
-                    .py(px(12.0))
-                    .border_b_1()
-                    .border_color(rgb(BORDER_HAIRLINE))
-                    .flex()
-                    .flex_row()
-                    .items_start()
-                    .gap(px(12.0))
-                    .child(
+            // 4. Contextual Credential / Cloud Project / Endpoint Row (rebuilds only on provider switch)
+            .child(dynamic(move || {
+                let provider = store.alan_conn_provider.get();
+                match provider {
+                    AlanConnectionProvider::OpenRouter
+                    | AlanConnectionProvider::OpenAiResponses
+                    | AlanConnectionProvider::Magpie => {
+                        let key_optional = provider == AlanConnectionProvider::Magpie;
                         view()
-                            .flex_1()
-                            .min_w(px(0.0))
+                            .w_full()
+                            .px(px(16.0))
+                            .py(px(12.0))
+                            .border_b_1()
+                            .border_color(rgb(BORDER_HAIRLINE))
                             .flex()
-                            .flex_col()
-                            .gap(px(5.0))
+                            .flex_row()
+                            .items_start()
+                            .gap(px(12.0))
                             .child(
-                                text(move || {
-                                    store
-                                        .lang
-                                        .get()
-                                        .t("API 密钥 (掩码保护)", "API Key (Masked)")
-                                        .to_owned()
-                                })
-                                .font_family(FONT_UI)
-                                .text_size(px(TEXT_2XS))
-                                .text_color(rgb(INK_MUTED)),
-                            )
-                            .child(
-                                styled_input(
-                                    move || store.alan_conn_api_key_draft.get(),
-                                    move || {
-                                        let l = store.lang.get();
-                                        let draft_id = store.alan_conn_profile_id_draft.get();
-                                        let existing_hint = store.alan_conn_status.with(|st| {
-                                            st.as_ref().and_then(|s| {
-                                                s.profiles
-                                                    .iter()
-                                                    .find(|p| p.id == draft_id.trim())
-                                                    .and_then(|p| p.masked_hint.clone())
-                                            })
-                                        });
-                                        if let Some(hint) = existing_hint {
-                                            match l {
-                                                UiLang::Zh => format!("已保存 ({hint})，留空不变"),
-                                                UiLang::En => {
-                                                    format!("Saved ({hint}) — leave blank to keep")
-                                                }
+                                view()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(5.0))
+                                    .child(
+                                        text(move || {
+                                            let l = store.lang.get();
+                                            if key_optional {
+                                                l.t("API 密钥 (可选)", "API Key (Optional)")
+                                                    .to_owned()
+                                            } else {
+                                                l.t("API 密钥 (掩码保护)", "API Key (Masked)")
+                                                    .to_owned()
                                             }
-                                        } else {
-                                            l.t("输入 sk-... 密钥", "Enter API key (sk-...)")
-                                                .to_owned()
-                                        }
-                                    },
-                                    true,
-                                )
-                                .masked(true)
-                                .w_full()
-                                .on_change(move |val: &str| {
-                                    store.alan_conn_api_key_draft.set(val.to_owned());
-                                })
-                                .on_submit(move |_: &str| store.save_alan_connection()),
-                            ),
-                    )
-                    .child(
-                        view()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(5.0))
-                            .child(
-                                text(move || {
-                                    store
-                                        .lang
-                                        .get()
-                                        .t("自定义端点 (可选)", "Base URL (Optional)")
-                                        .to_owned()
-                                })
-                                .font_family(FONT_UI)
-                                .text_size(px(TEXT_2XS))
-                                .text_color(rgb(INK_MUTED)),
+                                        })
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_2XS))
+                                        .text_color(rgb(INK_MUTED)),
+                                    )
+                                    .child(
+                                        styled_input(
+                                            move || store.alan_conn_api_key_draft.get(),
+                                            move || {
+                                                let l = store.lang.get();
+                                                let draft_id =
+                                                    store.alan_conn_profile_id_draft.get();
+                                                let existing_hint =
+                                                    store.alan_conn_status.with(|st| {
+                                                        st.as_ref().and_then(|s| {
+                                                            s.profiles
+                                                                .iter()
+                                                                .find(|p| p.id == draft_id.trim())
+                                                                .filter(|p| p.has_secret)
+                                                                .and_then(|p| {
+                                                                    p.masked_hint.clone()
+                                                                })
+                                                        })
+                                                    });
+                                                if let Some(hint) = existing_hint {
+                                                    match l {
+                                                        UiLang::Zh => {
+                                                            format!("已保存 ({hint})，留空不变")
+                                                        }
+                                                        UiLang::En => {
+                                                            format!("Saved ({hint}) — leave blank to keep")
+                                                        }
+                                                    }
+                                                } else if key_optional {
+                                                    l.t(
+                                                        "本地无需密钥可留空",
+                                                        "Leave blank if router has no auth",
+                                                    )
+                                                    .to_owned()
+                                                } else {
+                                                    l.t("输入 sk-... 密钥", "Enter API key (sk-...)")
+                                                        .to_owned()
+                                                }
+                                            },
+                                            true,
+                                        )
+                                        .masked(true)
+                                        .w_full()
+                                        .on_change(move |val: &str| {
+                                            store.alan_conn_api_key_draft.set(val.to_owned());
+                                        })
+                                        .on_submit(move |_: &str| store.save_alan_connection()),
+                                    ),
                             )
                             .child(
-                                styled_input(
-                                    move || store.alan_conn_base_url_draft.get(),
-                                    move || {
-                                        store.alan_conn_provider.get().default_base_url().to_owned()
-                                    },
-                                    true,
+                                view()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(5.0))
+                                    .child(
+                                        text(move || {
+                                            store
+                                                .lang
+                                                .get()
+                                                .t("自定义端点 (可选)", "Base URL (Optional)")
+                                                .to_owned()
+                                        })
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_2XS))
+                                        .text_color(rgb(INK_MUTED)),
+                                    )
+                                    .child(
+                                        styled_input(
+                                            move || store.alan_conn_base_url_draft.get(),
+                                            move || provider.default_base_url().to_owned(),
+                                            true,
+                                        )
+                                        .w_full()
+                                        .on_change(move |val: &str| {
+                                            store.alan_conn_base_url_draft.set(val.to_owned());
+                                        })
+                                        .on_submit(move |_: &str| store.save_alan_connection()),
+                                    ),
+                            )
+                    }
+                    AlanConnectionProvider::Chatgpt => view()
+                        .w_full()
+                        .px(px(16.0))
+                        .py(px(12.0))
+                        .border_b_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .gap(px(12.0))
+                        .child(
+                            view()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(5.0))
+                                .child(
+                                    text(move || {
+                                        store
+                                            .lang
+                                            .get()
+                                            .t("OAuth 授权状态", "Managed OAuth")
+                                            .to_owned()
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_MUTED)),
                                 )
-                                .w_full()
-                                .on_change(move |val: &str| {
-                                    store.alan_conn_base_url_draft.set(val.to_owned());
-                                })
-                                .on_submit(move |_: &str| store.save_alan_connection()),
-                            ),
-                    ),
-            )
-            // 5. Save & Test Actions + Inline Feedback
+                                .child(dynamic(move || {
+                                    let l = store.lang.get();
+                                    let cg_prof = store.alan_conn_status.with(|st| {
+                                        st.as_ref().and_then(|s| {
+                                            s.profiles
+                                                .iter()
+                                                .find(|p| {
+                                                    p.provider
+                                                        == AlanConnectionProvider::Chatgpt.as_str()
+                                                })
+                                                .cloned()
+                                        })
+                                    });
+                                    let signed_hint = cg_prof
+                                        .as_ref()
+                                        .filter(|p| p.has_secret)
+                                        .and_then(|p| p.masked_hint.clone());
+                                    view()
+                                        .w_full()
+                                        .h(px(32.0))
+                                        .px(px(10.0))
+                                        .rounded_md()
+                                        .bg(rgb(BG_WELL))
+                                        .border_1()
+                                        .border_color(rgb(BORDER_HAIRLINE))
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .child(
+                                            text(match signed_hint {
+                                                Some(email) => match l {
+                                                    UiLang::Zh => format!("已授权 · {email}"),
+                                                    UiLang::En => format!("Signed in · {email}"),
+                                                },
+                                                None => l
+                                                    .t(
+                                                        "点击下方「浏览器登录 ChatGPT」授权",
+                                                        "Click Sign in with ChatGPT below",
+                                                    )
+                                                    .to_owned(),
+                                            })
+                                            .font_family(FONT_UI)
+                                            .text_size(px(TEXT_XS))
+                                            .text_color(rgb(INK_SECONDARY))
+                                            .truncate()
+                                            .number_of_lines(1),
+                                        )
+                                })),
+                        )
+                        .child(
+                            view()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(5.0))
+                                .child(
+                                    text(move || {
+                                        store
+                                            .lang
+                                            .get()
+                                            .t("自定义端点 (可选)", "Base URL (Optional)")
+                                            .to_owned()
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_MUTED)),
+                                )
+                                .child(
+                                    styled_input(
+                                        move || store.alan_conn_base_url_draft.get(),
+                                        move || provider.default_base_url().to_owned(),
+                                        true,
+                                    )
+                                    .w_full()
+                                    .on_change(move |val: &str| {
+                                        store.alan_conn_base_url_draft.set(val.to_owned());
+                                    })
+                                    .on_submit(move |_: &str| store.save_alan_connection()),
+                                ),
+                        ),
+                    AlanConnectionProvider::GoogleVertex => view()
+                        .w_full()
+                        .px(px(16.0))
+                        .py(px(12.0))
+                        .border_b_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .gap(px(10.0))
+                        .child(
+                            view()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(5.0))
+                                .child(
+                                    text(move || {
+                                        store
+                                            .lang
+                                            .get()
+                                            .t("GCP Project ID (ADC / OAuth)", "GCP Project ID")
+                                            .to_owned()
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_MUTED)),
+                                )
+                                .child(
+                                    styled_input(
+                                        move || store.alan_conn_project_id_draft.get(),
+                                        move || {
+                                            store
+                                                .lang
+                                                .get()
+                                                .t("例如 my-gcp-project", "e.g. my-gcp-project")
+                                                .to_owned()
+                                        },
+                                        true,
+                                    )
+                                    .w_full()
+                                    .on_change(move |val: &str| {
+                                        store.alan_conn_project_id_draft.set(val.to_owned());
+                                    })
+                                    .on_submit(move |_: &str| store.save_alan_connection()),
+                                ),
+                        )
+                        .child(
+                            view()
+                                .w(px(110.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(5.0))
+                                .child(
+                                    text(move || {
+                                        store.lang.get().t("区域 (Location)", "Location").to_owned()
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_MUTED)),
+                                )
+                                .child(
+                                    styled_input(
+                                        move || store.alan_conn_location_draft.get(),
+                                        || "global".to_owned(),
+                                        true,
+                                    )
+                                    .w_full()
+                                    .on_change(move |val: &str| {
+                                        store.alan_conn_location_draft.set(val.to_owned());
+                                    })
+                                    .on_submit(move |_: &str| store.save_alan_connection()),
+                                ),
+                        )
+                        .child(
+                            view()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(5.0))
+                                .child(
+                                    text(move || {
+                                        store
+                                            .lang
+                                            .get()
+                                            .t(
+                                                "Express API Key (可选)",
+                                                "Express API Key (Optional)",
+                                            )
+                                            .to_owned()
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_MUTED)),
+                                )
+                                .child(
+                                    styled_input(
+                                        move || store.alan_conn_api_key_draft.get(),
+                                        move || {
+                                            store
+                                                .lang
+                                                .get()
+                                                .t("ADC 模式可留空", "Leave blank for ADC")
+                                                .to_owned()
+                                        },
+                                        true,
+                                    )
+                                    .masked(true)
+                                    .w_full()
+                                    .on_change(move |val: &str| {
+                                        store.alan_conn_api_key_draft.set(val.to_owned());
+                                    })
+                                    .on_submit(move |_: &str| store.save_alan_connection()),
+                                ),
+                        ),
+                }
+            }))
+            // 5. Save, Browser Login & Test Actions + Inline Feedback
             .child(dynamic(move || {
                 let l = store.lang.get();
+                let provider = store.alan_conn_provider.get();
                 let saving = store.alan_conn_saving.get();
+                let logging_in = store.alan_conn_logging_in.get();
                 let testing = store.alan_conn_testing.get();
                 let feedback = store.alan_conn_feedback.get();
+
+                let mut actions = view()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .flex_wrap()
+                    .gap(px(8.0))
+                    .child(action_button(
+                        if saving {
+                            l.t("保存中…", "Saving…").to_owned()
+                        } else {
+                            l.t("保存并设为默认", "Save & Set Default").to_owned()
+                        },
+                        true,
+                        move || store.save_alan_connection(),
+                    ));
+
+                if provider.supports_browser_login() {
+                    let login_lbl = if logging_in {
+                        l.t("等待浏览器授权…", "Waiting for Browser…")
+                    } else {
+                        match provider {
+                            AlanConnectionProvider::Chatgpt => {
+                                l.t("浏览器登录 ChatGPT", "Sign in with ChatGPT")
+                            }
+                            AlanConnectionProvider::OpenRouter => {
+                                l.t("OpenRouter 浏览器授权", "OpenRouter OAuth")
+                            }
+                            AlanConnectionProvider::GoogleVertex => {
+                                l.t("Google Cloud 登录", "Google Cloud Sign-In")
+                            }
+                            _ => l.t("浏览器登录", "Browser Sign-In"),
+                        }
+                    };
+                    actions = actions.child(setting_chip(
+                        login_lbl,
+                        logging_in,
+                        false,
+                        Some((VIOLET_FG, VIOLET_BG, VIOLET_BORDER)),
+                        move || store.start_alan_browser_login(),
+                    ));
+                }
+
+                actions = actions.child(setting_chip(
+                    if testing {
+                        l.t("测试中…", "Testing…")
+                    } else {
+                        l.t("测试连接", "Test Connection")
+                    },
+                    testing,
+                    false,
+                    Some((SKY_FG, SKY_BG, SKY_BORDER)),
+                    move || store.test_alan_connection(),
+                ));
 
                 let mut row = view()
                     .w_full()
                     .px(px(16.0))
                     .py(px(12.0))
-                    .border_b_1()
-                    .border_color(rgb(BORDER_HAIRLINE))
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .child(
-                        view()
-                            .w_full()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(action_button(
-                                if saving {
-                                    l.t("保存中…", "Saving…").to_owned()
-                                } else {
-                                    l.t("保存并设为默认", "Save & Set Default").to_owned()
-                                },
-                                true,
-                                move || store.save_alan_connection(),
-                            ))
-                            .child(setting_chip(
-                                if testing {
-                                    l.t("测试中…", "Testing…")
-                                } else {
-                                    l.t("测试连接", "Test Connection")
-                                },
-                                testing,
-                                false,
-                                Some((SKY_FG, SKY_BG, SKY_BORDER)),
-                                move || store.test_alan_connection(),
-                            )),
-                    );
+                    .child(actions);
 
                 if let Some((msg, is_err)) = feedback {
                     row = row.child(
@@ -1184,45 +1470,118 @@ fn render_alan_connection_card(store: AppStore) -> View {
                 }
 
                 row
-            }))
-            // 6. Subtle CLI Fallback Strip
+            })),
+    )
+}
+
+fn render_mcp_card(store: AppStore) -> View {
+    section_block(
+        move || {
+            store
+                .lang
+                .get()
+                .t("MCP 接口与外部 Agent", "MCP Server & External Agents")
+                .to_owned()
+        },
+        None,
+        Some(Box::new(move || {
+            store
+                .lang
+                .get()
+                .t(
+                    "只读 stdio MCP 服务（14 个确定性工具），供 Claude Code、Codex 与 Cursor 接入当前工作区。",
+                    "Read-only stdio MCP server (14 deterministic tools) for Claude Code, Codex, and Cursor.",
+                )
+                .to_owned()
+        })),
+        obsidian_card()
             .child(dynamic(move || {
                 let l = store.lang.get();
-                action_strip()
+                let target = store.settings_mcp_target.get();
+                view()
+                    .w_full()
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .flex_row()
+                    .items_center()
                     .justify_between()
+                    .flex_wrap()
+                    .gap(px(10.0))
+                    .child(
+                        seg_group()
+                            .child(seg_tab(
+                                "Claude Code",
+                                target == McpClientTarget::ClaudeCode,
+                                Some((EMERALD_FG, EMERALD_BG)),
+                                false,
+                                move || store.settings_mcp_target.set(McpClientTarget::ClaudeCode),
+                            ))
+                            .child(seg_tab(
+                                "Codex",
+                                target == McpClientTarget::Codex,
+                                Some((SKY_FG, SKY_BG)),
+                                false,
+                                move || store.settings_mcp_target.set(McpClientTarget::Codex),
+                            ))
+                            .child(seg_tab(
+                                "Cursor / JSON",
+                                target == McpClientTarget::JsonClients,
+                                Some((VIOLET_FG, VIOLET_BG)),
+                                false,
+                                move || store.settings_mcp_target.set(McpClientTarget::JsonClients),
+                            )),
+                    )
                     .child(
                         view()
-                            .flex_1()
-                            .min_w(px(0.0))
+                            .flex_shrink_0()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                text(l.t("CLI 备选:", "CLI fallback:").to_owned())
-                                    .font_family(FONT_UI)
-                                    .text_size(px(TEXT_2XS))
-                                    .text_color(rgb(INK_MUTED)),
-                            )
-                            .child(
-                                text(ALAN_SETUP_CMD.to_owned())
-                                    .font_family(FONT_MONO_TERM)
-                                    .text_size(px(TEXT_2XS))
-                                    .text_color(rgb(INK_MUTED))
-                                    .truncate()
-                                    .number_of_lines(1),
-                            ),
+                            .gap(px(8.0))
+                            .child(badge_pill(
+                                l.t("只读 · 14 Tools", "Read-Only · 14 Tools").to_owned(),
+                                INK_SECONDARY,
+                                SLATE_BG,
+                                SLATE_BORDER,
+                            ))
+                            .child(setting_chip(
+                                l.t("一键复制配置", "Copy Config"),
+                                true,
+                                false,
+                                Some((SKY_FG, SKY_BG, SKY_BORDER)),
+                                move || {
+                                    let root = store.paths.get_untracked().repo_root;
+                                    let custom =
+                                        app_config::read_configured_workspace_root().is_some();
+                                    let tgt = store.settings_mcp_target.get_untracked();
+                                    let snippet = build_mcp_config_snippet(tgt, &root, custom);
+                                    let lbl =
+                                        store.lang.get_untracked().t("MCP 配置", "MCP config");
+                                    copy_text_with_notice(store, snippet, lbl);
+                                },
+                            )),
                     )
-                    .child(setting_chip(
-                        l.t("复制命令", "Copy CLI"),
-                        false,
-                        false,
-                        None,
-                        move || {
-                            let lbl = store.lang.get_untracked().t("Alan 连接命令", "Alan setup");
-                            copy_text_with_notice(store, ALAN_SETUP_CMD.to_owned(), lbl);
-                        },
-                    ))
+            }))
+            .child(dynamic(move || {
+                let target = store.settings_mcp_target.get();
+                let root = store.paths.with(|p| p.repo_root.clone());
+                let custom = app_config::read_configured_workspace_root().is_some();
+                let snippet = build_mcp_config_snippet(target, &root, custom);
+                view()
+                    .w_full()
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .bg(rgb(BG_WELL))
+                    .child(
+                        text(snippet)
+                            .font_family(FONT_MONO_TERM)
+                            .text_size(px(TEXT_XS))
+                            .line_height(px(18.0))
+                            .text_color(rgb(INK_PRIMARY)),
+                    )
             })),
     )
 }

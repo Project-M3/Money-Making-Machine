@@ -37,6 +37,13 @@ interface WorkbenchState {
   feynmanChecked: Record<string, boolean>;
   settingsLang: 'en' | 'zh';
   settingsChannel: 'stable' | 'beta';
+  sidebarCollapsed: boolean;
+  messageBoxOpen: boolean;
+  settingsOpen: boolean;
+  settingsModalTab: 'general' | 'ai' | 'data';
+  settingsAlanProvider: 'openrouter' | 'openai' | 'chatgpt' | 'vertex' | 'magpie';
+  settingsMcpTarget: 'claude' | 'codex' | 'json';
+  mcpCopied: boolean;
   openProvenanceId: string | null;
   paletteOpen: boolean;
   paletteQuery: string;
@@ -121,6 +128,13 @@ export function mountWorkbench(container: HTMLElement): void {
     ),
     settingsLang: 'en',
     settingsChannel: 'stable',
+    sidebarCollapsed: false,
+    messageBoxOpen: false,
+    settingsOpen: false,
+    settingsModalTab: 'ai',
+    settingsAlanProvider: 'vertex',
+    settingsMcpTarget: 'claude',
+    mcpCopied: false,
     openProvenanceId: 'mco-oe',
     paletteOpen: false,
     paletteQuery: '',
@@ -221,66 +235,70 @@ export function mountWorkbench(container: HTMLElement): void {
 
     container.innerHTML = `
       <div class="m3-window">
-        ${renderSidebar(unreadCount)}
+        ${renderShellTopbar()}
 
-        <div class="m3-viewport-gutter">
-          <div class="m3-viewport">
-            <div class="m3-toolbar">
-              <div class="m3-toolbar-left">
-                ${
-                  state.tab === 'research'
-                    ? `<button type="button" class="tb-back-btn" data-back-baskets>←</button>`
-                    : ''
-                }
-                <span class="m3-breadcrumb">${escapeHtml(getBreadcrumb())}</span>
-              </div>
+        <div class="m3-body-row">
+          ${renderSidebar(unreadCount)}
 
-              <div class="m3-toolbar-right">
-                <div class="bench-pill">
-                  <span style="color: var(--ink-muted)">S&amp;P 500</span>
-                  <strong class="mono tabular" style="color: var(--ink-primary)">5,942.10</strong>
+          <div class="m3-viewport-gutter">
+            <div class="m3-viewport">
+              <div class="m3-toolbar">
+                <div class="m3-toolbar-left">
+                  ${
+                    state.tab === 'research'
+                      ? `<button type="button" class="tb-back-btn" data-back-baskets>←</button>`
+                      : ''
+                  }
+                  <span class="m3-breadcrumb">${escapeHtml(getBreadcrumb())}</span>
                 </div>
-                <span class="sync-indicator">
-                  <span class="mini-dot" style="background: var(--emerald)"></span>
-                  <span>14m ago</span>
-                </span>
-                <button type="button" class="tb-sync-btn" data-trigger-sync>
-                  <span>Sync</span>
-                  <span class="m3-kbd">⌘R</span>
-                </button>
-              </div>
-            </div>
 
-            <div class="m3-main-body">
-              ${
-                state.tab === 'inbox'
-                  ? renderInboxView()
-                  : state.tab === 'universe'
-                    ? renderUniverseView()
-                    : state.tab === 'industry'
-                      ? renderIndustryView()
-                      : state.tab === 'baskets'
-                        ? renderBasketsView()
-                        : state.tab === 'research'
-                          ? renderResearchView()
-                          : state.tab === 'settings'
-                            ? renderSettingsView()
+                <div class="m3-toolbar-right">
+                  <div class="bench-pill">
+                    <span style="color: var(--ink-muted)">S&amp;P 500</span>
+                    <strong class="mono tabular" style="color: var(--ink-primary)">5,942.10</strong>
+                  </div>
+                  <span class="sync-indicator">
+                    <span class="mini-dot" style="background: var(--emerald)"></span>
+                    <span>14m ago</span>
+                  </span>
+                  <button type="button" class="tb-sync-btn" data-trigger-sync>
+                    <span>Sync</span>
+                    <span class="m3-kbd">⌘R</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="m3-main-body">
+                ${
+                  state.tab === 'inbox'
+                    ? renderInboxView()
+                    : state.tab === 'universe'
+                      ? renderUniverseView()
+                      : state.tab === 'industry'
+                        ? renderIndustryView()
+                        : state.tab === 'baskets'
+                          ? renderBasketsView()
+                          : state.tab === 'research'
+                            ? renderResearchView()
                             : renderJournalView()
-              }
-            </div>
-
-            <div class="m3-statusline">
-              <div class="statusline-group">
-                <span class="mini-dot" style="background: ${status.dot}"></span>
-                <span class="statusline-legend">${escapeHtml(status.legend)}</span>
+                }
               </div>
-              <div class="statusline-group">
-                <span>${escapeHtml(status.mode)}</span>
+
+              <div class="m3-statusline">
+                <div class="statusline-group">
+                  <span class="mini-dot" style="background: ${status.dot}"></span>
+                  <span class="statusline-legend">${escapeHtml(status.legend)}</span>
+                </div>
+                <div class="statusline-group">
+                  <span>${escapeHtml(status.mode)}</span>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
+        ${state.messageBoxOpen ? renderMessageBoxPopover() : ''}
+        ${state.settingsOpen ? renderSettingsModal() : ''}
         ${state.paletteOpen ? renderPaletteOverlay() : ''}
       </div>
     `;
@@ -288,19 +306,26 @@ export function mountWorkbench(container: HTMLElement): void {
     bindEvents();
   }
 
-  function renderSidebar(unreadCount: number): string {
-    const buckets: Array<{ key: CompanyRecord['bucket']; code: string; dot: string }> = [
-      { key: 'Core', code: 'CORE', dot: 'var(--emerald)' },
-      { key: 'Watch', code: 'WATCH', dot: 'var(--sky)' },
-      { key: 'Too Hard', code: 'TOO HARD', dot: 'var(--slate)' },
-    ];
-
+  function renderShellTopbar(): string {
+    const hasNotice = Boolean(state.dockNotice);
     return `
-      <aside class="m3-sidebar" aria-label="M3 Sidebar Navigation">
-        <div class="m3-sidebar-header">
+      <header class="m3-shell-topbar" aria-label="M3 Window Topbar">
+        <div class="m3-top-left">
           <div class="traffic-lights" aria-hidden="true">
             <span></span><span></span><span></span>
           </div>
+          <button
+            type="button"
+            class="m3-top-icon-btn ${state.sidebarCollapsed ? 'is-active' : ''}"
+            data-toggle-sidebar
+            title="Toggle Sidebar (⌘\\)"
+            aria-label="Toggle Sidebar"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M9 4v16" />
+            </svg>
+          </button>
           <svg
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 16 10"
@@ -329,12 +354,65 @@ export function mountWorkbench(container: HTMLElement): void {
           </svg>
         </div>
 
-        <div class="m3-sidebar-palette-wrap">
-          <button type="button" class="m3-cmd-trigger" data-open-palette>
-            <span>&gt; Jump / Command…</span>
-            <span class="m3-kbd">⌘K</span>
+        <button type="button" class="m3-top-cmd-pill" data-open-palette>
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">&gt; ${escapeHtml(getBreadcrumb())}</span>
+          <span class="m3-kbd">⌘K</span>
+        </button>
+
+        <div class="m3-top-right">
+          <button
+            type="button"
+            class="m3-top-icon-btn ${state.messageBoxOpen ? 'is-active' : ''}"
+            data-toggle-msgbox
+            title="Message Box"
+            aria-label="Open Message Box"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+            ${hasNotice ? '<span class="m3-top-dot" aria-hidden="true"></span>' : ''}
+          </button>
+          <button
+            type="button"
+            class="m3-top-icon-btn"
+            data-trigger-sync
+            title="Sync (⌘R)"
+            aria-label="Trigger Sync"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+              <path d="M16 16h5v5" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="m3-top-icon-btn ${state.settingsOpen ? 'is-active' : ''}"
+            data-open-settings
+            title="Settings (⌘,)"
+            aria-label="Open Settings Modal"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
           </button>
         </div>
+      </header>
+    `;
+  }
+
+  function renderSidebar(unreadCount: number): string {
+    const buckets: Array<{ key: CompanyRecord['bucket']; code: string; dot: string }> = [
+      { key: 'Core', code: 'CORE', dot: 'var(--emerald)' },
+      { key: 'Watch', code: 'WATCH', dot: 'var(--sky)' },
+      { key: 'Too Hard', code: 'TOO HARD', dot: 'var(--slate)' },
+    ];
+
+    return `
+      <aside class="m3-sidebar ${state.sidebarCollapsed ? 'is-collapsed' : ''}" aria-label="M3 Sidebar Navigation">
 
         <div class="m3-sidebar-nav" role="tablist" aria-label="Workspace Sections">
           <div class="m3-rail-heading">${state.settingsLang === 'zh' ? '工作台' : 'WORKBENCH'}</div>
@@ -426,6 +504,26 @@ export function mountWorkbench(container: HTMLElement): void {
   }
 
   function renderSidebarDock(): string {
+    return `
+      <div class="m3-sidebar-dock" aria-label="System Status Dock">
+        <div class="m3-dock-tray">
+          <div class="m3-dock-tray-row">
+            <span class="m3-nav-left">
+              <span class="mini-dot" style="background: var(--emerald)"></span>
+              <span class="mono">L0 5,142 Co</span>
+            </span>
+            <span class="mono" style="color: var(--emerald)">\$0.42 / \$10.00</span>
+          </div>
+          <div class="m3-dock-tray-row" style="color: var(--ink-muted)">
+            <span class="mono">v0.4.2</span>
+            <span class="mono">${escapeHtml(state.settingsChannel)}</span>
+          </div>
+        </div>
+      </div>
+    `.replaceAll('\\$', '$');
+  }
+
+  function renderMessageBoxPopover(): string {
     const n = state.dockNotice;
     const dotCol =
       n?.tone === 'coral'
@@ -443,17 +541,31 @@ export function mountWorkbench(container: HTMLElement): void {
           : n?.tone === 'sky'
             ? 'var(--sky-border)'
             : 'var(--emerald-border)';
-
     return `
-      <div class="m3-sidebar-dock" aria-label="System Status & Notifications Dock">
+      <div class="m3-msgbox-popover" role="dialog" aria-label="Message Box">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 0.2rem;">
+          <span class="mono" style="font-size: 0.68rem; font-weight: 700; color: var(--ink-hero);">MESSAGE BOX</span>
+          <button type="button" class="m3-dock-close" data-toggle-msgbox aria-label="Close Message Box">×</button>
+        </div>
+        <div class="m3-msgbox-item" style="border-color: var(--sky-border)">
+          <div class="m3-dock-head">
+            <span class="m3-nav-left">
+              <span class="mini-dot" style="background: var(--sky)"></span>
+              <span class="mono" style="font-size: 0.64rem; font-weight: 700; color: var(--sky)">LAKE SYNC</span>
+            </span>
+            <span class="mono" style="font-size: 0.64rem; color: var(--sky);">72%</span>
+          </div>
+          <div class="m3-dock-msg">L0 ready (6,041 issuers) · streaming Top 400 quotes in background…</div>
+          <div class="m3-progress-track"><div class="m3-progress-fill" style="width: 72%"></div></div>
+        </div>
         ${
           n
             ? `
-          <div class="m3-dock-card" style="border-color: ${borderCol}">
+          <div class="m3-msgbox-item" style="border-color: ${borderCol}">
             <div class="m3-dock-head">
               <span class="m3-nav-left">
                 <span class="mini-dot" style="background: ${dotCol}"></span>
-                <span class="mono" style="font-size: 0.65rem; font-weight: 700; color: ${dotCol}">${escapeHtml(n.tag)}</span>
+                <span class="mono" style="font-size: 0.64rem; font-weight: 700; color: ${dotCol}">${escapeHtml(n.tag)}</span>
               </span>
               ${
                 n.dismissible
@@ -466,36 +578,8 @@ export function mountWorkbench(container: HTMLElement): void {
         `
             : ''
         }
-
-        <div style="margin-bottom: 0.4rem;">
-          <button
-            type="button"
-            class="m3-nav-item ${state.tab === 'settings' ? 'is-selected' : ''}"
-            data-nav-tab="settings"
-          >
-            <span class="m3-nav-left">
-              <span class="mini-dot" style="background: ${state.tab === 'settings' ? 'var(--sky)' : 'var(--border-strong)'}"></span>
-              <span>${state.settingsLang === 'zh' ? '设置' : 'Settings'}</span>
-            </span>
-            <span class="m3-kbd">⌘,</span>
-          </button>
-        </div>
-
-        <div class="m3-dock-tray">
-          <div class="m3-dock-tray-row">
-            <span class="m3-nav-left">
-              <span class="mini-dot" style="background: var(--emerald)"></span>
-              <span class="mono">L0 5,142 Co</span>
-            </span>
-            <span class="mono" style="color: var(--emerald)">\$0.42 / \$10.00</span>
-          </div>
-          <div class="m3-dock-tray-row" style="color: var(--ink-muted)">
-            <span class="mono">v0.4.2</span>
-            <span class="mono">${escapeHtml(state.settingsChannel)}</span>
-          </div>
-        </div>
       </div>
-    `.replaceAll('\\$', '$');
+    `;
   }
 
   function renderInboxView(): string {
@@ -1201,65 +1285,181 @@ export function mountWorkbench(container: HTMLElement): void {
     `;
   }
 
-  function renderSettingsView(): string {
+  function getMcpSnippetForTarget(target: WorkbenchState['settingsMcpTarget']): string {
+    switch (target) {
+      case 'claude':
+        return 'claude mcp add m3 -- m3 mcp';
+      case 'codex':
+        return '[mcp_servers.m3]\ncommand = "m3"\nargs = ["mcp"]';
+      case 'json':
+        return '{\n  "mcpServers": {\n    "m3": {\n      "command": "m3",\n      "args": ["mcp"]\n    }\n  }\n}';
+    }
+  }
+
+  function renderSettingsModal(): string {
     const zh = state.settingsLang === 'zh';
+    const provMeta: Record<
+      WorkbenchState['settingsAlanProvider'],
+      { label: string; badge: string; auth: string; model: string; browser?: string }
+    > = {
+      openrouter: {
+        label: 'OpenRouter',
+        badge: 'openrouter-main · OpenRouter · moonshotai/kimi-k2.6',
+        auth: zh ? 'API Key + PKCE 浏览器授权' : 'API Key or PKCE Browser OAuth',
+        model: 'moonshotai/kimi-k2.6',
+        browser: zh ? 'OpenRouter 浏览器授权' : 'OpenRouter OAuth',
+      },
+      openai: {
+        label: 'OpenAI',
+        badge: 'openai-main · OpenAI · gpt-5.4',
+        auth: 'OpenAI Responses API Key (OPENAI_API_KEY)',
+        model: 'gpt-5.4',
+      },
+      chatgpt: {
+        label: 'ChatGPT',
+        badge: 'chatgpt-main · ChatGPT · gpt-5.3-codex',
+        auth: zh ? 'Managed OAuth（无需手动填 Key）' : 'Managed OAuth (Plus / Pro)',
+        model: 'gpt-5.3-codex',
+        browser: zh ? '浏览器登录 ChatGPT' : 'Sign in with ChatGPT',
+      },
+      vertex: {
+        label: 'Vertex AI',
+        badge: 'vertex-main · Vertex AI · gemini-2.5-flash',
+        auth: zh ? 'Google OAuth / ADC (Project + Location) 或 Express Key' : 'Google OAuth / ADC (Project ID + Location) or Express Key',
+        model: 'gemini-2.5-flash',
+        browser: zh ? 'Google Cloud 登录' : 'Google Cloud Sign-In',
+      },
+      magpie: {
+        label: 'Magpie',
+        badge: 'magpie-main · Magpie · default',
+        auth: zh ? '本地路由 http://127.0.0.1:3425/v1（密钥可选）' : 'Local router http://127.0.0.1:3425/v1 (optional key)',
+        model: 'default',
+      },
+    };
+    const activeProv = provMeta[state.settingsAlanProvider];
+    const mcpSnippet = getMcpSnippetForTarget(state.settingsMcpTarget);
     const budgetTip = zh
       ? 'L0/L1 全程零 LLM；仅在手动启动 Alan 深研或行业研究时计费，到达月度上限自动拦截。'
       : 'L0/L1 spend 0 LLM tokens. Hard ceilings block Alan L2 runs before spending.';
+
+    const body =
+      state.settingsModalTab === 'general'
+        ? `
+          <div class="evidence-box">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
+              <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? '显示语言' : 'Display Language'}</strong>
+              <div class="seg-group">
+                <button type="button" class="seg-tab ${state.settingsLang === 'zh' ? 'is-active' : ''}" data-set-lang="zh">中文</button>
+                <button type="button" class="seg-tab ${state.settingsLang === 'en' ? 'is-active' : ''}" data-set-lang="en">English</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="evidence-box">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
+              <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? '更新通道' : 'Release Channel'}</strong>
+              <div class="seg-group">
+                <button type="button" class="seg-tab ${state.settingsChannel === 'stable' ? 'is-active' : ''}" data-set-channel="stable">stable</button>
+                <button type="button" class="seg-tab ${state.settingsChannel === 'beta' ? 'is-active' : ''}" data-set-channel="beta">beta</button>
+              </div>
+            </div>
+          </div>
+        `
+        : state.settingsModalTab === 'ai'
+          ? `
+          <div class="evidence-box">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.6rem;">
+              <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? 'Alan 模型连接' : 'Alan Connection'}</strong>
+              <span class="pill pill-emerald">${escapeHtml(activeProv.badge)}</span>
+            </div>
+            <div class="seg-group" style="margin-bottom: 0.6rem; flex-wrap: wrap;">
+              ${(Object.keys(provMeta) as Array<WorkbenchState['settingsAlanProvider']>)
+                .map(
+                  (key) => `
+                  <button type="button" class="seg-tab ${state.settingsAlanProvider === key ? 'is-active' : ''}" data-alan-provider="${key}">${provMeta[key].label}</button>
+                `,
+                )
+                .join('')}
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; font-size: 0.76rem; color: var(--ink-secondary);">
+              <span>${escapeHtml(activeProv.auth)} · <code class="mono">${escapeHtml(activeProv.model)}</code></span>
+              ${
+                activeProv.browser
+                  ? `<span class="pill pill-violet">${escapeHtml(activeProv.browser)}</span>`
+                  : `<span class="pill pill-sky">${zh ? '测试连接 · HTTP 200 OK' : 'Test Connection · HTTP 200 OK'}</span>`
+              }
+            </div>
+          </div>
+
+          <div class="evidence-box">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
+              <div style="display: inline-flex; align-items: center; gap: 0.5rem;">
+                <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? 'MCP 接口与外部 Agent' : 'MCP Server & External Agents'}</strong>
+                <span class="pill pill-slate">${zh ? '只读 · 14 Tools' : 'Read-Only · 14 Tools'}</span>
+              </div>
+              <button type="button" class="seg-tab is-active" data-copy-mcp>
+                ${state.mcpCopied ? (zh ? '已复制 ✓' : 'Copied ✓') : zh ? '一键复制配置' : 'Copy Config'}
+              </button>
+            </div>
+            <div class="seg-group" style="margin-top: 0.55rem;">
+              <button type="button" class="seg-tab ${state.settingsMcpTarget === 'claude' ? 'is-active' : ''}" data-mcp-target="claude">Claude Code</button>
+              <button type="button" class="seg-tab ${state.settingsMcpTarget === 'codex' ? 'is-active' : ''}" data-mcp-target="codex">Codex</button>
+              <button type="button" class="seg-tab ${state.settingsMcpTarget === 'json' ? 'is-active' : ''}" data-mcp-target="json">Cursor / JSON</button>
+            </div>
+            <pre class="m3-mcp-pre">${escapeHtml(mcpSnippet)}</pre>
+          </div>
+
+          <div class="evidence-box">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
+              <span style="display: inline-flex; align-items: center; gap: 0.45rem;">
+                <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? 'L2 AI 预算护栏' : 'L2 AI Budget'}</strong>
+                ${conceptHint(budgetTip)}
+              </span>
+              <span class="mono" style="font-size: 0.72rem; color: var(--emerald);">\$10.00 / MO HARD CAP</span>
+            </div>
+          </div>
+        `
+          : `
+          <div class="evidence-box">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.6rem;">
+              <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? '本地存储' : 'Storage'}</strong>
+              <span class="mono" style="font-size: 0.75rem; color: var(--ink-hero);">3.52 GB <span style="color: var(--ink-muted);">${zh ? '已占用' : 'used'}</span></span>
+            </div>
+            <div class="storage-bar" role="img" aria-label="Storage breakdown">
+              <span class="storage-seg" style="flex: 2810; background: var(--sky);"></span>
+              <span class="storage-seg" style="flex: 658; background: var(--violet);"></span>
+              <span class="storage-seg" style="flex: 68; background: var(--emerald);"></span>
+              <span class="storage-seg" style="flex: 29; background: var(--gold);"></span>
+              <span class="storage-seg" style="flex: 6; background: var(--ink-secondary);"></span>
+            </div>
+            <div class="storage-legend" style="margin-top: 0.6rem;">
+              <span class="storage-legend-item"><span class="mini-dot" style="background: var(--sky)"></span>SEC Bulk 2.81 GB</span>
+              <span class="storage-legend-item"><span class="mini-dot" style="background: var(--violet)"></span>10-K Filings 658 MB</span>
+              <span class="storage-legend-item"><span class="mini-dot" style="background: var(--emerald)"></span>DuckDB 68 MB</span>
+              <span class="storage-legend-item"><span class="mini-dot" style="background: var(--gold)"></span>Quotes 29 MB</span>
+              <span class="storage-legend-item"><span class="mini-dot" style="background: var(--ink-secondary)"></span>Workbench 44 KB</span>
+            </div>
+          </div>
+        `;
+
     return `
-      <div class="view-toolbar">
-        <div class="view-summary">${zh ? '偏好设置' : 'Settings'}</div>
-      </div>
-      <div class="pane-right" style="padding: 1.25rem; gap: 0.75rem; overflow-y: auto; flex: 1;">
-        <div class="evidence-box">
-          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
-            <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? '显示语言' : 'Display Language'}</strong>
-            <div class="seg-group">
-              <button type="button" class="seg-tab ${state.settingsLang === 'zh' ? 'is-active' : ''}" data-set-lang="zh">中文</button>
-              <button type="button" class="seg-tab ${state.settingsLang === 'en' ? 'is-active' : ''}" data-set-lang="en">English</button>
+      <div class="m3-settings-scrim" data-close-settings>
+        <div class="m3-settings-modal" role="dialog" aria-label="M3 Settings Modal">
+          <div class="m3-settings-head">
+            <div style="display: inline-flex; align-items: center; gap: 0.55rem;">
+              <strong style="color: var(--ink-hero); font-size: 0.92rem;">${zh ? '偏好设置' : 'Settings'}</strong>
+              <span class="pill pill-slate">v0.4.2</span>
+            </div>
+            <div style="display: inline-flex; align-items: center; gap: 0.6rem;">
+              <div class="seg-group">
+                <button type="button" class="seg-tab ${state.settingsModalTab === 'general' ? 'is-active' : ''}" data-settings-tab="general">${zh ? '常规' : 'General'}</button>
+                <button type="button" class="seg-tab ${state.settingsModalTab === 'ai' ? 'is-active' : ''}" data-settings-tab="ai">AI</button>
+                <button type="button" class="seg-tab ${state.settingsModalTab === 'data' ? 'is-active' : ''}" data-settings-tab="data">${zh ? '数据' : 'Data'}</button>
+              </div>
+              <button type="button" class="m3-dock-close" data-close-settings aria-label="Close Settings">×</button>
             </div>
           </div>
-        </div>
-
-        <div class="evidence-box">
-          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
-            <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? '更新通道' : 'Release Channel'}</strong>
-            <div class="seg-group">
-              <button type="button" class="seg-tab ${state.settingsChannel === 'stable' ? 'is-active' : ''}" data-set-channel="stable">stable</button>
-              <button type="button" class="seg-tab ${state.settingsChannel === 'beta' ? 'is-active' : ''}" data-set-channel="beta">beta</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="evidence-box">
-          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
-            <span style="display: inline-flex; align-items: center; gap: 0.45rem;">
-              <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? 'L2 AI 预算护栏' : 'L2 AI Budget'}</strong>
-              ${conceptHint(budgetTip)}
-            </span>
-            <span class="mono" style="font-size: 0.72rem; color: var(--emerald);">\$10.00 / MO HARD CAP</span>
-          </div>
-        </div>
-
-        <div class="evidence-box">
-          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.6rem;">
-            <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? '本地存储' : 'Storage'}</strong>
-            <span class="mono" style="font-size: 0.75rem; color: var(--ink-hero);">3.52 GB <span style="color: var(--ink-muted);">${zh ? '已占用' : 'used'}</span></span>
-          </div>
-          <div class="storage-bar" role="img" aria-label="Storage breakdown">
-            <span class="storage-seg" style="flex: 2810; background: var(--sky);"></span>
-            <span class="storage-seg" style="flex: 658; background: var(--violet);"></span>
-            <span class="storage-seg" style="flex: 68; background: var(--emerald);"></span>
-            <span class="storage-seg" style="flex: 29; background: var(--gold);"></span>
-            <span class="storage-seg" style="flex: 6; background: var(--ink-secondary);"></span>
-          </div>
-          <div class="storage-legend" style="margin-top: 0.6rem;">
-            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--sky)"></span>SEC Bulk 2.81 GB</span>
-            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--violet)"></span>10-K Filings 658 MB</span>
-            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--emerald)"></span>DuckDB 68 MB</span>
-            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--gold)"></span>Quotes 29 MB</span>
-            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--ink-secondary)"></span>Workbench 44 KB</span>
-          </div>
+          <div class="m3-settings-body">${body}</div>
         </div>
       </div>
     `.replaceAll('\\$', '$');
@@ -1549,8 +1749,84 @@ export function mountWorkbench(container: HTMLElement): void {
       });
     });
 
+    container.querySelector('[data-toggle-sidebar]')?.addEventListener('click', () => {
+      state.sidebarCollapsed = !state.sidebarCollapsed;
+      render();
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-toggle-msgbox]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.messageBoxOpen = !state.messageBoxOpen;
+        state.paletteOpen = false;
+        state.settingsOpen = false;
+        render();
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-open-settings]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.settingsOpen = true;
+        state.paletteOpen = false;
+        state.messageBoxOpen = false;
+        render();
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-close-settings]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        if (ev.target === el || el.tagName === 'BUTTON') {
+          state.settingsOpen = false;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-settings-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.settingsTab as WorkbenchState['settingsModalTab'] | undefined;
+        if (next) {
+          state.settingsModalTab = next;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-alan-provider]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.alanProvider as WorkbenchState['settingsAlanProvider'] | undefined;
+        if (next) {
+          state.settingsAlanProvider = next;
+          render();
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('[data-mcp-target]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.mcpTarget as WorkbenchState['settingsMcpTarget'] | undefined;
+        if (next) {
+          state.settingsMcpTarget = next;
+          state.mcpCopied = false;
+          render();
+        }
+      });
+    });
+
+    container.querySelector('[data-copy-mcp]')?.addEventListener('click', async () => {
+      const snippet = getMcpSnippetForTarget(state.settingsMcpTarget);
+      try {
+        await navigator.clipboard.writeText(snippet);
+      } catch {
+        // Ignore clipboard unavailability in non-HTTPS contexts.
+      }
+      state.mcpCopied = true;
+      render();
+    });
+
     container.querySelector('[data-open-palette]')?.addEventListener('click', () => {
       state.paletteOpen = true;
+      state.messageBoxOpen = false;
+      state.settingsOpen = false;
       state.paletteQuery = '';
       render();
       document.getElementById('m3-palette-input')?.focus();
@@ -1583,7 +1859,9 @@ export function mountWorkbench(container: HTMLElement): void {
       btn.addEventListener('click', () => {
         const cmd = btn.dataset.paletteCmd || '';
         state.paletteOpen = false;
-        if (cmd.startsWith('view:')) {
+        if (cmd === 'view:settings') {
+          state.settingsOpen = true;
+        } else if (cmd.startsWith('view:')) {
           state.tab = cmd.slice(5) as WorkbenchTab;
         } else if (cmd.startsWith('ticker:')) {
           state.selectedTicker = cmd.slice(7);
@@ -1615,13 +1893,33 @@ export function mountWorkbench(container: HTMLElement): void {
       return;
     }
 
-    if (ev.key === 'Escape' && state.paletteOpen) {
-      state.paletteOpen = false;
-      render();
-      return;
+    if (ev.key === 'Escape') {
+      if (state.paletteOpen) {
+        state.paletteOpen = false;
+        render();
+        return;
+      }
+      if (state.settingsOpen) {
+        state.settingsOpen = false;
+        render();
+        return;
+      }
+      if (state.messageBoxOpen) {
+        state.messageBoxOpen = false;
+        render();
+        return;
+      }
     }
 
     if (isInput || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+    if (ev.key === ',') {
+      state.settingsOpen = !state.settingsOpen;
+      state.paletteOpen = false;
+      state.messageBoxOpen = false;
+      render();
+      return;
+    }
 
     const map: Record<string, WorkbenchTab> = {
       '1': 'inbox',
@@ -1629,11 +1927,11 @@ export function mountWorkbench(container: HTMLElement): void {
       '3': 'industry',
       '4': 'baskets',
       '5': 'journal',
-      ',': 'settings',
     };
     const next = map[ev.key];
     if (next && state.tab !== next) {
       state.tab = next;
+      state.settingsOpen = false;
       render();
     }
   });

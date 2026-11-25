@@ -81,6 +81,45 @@ pub struct SkipDiagnostic {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UniverseSyncStage {
+    Index,
+    DownloadSec,
+    ParseAndCommit,
+    Quotes,
+    Exporting,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UniverseSyncProgress {
+    pub stage: UniverseSyncStage,
+    pub fraction: f32,
+    pub message: String,
+    pub downloaded_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub parsed_companies: Option<usize>,
+    pub quotes_done: Option<usize>,
+    pub quotes_total: Option<usize>,
+    pub lake_ready: bool,
+}
+
+impl UniverseSyncProgress {
+    fn new(stage: UniverseSyncStage, fraction: f32, message: impl Into<String>) -> Self {
+        Self {
+            stage,
+            fraction: fraction.clamp(0.0, 1.0),
+            message: message.into(),
+            downloaded_bytes: None,
+            total_bytes: None,
+            parsed_companies: None,
+            quotes_done: None,
+            quotes_total: None,
+            lake_ready: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UniverseSyncReport {
     pub schema_version: u32,
@@ -291,12 +330,45 @@ pub fn sync_universe(
 pub fn sync_universe_with_progress<F: FnMut(&str)>(
     paths: &WorkspacePaths,
     opts: &UniverseSyncOptions,
-    on_progress: F,
+    mut on_progress: F,
 ) -> Result<UniverseSyncReport> {
-    sync_universe_with_sec_urls(paths, opts, &SecFeedUrls::LIVE, on_progress)
+    sync_universe_with_structured_progress(paths, opts, |prog| on_progress(&prog.message))
 }
 
+/// Syncs the US L0 lakehouse while streaming structured stage, byte, and readiness updates.
+pub fn sync_universe_with_structured_progress<F: FnMut(UniverseSyncProgress)>(
+    paths: &WorkspacePaths,
+    opts: &UniverseSyncOptions,
+    on_progress: F,
+) -> Result<UniverseSyncReport> {
+    sync_universe_with_sec_urls_structured(paths, opts, &SecFeedUrls::LIVE, on_progress)
+}
+
+#[cfg(test)]
 fn sync_universe_with_sec_urls<F: FnMut(&str)>(
+    paths: &WorkspacePaths,
+    opts: &UniverseSyncOptions,
+    sec_urls: &SecFeedUrls<'_>,
+    mut on_progress: F,
+) -> Result<UniverseSyncReport> {
+    sync_universe_with_sec_urls_structured(paths, opts, sec_urls, |prog| on_progress(&prog.message))
+}
+
+fn format_mb(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+fn parse_progress_ratio(msg: &str) -> Option<(usize, usize)> {
+    let start = msg.rfind('(')?;
+    let end = msg[start + 1..].find(')')?;
+    let inside = &msg[start + 1..start + 1 + end];
+    let (done_s, tot_s) = inside.split_once('/')?;
+    let done = done_s.trim().parse::<usize>().ok()?;
+    let total = tot_s.trim().parse::<usize>().ok()?;
+    (total > 0).then_some((done, total))
+}
+
+fn sync_universe_with_sec_urls_structured<F: FnMut(UniverseSyncProgress)>(
     paths: &WorkspacePaths,
     opts: &UniverseSyncOptions,
     sec_urls: &SecFeedUrls<'_>,
@@ -314,7 +386,18 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
     let watchlist = load_watchlist_strict(paths)?;
     let watchlist_ctx = WatchlistLookup::from_opt(watchlist.as_ref());
 
-    on_progress("下载/校验 SEC 上市公司索引...");
+    let mut max_fraction = 0.0_f32;
+    let mut on_progress = move |mut prog: UniverseSyncProgress| {
+        prog.fraction = prog.fraction.clamp(0.0, 1.0).max(max_fraction);
+        max_fraction = prog.fraction;
+        on_progress(prog);
+    };
+
+    on_progress(UniverseSyncProgress::new(
+        UniverseSyncStage::Index,
+        0.02,
+        "下载/校验 SEC 上市公司索引...",
+    ));
     let meta_client = sec_http_client_with_timeout(60)?;
     let bulk_client = sec_http_client_with_timeout(600)?;
 
@@ -356,7 +439,11 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
         "SEC company_tickers_exchange.json produced zero Nasdaq/NYSE/CBOE companies"
     );
 
-    on_progress("获取/读取 SEC SIC 行业分类...");
+    on_progress(UniverseSyncProgress::new(
+        UniverseSyncStage::Index,
+        0.04,
+        "获取/读取 SEC SIC 行业分类...",
+    ));
     let listed_ciks: HashSet<String> = listed.iter().map(|c| c.cik.clone()).collect();
     let expected_sic_active: HashSet<String> = pre_state
         .classified_sic_ciks
@@ -374,7 +461,7 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
         watermark: sub_wm_opt,
         warning: sic_warning,
         staged_submissions,
-    } = load_or_fetch_sic_map_with_url(
+    } = load_or_fetch_sic_map_with_url_and_progress(
         sec_urls.submissions_zip_url,
         &active_paths.submissions_zip_path,
         &active_paths.sic_map_path,
@@ -385,12 +472,35 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
         &pre_state.prev_sic_map,
         tickers_downloaded,
         now,
+        &mut |dl, total| {
+            let ratio = total
+                .filter(|&t| t > 0)
+                .map(|t| (dl as f32 / t as f32).clamp(0.0, 1.0))
+                .unwrap_or(0.5);
+            let msg = match total.filter(|&t| t > 0) {
+                Some(t) => format!(
+                    "下载 SEC SIC 索引（{} / {}）...",
+                    format_mb(dl),
+                    format_mb(t)
+                ),
+                None => format!("下载 SEC SIC 索引（{}）...", format_mb(dl)),
+            };
+            let mut prog =
+                UniverseSyncProgress::new(UniverseSyncStage::Index, 0.04 + 0.08 * ratio, msg);
+            prog.downloaded_bytes = Some(dl);
+            prog.total_bytes = total;
+            on_progress(prog);
+        },
     )?;
     if let Some(wm) = sub_wm_opt {
         pending_sec_watermarks.push(wm);
     }
 
-    on_progress("检查 SEC companyfacts.zip 批量包...");
+    on_progress(UniverseSyncProgress::new(
+        UniverseSyncStage::DownloadSec,
+        0.12,
+        "检查 SEC companyfacts.zip 批量包...",
+    ));
     let facts_cursor_ok = pre_state
         .facts_wm
         .as_ref()
@@ -401,7 +511,7 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
     let facts_zip_valid = active_paths.facts_zip_path.is_file()
         && facts_cursor_ok
         && is_valid_zip_file(&active_paths.facts_zip_path);
-    let staged_facts = fetch_sec_file_staged(
+    let staged_facts = fetch_sec_file_staged_with_progress(
         &bulk_client,
         &ConditionalFetchSpec {
             url: sec_urls.companyfacts_zip_url,
@@ -413,6 +523,25 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
             record_integrity_cursor: true,
         },
         |tmp_path| validate_companyfacts_zip_tmp(tmp_path, &listed_ciks, &expected_parsed_active),
+        &mut |dl, total| {
+            let ratio = total
+                .filter(|&t| t > 0)
+                .map(|t| (dl as f32 / t as f32).clamp(0.0, 1.0))
+                .unwrap_or(0.5);
+            let msg = match total.filter(|&t| t > 0) {
+                Some(t) => format!(
+                    "下载 SEC companyfacts.zip（{} / {}）...",
+                    format_mb(dl),
+                    format_mb(t)
+                ),
+                None => format!("下载 SEC companyfacts.zip（{}）...", format_mb(dl)),
+            };
+            let mut prog =
+                UniverseSyncProgress::new(UniverseSyncStage::DownloadSec, 0.12 + 0.36 * ratio, msg);
+            prog.downloaded_bytes = Some(dl);
+            prog.total_bytes = total;
+            on_progress(prog);
+        },
     )?;
     let sec_downloaded = matches!(staged_facts, StagedSecFetch::Downloaded { .. });
     let sec_not_modified = matches!(staged_facts, StagedSecFetch::NotModified);
@@ -462,8 +591,24 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
     };
 
     let parsed_bundle_opt: Option<ParsedBundle> = if need_sec_parse {
-        on_progress("流式解压并并行计算全美股 XBRL 财务指标...");
+        on_progress(UniverseSyncProgress::new(
+            UniverseSyncStage::ParseAndCommit,
+            0.48,
+            "流式解压并并行计算全美股 XBRL 财务指标...",
+        ));
         let active_facts_path = staged_facts.active_path(&active_paths.facts_zip_path);
+        let mut parse_progress_adapter = |msg: &str| {
+            let mut prog = if let Some((done, total)) = parse_progress_ratio(msg) {
+                let frac = 0.48 + 0.20 * (done as f32 / total.max(1) as f32);
+                let mut p = UniverseSyncProgress::new(UniverseSyncStage::ParseAndCommit, frac, msg);
+                p.parsed_companies = Some(done);
+                p
+            } else {
+                UniverseSyncProgress::new(UniverseSyncStage::ParseAndCommit, 0.48, msg)
+            };
+            prog.lake_ready = false;
+            on_progress(prog);
+        };
         let parsed_bundle = parse_companyfacts_zip_streaming(
             active_facts_path,
             &listed,
@@ -471,7 +616,7 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
             &watchlist_ctx,
             &cached_prices,
             now,
-            &mut on_progress,
+            &mut parse_progress_adapter,
         )?;
         validate_parsed_bundle_coverage(
             &parsed_bundle.snapshot,
@@ -685,7 +830,11 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
                 .filter(|r| !r.is_financial)
                 .count();
 
-            on_progress("写入 DuckDB 湖仓...");
+            on_progress(UniverseSyncProgress::new(
+                UniverseSyncStage::ParseAndCommit,
+                0.70,
+                "写入 DuckDB 湖仓...",
+            ));
             let commit_now = store::now_ms().max(now);
             let latest_watchlist = load_watchlist_strict(paths)?;
             let post_parse_watchlist =
@@ -783,7 +932,14 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
                 report.quality_pool_count = updated.iter().filter(|r| r.in_price_pool).count();
             }
             if opts.skip_prices {
-                on_progress("原子导出 ZSTD Parquet 视图...");
+                let mut prog = UniverseSyncProgress::new(
+                    UniverseSyncStage::Exporting,
+                    0.96,
+                    "原子导出 ZSTD Parquet 视图...",
+                );
+                prog.lake_ready = true;
+                prog.parsed_companies = Some(report.parsed_companies);
+                on_progress(prog);
                 db.export_all_parquets(paths)?;
                 report.summary = db.universe_summary()?;
                 None
@@ -814,7 +970,11 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
                 Some((live_wl, live_wl_ctx, rows, basis_map, assump_revs))
             }
         } else {
-            on_progress("SEC 数据未变更，刷新观察池标记与方案 1 候选池...");
+            on_progress(UniverseSyncProgress::new(
+                UniverseSyncStage::ParseAndCommit,
+                0.68,
+                "SEC 数据未变更，刷新观察池标记与方案 1 候选池...",
+            ));
             let refresh_wl = load_watchlist_strict(paths)?;
             db.refresh_watchlist_flags(paths)?;
             let mut snapshot = db.load_all_universe_rows()?;
@@ -839,7 +999,14 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
             report.financial_sector_companies = snapshot.iter().filter(|r| r.is_financial).count();
             report.non_financial_companies = snapshot.iter().filter(|r| !r.is_financial).count();
             if opts.skip_prices {
-                on_progress("原子导出 ZSTD Parquet 视图...");
+                let mut prog = UniverseSyncProgress::new(
+                    UniverseSyncStage::Exporting,
+                    0.96,
+                    "原子导出 ZSTD Parquet 视图...",
+                );
+                prog.lake_ready = true;
+                prog.parsed_companies = Some(report.parsed_companies);
+                on_progress(prog);
                 db.export_all_parquets(paths)?;
                 report.summary = db.universe_summary()?;
                 None
@@ -873,8 +1040,22 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
     };
 
     if let Some((live_wl, live_wl_ctx, rows, basis_map, assump_revs)) = price_sync_inputs {
-        on_progress("按方案 1 节流同步 Top 候选池与观察池股价...");
-        let pool_batch = fetch_pool_prices_lock_free(
+        let total_pool = report.quality_pool_count;
+        let parsed_companies = report.parsed_companies;
+        let mut ready_prog = UniverseSyncProgress::new(
+            UniverseSyncStage::Quotes,
+            0.72,
+            format!(
+                "全美股 L0 基础库已就绪（{parsed_companies} 家），正在补充 Top {total_pool} 候选池报价…"
+            ),
+        );
+        ready_prog.lake_ready = true;
+        ready_prog.parsed_companies = Some(parsed_companies);
+        ready_prog.quotes_done = Some(0);
+        ready_prog.quotes_total = Some(total_pool);
+        on_progress(ready_prog);
+
+        let pool_batch = fetch_pool_prices_lock_free_with_progress(
             paths,
             &rows,
             live_wl.as_ref(),
@@ -884,6 +1065,19 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
             opts.full_sec,
             now,
             &mut report,
+            &mut |done, total| {
+                let ratio = (done as f32 / total.max(1) as f32).clamp(0.0, 1.0);
+                let mut q_prog = UniverseSyncProgress::new(
+                    UniverseSyncStage::Quotes,
+                    0.72 + 0.23 * ratio,
+                    format!("补充候选池与观察池报价 ({done}/{total})…"),
+                );
+                q_prog.lake_ready = true;
+                q_prog.parsed_companies = Some(parsed_companies);
+                q_prog.quotes_done = Some(done);
+                q_prog.quotes_total = Some(total);
+                on_progress(q_prog);
+            },
         )?;
 
         let mut db = LakeDb::open(paths)?;
@@ -905,7 +1099,14 @@ fn sync_universe_with_sec_urls<F: FnMut(&str)>(
             .iter()
             .filter(|r| r.in_price_pool)
             .count();
-        on_progress("原子导出 ZSTD Parquet 视图...");
+        let mut exp_prog = UniverseSyncProgress::new(
+            UniverseSyncStage::Exporting,
+            0.96,
+            "原子导出 ZSTD Parquet 视图...",
+        );
+        exp_prog.lake_ready = true;
+        exp_prog.parsed_companies = Some(parsed_companies);
+        on_progress(exp_prog);
         db.export_all_parquets(paths)?;
         report.summary = db.universe_summary()?;
     }
@@ -1687,10 +1888,23 @@ fn verify_file_integrity_cursor(path: &Path, cursor: &str) -> bool {
     actual_len == len && actual_sha.eq_ignore_ascii_case(sha)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn fetch_sec_file_staged<V>(
     client: &Client,
     spec: &ConditionalFetchSpec<'_>,
     validate_tmp: V,
+) -> Result<StagedSecFetch>
+where
+    V: FnOnce(&Path) -> Result<()>,
+{
+    fetch_sec_file_staged_with_progress(client, spec, validate_tmp, &mut |_, _| {})
+}
+
+fn fetch_sec_file_staged_with_progress<V>(
+    client: &Client,
+    spec: &ConditionalFetchSpec<'_>,
+    validate_tmp: V,
+    on_bytes: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<StagedSecFetch>
 where
     V: FnOnce(&Path) -> Result<()>,
@@ -1751,6 +1965,7 @@ where
         .get("last-modified")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let total_bytes = resp.content_length();
 
     if let Some(parent) = dest_path.parent() {
         fs::create_dir_all(parent)?;
@@ -1764,8 +1979,30 @@ where
     let file =
         File::create(staged_path).with_context(|| format!("create {}", staged_path.display()))?;
     let mut writer = HashingWriter::new(BufWriter::with_capacity(64 * 1024, file));
-    io::copy(&mut resp, &mut writer)
-        .with_context(|| format!("stream {url} to {}", staged_path.display()))?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut downloaded: u64 = 0;
+    let mut last_emit_bytes: u64 = 0;
+    let mut last_emit_at = std::time::Instant::now();
+    loop {
+        let n = io::Read::read(&mut resp, &mut buf)
+            .with_context(|| format!("stream {url} to {}", staged_path.display()))?;
+        if n == 0 {
+            break;
+        }
+        io::Write::write_all(&mut writer, &buf[..n])
+            .with_context(|| format!("write {url} chunk to {}", staged_path.display()))?;
+        downloaded = downloaded.saturating_add(n as u64);
+        if downloaded.saturating_sub(last_emit_bytes) >= 2 * 1024 * 1024
+            || last_emit_at.elapsed() >= Duration::from_millis(250)
+        {
+            on_bytes(downloaded, total_bytes);
+            last_emit_bytes = downloaded;
+            last_emit_at = std::time::Instant::now();
+        }
+    }
+    if downloaded > last_emit_bytes {
+        on_bytes(downloaded, total_bytes.or(Some(downloaded)));
+    }
     let (inner_writer, streamed_cursor) = writer.finish()?;
     drop(inner_writer);
     validate_tmp(staged_path).with_context(|| format!("validate downloaded payload from {url}"))?;
@@ -2324,6 +2561,7 @@ struct SicLoadOutcome {
     staged_submissions: StagedSecFetch,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 fn load_or_fetch_sic_map_with_url(
     sub_url: &str,
@@ -2336,6 +2574,35 @@ fn load_or_fetch_sic_map_with_url(
     prev_sic_map: &HashMap<String, SicInfo>,
     tickers_downloaded: bool,
     now_ms: u64,
+) -> Result<SicLoadOutcome> {
+    load_or_fetch_sic_map_with_url_and_progress(
+        sub_url,
+        sub_zip_path,
+        sic_cache_path,
+        client,
+        cached_wm,
+        listed_ciks,
+        expected_sic_ciks,
+        prev_sic_map,
+        tickers_downloaded,
+        now_ms,
+        &mut |_, _| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_or_fetch_sic_map_with_url_and_progress(
+    sub_url: &str,
+    sub_zip_path: &Path,
+    sic_cache_path: &Path,
+    client: &Client,
+    cached_wm: Option<&SyncWatermark>,
+    listed_ciks: &HashSet<String>,
+    expected_sic_ciks: &HashSet<String>,
+    prev_sic_map: &HashMap<String, SicInfo>,
+    tickers_downloaded: bool,
+    now_ms: u64,
+    on_bytes: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<SicLoadOutcome> {
     let sub_cursor_ok = cached_wm
         .and_then(|w| w.cursor.as_deref())
@@ -2375,7 +2642,7 @@ fn load_or_fetch_sic_map_with_url(
         }
     };
 
-    match fetch_sec_file_staged(
+    match fetch_sec_file_staged_with_progress(
         client,
         &ConditionalFetchSpec {
             url: sub_url,
@@ -2407,6 +2674,7 @@ fn load_or_fetch_sic_map_with_url(
             *validated_sic_map.borrow_mut() = Some(extracted);
             Ok(())
         },
+        on_bytes,
     ) {
         Ok(StagedSecFetch::NotModified) => {
             if !tickers_downloaded
@@ -3961,6 +4229,7 @@ struct PoolPriceSyncBatch {
     live_watchlist: Option<WatchlistFile>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 fn fetch_pool_prices_lock_free(
     paths: &WorkspacePaths,
@@ -3979,6 +4248,40 @@ fn fetch_pool_prices_lock_free(
     force_refresh: bool,
     now_ms: u64,
     report: &mut UniverseSyncReport,
+) -> Result<PoolPriceSyncBatch> {
+    fetch_pool_prices_lock_free_with_progress(
+        paths,
+        rows,
+        watchlist_file,
+        watchlist,
+        basis_map,
+        assump_revs,
+        force_refresh,
+        now_ms,
+        report,
+        &mut |_, _| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fetch_pool_prices_lock_free_with_progress(
+    paths: &WorkspacePaths,
+    rows: &[UniverseRow],
+    watchlist_file: Option<&WatchlistFile>,
+    watchlist: &WatchlistLookup,
+    basis_map: &HashMap<
+        String,
+        (
+            &'static str,
+            crate::model::AnnualMetricRow,
+            calculator::ValuationGuards,
+        ),
+    >,
+    assump_revs: &HashMap<String, u64>,
+    force_refresh: bool,
+    now_ms: u64,
+    report: &mut UniverseSyncReport,
+    on_quote_progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PoolPriceSyncBatch> {
     let mut pool_indices: Vec<usize> = rows
         .iter()
@@ -4002,11 +4305,13 @@ fn fetch_pool_prices_lock_free(
         Vec::with_capacity(pool_indices.len());
     let mut synced_tickers: HashSet<String> = HashSet::new();
     let mut latest_live_trade_date: Option<String> = None;
+    let total_pool = pool_indices.len();
 
-    for idx in pool_indices {
+    for (loop_idx, &idx) in pool_indices.iter().enumerate() {
         let row = &rows[idx];
         synced_tickers.insert(row.ticker.to_ascii_uppercase());
-        let Some((snap, is_live)) = resolve_price_snapshot_with_cache(
+        let done_count = loop_idx + 1;
+        let maybe_snap = resolve_price_snapshot_with_cache(
             &mkt_client,
             paths,
             &row.ticker,
@@ -4014,7 +4319,11 @@ fn fetch_pool_prices_lock_free(
             now_ms,
             &mut consecutive_rate_limits,
             report,
-        ) else {
+        );
+        if done_count % 10 == 0 || done_count == total_pool {
+            on_quote_progress(done_count, total_pool);
+        }
+        let Some((snap, is_live)) = maybe_snap else {
             continue;
         };
 
@@ -7267,7 +7576,8 @@ mod tests {
             submissions_zip_url: &format!("http://{addr}/submissions.zip"),
             companyfacts_zip_url: &format!("http://{addr}/companyfacts.zip"),
         };
-        let rep = sync_universe_with_sec_urls(
+        let mut events: Vec<UniverseSyncProgress> = Vec::new();
+        let rep = sync_universe_with_sec_urls_structured(
             &paths,
             &UniverseSyncOptions {
                 full_sec: false,
@@ -7275,13 +7585,29 @@ mod tests {
                 skip_prices: true,
             },
             &feed_urls,
-            |_| {},
+            |prog| events.push(prog),
         )
         .unwrap();
         assert_eq!(rep.parsed_companies, 1);
+        assert!(events.iter().any(|p| p.lake_ready));
+        assert!(events.windows(2).all(|w| w[0].fraction <= w[1].fraction));
 
         stop_server.store(true, std::sync::atomic::Ordering::Release);
         server.join().unwrap();
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn structured_progress_clamps_fractions_and_parses_ratios() {
+        let low = UniverseSyncProgress::new(UniverseSyncStage::Index, -0.5, "start");
+        let high = UniverseSyncProgress::new(UniverseSyncStage::Exporting, 1.5, "done");
+        assert_eq!(low.fraction, 0.0);
+        assert_eq!(high.fraction, 1.0);
+        assert!(!low.lake_ready);
+        assert_eq!(
+            parse_progress_ratio("流式解压并并行解析 XBRL (320/6400)..."),
+            Some((320, 6400))
+        );
+        assert_eq!(parse_progress_ratio("no parens"), None);
     }
 }

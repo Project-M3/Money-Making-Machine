@@ -20,9 +20,11 @@ use m3_core::model::{
     WarningSeverity, primary_circle_tag,
 };
 use m3_core::research::{DeepResearchEvent, DeepResearchResult};
+use m3_core::storage::format_bytes;
+use m3_core::universe::{UniverseSyncProgress, UniverseSyncStage};
 use m3_core::update::PassiveUpdateNotice;
 use rust_decimal::Decimal;
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{cmp::Ordering, collections::BTreeMap, path::Path};
 
 pub fn compute_today_pulse(reports: &[MungerReport]) -> TodayPulse {
     let mut strike_tickers = Vec::new();
@@ -827,6 +829,7 @@ pub struct TopbarMessageInputs<'a> {
     pub update_notice: Option<&'a PassiveUpdateNotice>,
     pub universe_syncing: bool,
     pub universe_progress: Option<&'a str>,
+    pub universe_progress_fraction: Option<f32>,
     pub inbox_catching_up: bool,
     pub inbox_progress: Option<&'a str>,
     pub deep_research_running: bool,
@@ -940,7 +943,7 @@ pub fn build_topbar_messages(inputs: &TopbarMessageInputs<'_>) -> Vec<TopbarMess
                 .to_owned(),
             detail: None,
             status: TopbarMessageStatus::Running,
-            progress: None,
+            progress: inputs.universe_progress_fraction.map(|p| p.clamp(0.0, 1.0)),
             dot_color: SKY_FG,
             border_color: SKY_BORDER,
             action: None,
@@ -1441,5 +1444,172 @@ pub fn format_update_progress(p: &m3_core::update::UpdateProgress, lang: UiLang)
         UpdateStage::Extracting => lang.t("正在解压 M3.app…", "Extracting M3.app…").to_owned(),
         UpdateStage::Installing => lang.t("正在原子替换安装…", "Installing update…").to_owned(),
         UpdateStage::Completed => lang.t("安装完成", "Install complete").to_owned(),
+    }
+}
+
+/// Formats a live [`UniverseSyncProgress`] update for the Topbar Message Box and Radar banner.
+pub fn format_universe_sync_progress(prog: &UniverseSyncProgress, lang: UiLang) -> String {
+    let pct = (prog.fraction.clamp(0.0, 1.0) * 100.0).round() as u32;
+    match lang {
+        UiLang::Zh => match prog.stage {
+            UniverseSyncStage::Index => {
+                if let Some(dl) = prog.downloaded_bytes {
+                    if let Some(tot) = prog.total_bytes.filter(|&t| t > 0) {
+                        format!(
+                            "拉取 SEC 索引 {} / {} ({pct}%)",
+                            format_bytes(dl),
+                            format_bytes(tot)
+                        )
+                    } else {
+                        format!("拉取 SEC 索引 {} ({pct}%)", format_bytes(dl))
+                    }
+                } else {
+                    format!("{} ({pct}%)", prog.message)
+                }
+            }
+            UniverseSyncStage::DownloadSec => {
+                if let Some(dl) = prog.downloaded_bytes {
+                    if let Some(tot) = prog.total_bytes.filter(|&t| t > 0) {
+                        format!(
+                            "下载全美股财报包 {} / {} ({pct}%)",
+                            format_bytes(dl),
+                            format_bytes(tot)
+                        )
+                    } else {
+                        format!("下载全美股财报包 {} ({pct}%)", format_bytes(dl))
+                    }
+                } else {
+                    format!("{} ({pct}%)", prog.message)
+                }
+            }
+            UniverseSyncStage::ParseAndCommit => format!("{} ({pct}%)", prog.message),
+            UniverseSyncStage::Quotes => {
+                if let (Some(done), Some(tot)) = (prog.quotes_done, prog.quotes_total) {
+                    format!("L0 已就绪 · 补充 Top 候选报价 {done}/{tot} ({pct}%)")
+                } else {
+                    format!("{} ({pct}%)", prog.message)
+                }
+            }
+            UniverseSyncStage::Exporting => format!("L0 已就绪 · 导出 Parquet 视图 ({pct}%)"),
+        },
+        UiLang::En => match prog.stage {
+            UniverseSyncStage::Index => {
+                if let Some(dl) = prog.downloaded_bytes {
+                    if let Some(tot) = prog.total_bytes.filter(|&t| t > 0) {
+                        format!(
+                            "Fetching SEC index {} / {} ({pct}%)",
+                            format_bytes(dl),
+                            format_bytes(tot)
+                        )
+                    } else {
+                        format!("Fetching SEC index {} ({pct}%)", format_bytes(dl))
+                    }
+                } else {
+                    format!("Preparing US SEC index ({pct}%)…")
+                }
+            }
+            UniverseSyncStage::DownloadSec => {
+                if let Some(dl) = prog.downloaded_bytes {
+                    if let Some(tot) = prog.total_bytes.filter(|&t| t > 0) {
+                        format!(
+                            "Downloading SEC XBRL {} / {} ({pct}%)",
+                            format_bytes(dl),
+                            format_bytes(tot)
+                        )
+                    } else {
+                        format!("Downloading SEC XBRL {} ({pct}%)", format_bytes(dl))
+                    }
+                } else {
+                    format!("Checking SEC bulk archive ({pct}%)…")
+                }
+            }
+            UniverseSyncStage::ParseAndCommit => {
+                if let Some(n) = prog.parsed_companies {
+                    format!("Parsing US XBRL issuers ({n}) ({pct}%)…")
+                } else {
+                    format!("Parsing US XBRL lakehouse ({pct}%)…")
+                }
+            }
+            UniverseSyncStage::Quotes => {
+                if let (Some(done), Some(tot)) = (prog.quotes_done, prog.quotes_total) {
+                    format!("Lake ready · fetching Top quotes {done}/{tot} ({pct}%)")
+                } else {
+                    format!("Lake ready · syncing Top pool quotes ({pct}%)…")
+                }
+            }
+            UniverseSyncStage::Exporting => format!("Lake ready · exporting Parquet ({pct}%)…"),
+        },
+    }
+}
+
+/// Target external agent format for one-click MCP config copying in Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum McpClientTarget {
+    #[default]
+    ClaudeCode,
+    Codex,
+    JsonClients,
+}
+
+fn shell_quote_arg(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b':'))
+    {
+        return arg.to_owned();
+    }
+    let escaped = arg.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
+
+/// Builds a ready-to-paste `m3 mcp` client configuration snippet for the active workspace.
+pub fn build_mcp_config_snippet(
+    target: McpClientTarget,
+    workspace_root: &Path,
+    has_custom_workspace: bool,
+) -> String {
+    let ws = workspace_root.display().to_string();
+    match target {
+        McpClientTarget::ClaudeCode => {
+            if has_custom_workspace {
+                format!(
+                    "claude mcp add m3 -- m3 mcp --workspace {}",
+                    shell_quote_arg(&ws)
+                )
+            } else {
+                "claude mcp add m3 -- m3 mcp".to_owned()
+            }
+        }
+        McpClientTarget::Codex => {
+            if has_custom_workspace {
+                let ws_toml = serde_json::to_string(&ws).unwrap_or_else(|_| {
+                    format!("\"{}\"", ws.replace('\\', "\\\\").replace('"', "\\\""))
+                });
+                format!(
+                    "[mcp_servers.m3]\ncommand = \"m3\"\nargs = [\"mcp\", \"--workspace\", {ws_toml}]"
+                )
+            } else {
+                "[mcp_servers.m3]\ncommand = \"m3\"\nargs = [\"mcp\"]".to_owned()
+            }
+        }
+        McpClientTarget::JsonClients => {
+            let args: Vec<&str> = if has_custom_workspace {
+                vec!["mcp", "--workspace", &ws]
+            } else {
+                vec!["mcp"]
+            };
+            let payload = serde_json::json!({
+                "mcpServers": {
+                    "m3": {
+                        "command": "m3",
+                        "args": args,
+                    }
+                }
+            });
+            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| {
+                "{\n  \"mcpServers\": {\n    \"m3\": {\n      \"command\": \"m3\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}".to_owned()
+            })
+        }
     }
 }

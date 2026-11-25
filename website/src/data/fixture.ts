@@ -1316,4 +1316,8 @@ export const CLI_COMMANDS: CliItem[] = [
     cmd: 'm3 storage status',
     desc: 'Inspect hardlink-aware local footprint and reclaim rebuildable SEC/DuckDB caches safely.',
   },
+  {
+    cmd: 'm3 mcp',
+    desc: 'Serve 14 read-only deterministic research tools over stdio MCP for Claude Code, Codex, and Cursor.',
+  },
 ];

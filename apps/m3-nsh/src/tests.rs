@@ -1925,6 +1925,8 @@ fn settings_alan_connection_drafts_and_provider_switching() {
                         provider: "openrouter".to_owned(),
                         model: Some("anthropic/claude-sonnet-4.6".to_owned()),
                         base_url: Some("https://openrouter.ai/api/v1".to_owned()),
+                        project_id: None,
+                        location: None,
                         has_secret: true,
                         masked_hint: Some("sk-o••••9876".to_owned()),
                         is_default: true,
@@ -1934,8 +1936,21 @@ fn settings_alan_connection_drafts_and_provider_switching() {
                         provider: "openai_responses".to_owned(),
                         model: Some("gpt-5.4".to_owned()),
                         base_url: Some("https://proxy.example/v1".to_owned()),
+                        project_id: None,
+                        location: None,
                         has_secret: true,
                         masked_hint: Some("sk-p••••4321".to_owned()),
+                        is_default: false,
+                    },
+                    AlanConnectionProfileSummary {
+                        id: "vertex-prod".to_owned(),
+                        provider: "google_gemini_generate_content".to_owned(),
+                        model: Some("gemini-2.5-pro".to_owned()),
+                        base_url: None,
+                        project_id: Some("m3-gcp".to_owned()),
+                        location: Some("us-central1".to_owned()),
+                        has_secret: true,
+                        masked_hint: Some("ADC · m3-gcp".to_owned()),
                         is_default: false,
                     },
                 ],
@@ -1960,6 +1975,36 @@ fn settings_alan_connection_drafts_and_provider_switching() {
                 store.alan_conn_base_url_draft.get_untracked(),
                 "https://proxy.example/v1"
             );
+
+            // Switching to Vertex AI loads project_id & location
+            store.select_alan_conn_provider(AlanConnectionProvider::GoogleVertex);
+            assert_eq!(
+                store.alan_conn_profile_id_draft.get_untracked(),
+                "vertex-prod"
+            );
+            assert_eq!(store.alan_conn_project_id_draft.get_untracked(), "m3-gcp");
+            assert_eq!(
+                store.alan_conn_location_draft.get_untracked(),
+                "us-central1"
+            );
+
+            // Switching to unconfigured ChatGPT & Magpie uses clean defaults
+            store
+                .alan_conn_profile_id_draft
+                .set("openai-main".to_owned());
+            store.alan_conn_model_draft.set("gpt-5.4".to_owned());
+            store.select_alan_conn_provider(AlanConnectionProvider::Chatgpt);
+            assert_eq!(
+                store.alan_conn_profile_id_draft.get_untracked(),
+                "chatgpt-main"
+            );
+            assert_eq!(store.alan_conn_model_draft.get_untracked(), "gpt-5.3-codex");
+            store.select_alan_conn_provider(AlanConnectionProvider::Magpie);
+            assert_eq!(
+                store.alan_conn_profile_id_draft.get_untracked(),
+                "magpie-main"
+            );
+            assert_eq!(store.alan_conn_model_draft.get_untracked(), "default");
         },
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -2327,6 +2372,7 @@ fn topbar_message_box_prioritizes_tasks_progress_and_dismissal() {
                 update_notice: Some(&update_notice),
                 universe_syncing: false,
                 universe_progress: None,
+                universe_progress_fraction: None,
                 inbox_catching_up: false,
                 inbox_progress: None,
                 deep_research_running: true,
@@ -2370,6 +2416,7 @@ fn topbar_message_box_prioritizes_tasks_progress_and_dismissal() {
                 update_notice: None,
                 universe_syncing: false,
                 universe_progress: None,
+                universe_progress_fraction: None,
                 inbox_catching_up: false,
                 inbox_progress: None,
                 deep_research_running: false,
@@ -2559,4 +2606,84 @@ fn visible_palette_items_respects_silicon_group_expansion() {
     let vis_query = visible_palette_items_for(&items, "catchup", &collapsed);
     assert_eq!(vis_query.len(), 1);
     assert_eq!(vis_query[0].title, "Catchup");
+}
+
+#[test]
+fn mcp_config_snippets_and_progressive_universe_format_work() {
+    use crate::format::{
+        McpClientTarget, TopbarMessageInputs, build_mcp_config_snippet, build_topbar_messages,
+        format_universe_sync_progress,
+    };
+    use m3_core::universe::{UniverseSyncProgress, UniverseSyncStage};
+
+    let ws_default = std::path::PathBuf::from("/Users/test/default");
+    assert_eq!(
+        build_mcp_config_snippet(McpClientTarget::ClaudeCode, &ws_default, false),
+        "claude mcp add m3 -- m3 mcp"
+    );
+    assert_eq!(
+        build_mcp_config_snippet(McpClientTarget::Codex, &ws_default, false),
+        "[mcp_servers.m3]\ncommand = \"m3\"\nargs = [\"mcp\"]"
+    );
+
+    let ws_custom = std::path::PathBuf::from("/Users/test/My M3's Folder");
+    let claude_custom = build_mcp_config_snippet(McpClientTarget::ClaudeCode, &ws_custom, true);
+    assert!(claude_custom.contains("--workspace"));
+    assert!(claude_custom.contains("My M3"));
+
+    let codex_custom = build_mcp_config_snippet(McpClientTarget::Codex, &ws_custom, true);
+    assert!(codex_custom.contains("[mcp_servers.m3]"));
+    assert!(codex_custom.contains("\"--workspace\""));
+
+    let json_custom = build_mcp_config_snippet(McpClientTarget::JsonClients, &ws_custom, true);
+    let parsed: serde_json::Value = serde_json::from_str(&json_custom).unwrap();
+    assert_eq!(parsed["mcpServers"]["m3"]["command"], "m3");
+    assert_eq!(
+        parsed["mcpServers"]["m3"]["args"],
+        serde_json::json!(["mcp", "--workspace", "/Users/test/My M3's Folder"])
+    );
+
+    let dl_prog = UniverseSyncProgress {
+        stage: UniverseSyncStage::DownloadSec,
+        fraction: 0.30,
+        message: "downloading".to_owned(),
+        downloaded_bytes: Some(50 * 1024 * 1024),
+        total_bytes: Some(200 * 1024 * 1024),
+        parsed_companies: None,
+        quotes_done: None,
+        quotes_total: None,
+        lake_ready: false,
+    };
+    let zh = format_universe_sync_progress(&dl_prog, UiLang::Zh);
+    let en = format_universe_sync_progress(&dl_prog, UiLang::En);
+    assert!(zh.contains("30%"));
+    assert!(en.contains("30%"));
+
+    let msgs = build_topbar_messages(&TopbarMessageInputs {
+        lang: UiLang::Zh,
+        update_applied_version: None,
+        update_applying: false,
+        update_progress: None,
+        update_progress_fraction: None,
+        update_checking: false,
+        update_notice: None,
+        universe_syncing: true,
+        universe_progress: Some(&zh),
+        universe_progress_fraction: Some(0.72),
+        inbox_catching_up: false,
+        inbox_progress: None,
+        deep_research_running: false,
+        deep_research_ticker: None,
+        industry_research_running: false,
+        industry_progress: None,
+        syncing: false,
+        sync_stage: None,
+        sync_progress: None,
+        themes_syncing: false,
+        storage_scanning: false,
+        messages: &[],
+    });
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].tag, "LAKE SYNC");
+    assert_eq!(msgs[0].progress, Some(0.72));
 }

@@ -654,6 +654,7 @@ fn collect_topbar_messages(store: AppStore) -> Vec<TopbarMessage> {
     let upd_notice = store.update_notice.get();
     let u_sync = store.universe_syncing.get();
     let u_prog = store.universe_sync_progress.get();
+    let u_detail = store.universe_sync_progress_detail.get();
     let i_catch = store.inbox_catching_up.get();
     let i_prog = store.inbox_catchup_progress.get();
     let dr_run = store.deep_research_running.get();
@@ -677,6 +678,7 @@ fn collect_topbar_messages(store: AppStore) -> Vec<TopbarMessage> {
         update_notice: upd_notice.as_ref(),
         universe_syncing: u_sync,
         universe_progress: u_prog.as_deref(),
+        universe_progress_fraction: u_detail.as_ref().map(|d| d.fraction),
         inbox_catching_up: i_catch,
         inbox_progress: i_prog.as_deref(),
         deep_research_running: dr_run,

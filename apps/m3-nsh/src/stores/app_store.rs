@@ -6,9 +6,10 @@
 //! workflows over event-driven Tokio -> NSH channels with zero idle polling.
 
 use crate::format::{
-    apply_deep_research_event_compat, collect_circle_tags, filter_inbox_signals,
-    filter_reports_for_basket, parse_research_memo, resolve_active_inbox_signal,
-    should_skip_auto_catchup, signal_status_badge_for, step_inbox_selection,
+    McpClientTarget, apply_deep_research_event_compat, collect_circle_tags, filter_inbox_signals,
+    filter_reports_for_basket, format_universe_sync_progress, parse_research_memo,
+    resolve_active_inbox_signal, should_skip_auto_catchup, signal_status_badge_for,
+    step_inbox_selection,
 };
 use crate::stores::async_bridge::{
     can_open_duckdb_read_only, can_start_duckdb_writer, run_blocking_or_err, run_blocking_result,
@@ -22,8 +23,9 @@ use crate::stores::types::{
     default_deep_research_perspectives,
 };
 use m3_core::alan_connection::{
-    self, AlanConnectionProfileSummary, AlanConnectionProvider, AlanConnectionStatus,
-    AlanConnectionTestResult, SaveAlanConnectionRequest,
+    self, AlanConnectionBrowserLoginResult, AlanConnectionProfileSummary, AlanConnectionProvider,
+    AlanConnectionStatus, AlanConnectionTestResult, BrowserLoginAlanConnectionRequest,
+    SaveAlanConnectionRequest,
 };
 use m3_core::alan_interrogator::{
     InterrogatorEvent, M3InterrogatorHandle, TuringTapeEntry, TuringTapeKind,
@@ -53,7 +55,7 @@ use m3_core::model::{
 use m3_core::research::{self, DeepResearchEvent, DeepResearchRequest, DeepResearchResult};
 use m3_core::storage::{self, StorageCategory, StorageReport};
 use m3_core::store::{self, WorkspacePaths};
-use m3_core::universe::{self, UniverseSyncOptions, UniverseSyncReport};
+use m3_core::universe::{self, UniverseSyncOptions, UniverseSyncProgress, UniverseSyncReport};
 use m3_core::update::{self, PassiveUpdateNotice, ReleaseChannel, UpdateOptions, UpdateReport};
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
@@ -71,7 +73,7 @@ enum CatchupMsg {
 }
 
 enum UniverseSyncMsg {
-    Progress(String),
+    Progress(UniverseSyncProgress),
     Finished(Box<Result<UniverseSyncReport, String>>),
 }
 
@@ -179,6 +181,8 @@ pub struct AppStore {
     pub universe_error: Signal<Option<String>>,
     pub universe_syncing: Signal<bool>,
     pub universe_sync_progress: Signal<Option<String>>,
+    pub universe_sync_progress_detail: Signal<Option<UniverseSyncProgress>>,
+    pub pending_progressive_l0_after_sync: Signal<bool>,
 
     // ── Industry Research Studio & Themes ────────────────────────────────────
     pub themes_file: Signal<ThemesFile>,
@@ -223,9 +227,13 @@ pub struct AppStore {
     pub alan_conn_model_draft: Signal<String>,
     pub alan_conn_base_url_draft: Signal<String>,
     pub alan_conn_api_key_draft: Signal<String>,
+    pub alan_conn_project_id_draft: Signal<String>,
+    pub alan_conn_location_draft: Signal<String>,
     pub alan_conn_saving: Signal<bool>,
+    pub alan_conn_logging_in: Signal<bool>,
     pub alan_conn_testing: Signal<bool>,
     pub alan_conn_feedback: Signal<Option<(String, bool)>>,
+    pub settings_mcp_target: Signal<McpClientTarget>,
     pub storage_report: Signal<Option<StorageReport>>,
     pub storage_scanning: Signal<bool>,
     pub storage_cleaning: Signal<Option<StorageCategory>>,
@@ -625,6 +633,8 @@ impl AppStore {
             universe_error: signal(None),
             universe_syncing: signal(false),
             universe_sync_progress: signal(None),
+            universe_sync_progress_detail: signal_with(None, SignalEquals::Never),
+            pending_progressive_l0_after_sync: signal(false),
 
             themes_file: signal_with(ThemesFile::default(), SignalEquals::Never),
             themes_syncing: signal(false),
@@ -675,9 +685,17 @@ impl AppStore {
             ),
             alan_conn_base_url_draft: signal(String::new()),
             alan_conn_api_key_draft: signal(String::new()),
+            alan_conn_project_id_draft: signal(String::new()),
+            alan_conn_location_draft: signal(
+                AlanConnectionProvider::OpenRouter
+                    .default_location()
+                    .to_owned(),
+            ),
             alan_conn_saving: signal(false),
+            alan_conn_logging_in: signal(false),
             alan_conn_testing: signal(false),
             alan_conn_feedback: signal(None),
+            settings_mcp_target: signal(McpClientTarget::ClaudeCode),
             storage_report: signal_with(None, SignalEquals::Never),
             storage_scanning: signal(false),
             storage_cleaning: signal(None),
@@ -1576,12 +1594,24 @@ impl AppStore {
                 .clone()
                 .unwrap_or_else(|| provider.default_model().to_owned()),
         );
-        let custom_base = profile
-            .base_url
-            .as_deref()
-            .filter(|url| *url != provider.default_base_url())
-            .unwrap_or("");
+        let custom_base = if provider.uses_base_url() {
+            profile
+                .base_url
+                .as_deref()
+                .filter(|url| *url != provider.default_base_url())
+                .unwrap_or("")
+        } else {
+            ""
+        };
         self.alan_conn_base_url_draft.set(custom_base.to_owned());
+        self.alan_conn_project_id_draft
+            .set(profile.project_id.clone().unwrap_or_default());
+        self.alan_conn_location_draft.set(
+            profile
+                .location
+                .clone()
+                .unwrap_or_else(|| provider.default_location().to_owned()),
+        );
     }
 
     /// Applies an updated [`AlanConnectionStatus`] snapshot and syncs form drafts
@@ -1612,6 +1642,7 @@ impl AppStore {
     pub fn select_alan_conn_provider(self, provider: AlanConnectionProvider) {
         self.alan_conn_provider.set(provider);
         self.alan_conn_feedback.set(None);
+        self.alan_conn_api_key_draft.set(String::new());
 
         let existing = self.alan_conn_status.with_untracked(|opt| {
             opt.as_ref().and_then(|st| {
@@ -1628,23 +1659,35 @@ impl AppStore {
             return;
         }
 
-        let other = match provider {
-            AlanConnectionProvider::OpenRouter => AlanConnectionProvider::OpenAiResponses,
-            AlanConnectionProvider::OpenAiResponses => AlanConnectionProvider::OpenRouter,
-        };
         let cur_id = self.alan_conn_profile_id_draft.get_untracked();
-        if cur_id.trim().is_empty() || cur_id.trim() == other.default_profile_id() {
+        let is_any_default_id = AlanConnectionProvider::ALL
+            .iter()
+            .any(|p| cur_id.trim() == p.default_profile_id());
+        if cur_id.trim().is_empty() || is_any_default_id {
             self.alan_conn_profile_id_draft
                 .set(provider.default_profile_id().to_owned());
         }
         let cur_model = self.alan_conn_model_draft.get_untracked();
-        if cur_model.trim().is_empty() || cur_model.trim() == other.default_model() {
+        let is_any_default_model = AlanConnectionProvider::ALL
+            .iter()
+            .any(|p| cur_model.trim() == p.default_model());
+        if cur_model.trim().is_empty() || is_any_default_model {
             self.alan_conn_model_draft
                 .set(provider.default_model().to_owned());
         }
         let cur_base = self.alan_conn_base_url_draft.get_untracked();
-        if cur_base.trim() == other.default_base_url() {
+        let is_any_default_base = AlanConnectionProvider::ALL
+            .iter()
+            .any(|p| cur_base.trim() == p.default_base_url());
+        if !provider.uses_base_url() || is_any_default_base {
             self.alan_conn_base_url_draft.set(String::new());
+        }
+        if provider == AlanConnectionProvider::GoogleVertex {
+            let cur_loc = self.alan_conn_location_draft.get_untracked();
+            if cur_loc.trim().is_empty() {
+                self.alan_conn_location_draft
+                    .set(provider.default_location().to_owned());
+            }
         }
     }
 
@@ -1660,7 +1703,7 @@ impl AppStore {
     /// Saves the current Alan connection form into Alan's canonical System & Host Stores
     /// and sets the profile as Alan's default.
     pub fn save_alan_connection(self) {
-        if self.alan_conn_saving.get_untracked() {
+        if self.alan_conn_saving.get_untracked() || self.alan_conn_logging_in.get_untracked() {
             return;
         }
 
@@ -1669,13 +1712,18 @@ impl AppStore {
         let model = self.alan_conn_model_draft.get_untracked();
         let base_url_raw = self.alan_conn_base_url_draft.get_untracked();
         let api_key_raw = self.alan_conn_api_key_draft.get_untracked();
+        let project_id_raw = self.alan_conn_project_id_draft.get_untracked();
+        let location_raw = self.alan_conn_location_draft.get_untracked();
 
         let req = SaveAlanConnectionRequest {
             provider,
             profile_id,
             model,
-            base_url: (!base_url_raw.trim().is_empty()).then_some(base_url_raw),
+            base_url: (provider.uses_base_url() && !base_url_raw.trim().is_empty())
+                .then_some(base_url_raw),
             api_key: (!api_key_raw.trim().is_empty()).then_some(api_key_raw),
+            project_id: (!project_id_raw.trim().is_empty()).then_some(project_id_raw),
+            location: (!location_raw.trim().is_empty()).then_some(location_raw),
             set_as_default: true,
         };
 
@@ -1716,6 +1764,73 @@ impl AppStore {
                         let msg = format!(
                             "{}: {err}",
                             l.t("保存 Alan 连接失败", "Failed to save Alan connection")
+                        );
+                        self.alan_conn_feedback.set(Some((msg.clone(), true)));
+                        self.set_error_notice(msg);
+                    }
+                }
+            },
+        );
+    }
+
+    /// Launches interactive browser OAuth/ADC sign-in for ChatGPT, OpenRouter, or Vertex AI.
+    pub fn start_alan_browser_login(self) {
+        if self.alan_conn_logging_in.get_untracked() || self.alan_conn_saving.get_untracked() {
+            return;
+        }
+        let provider = self.alan_conn_provider.get_untracked();
+        if !provider.supports_browser_login() {
+            return;
+        }
+
+        let profile_id = self.alan_conn_profile_id_draft.get_untracked();
+        let model = self.alan_conn_model_draft.get_untracked();
+        let base_url_raw = self.alan_conn_base_url_draft.get_untracked();
+        let project_id_raw = self.alan_conn_project_id_draft.get_untracked();
+        let location_raw = self.alan_conn_location_draft.get_untracked();
+
+        let req = BrowserLoginAlanConnectionRequest {
+            provider,
+            profile_id,
+            model,
+            base_url: (provider.uses_base_url() && !base_url_raw.trim().is_empty())
+                .then_some(base_url_raw),
+            project_id: (!project_id_raw.trim().is_empty()).then_some(project_id_raw),
+            location: (!location_raw.trim().is_empty()).then_some(location_raw),
+            set_as_default: true,
+        };
+
+        let l = self.lang.get_untracked();
+        self.alan_conn_logging_in.set(true);
+        let hint = match l {
+            UiLang::Zh => format!("正在打开浏览器完成 {} 授权…", provider.display_name()),
+            UiLang::En => format!("Opening browser for {} sign-in…", provider.display_name()),
+        };
+        self.alan_conn_feedback.set(Some((hint, false)));
+
+        run_blocking_result(
+            move || -> Result<(AlanConnectionBrowserLoginResult, AlanConnectionStatus), String> {
+                let res = alan_connection::browser_login_alan_connection(&req)
+                    .map_err(|e| format!("{e:#}"))?;
+                let status =
+                    alan_connection::list_alan_connection_status().map_err(|e| format!("{e:#}"))?;
+                Ok((res, status))
+            },
+            move |res| {
+                self.alan_conn_logging_in.set(false);
+                let l = self.lang.get_untracked();
+                match res {
+                    Ok((outcome, status)) => {
+                        self.alan_conn_api_key_draft.set(String::new());
+                        self.apply_alan_connection_status(status);
+                        let msg = outcome.message;
+                        self.alan_conn_feedback.set(Some((msg.clone(), false)));
+                        self.set_info_notice(msg);
+                    }
+                    Err(err) => {
+                        let msg = format!(
+                            "{}: {err}",
+                            l.t("浏览器登录未完成", "Browser sign-in failed")
                         );
                         self.alan_conn_feedback.set(Some((msg.clone(), true)));
                         self.set_error_notice(msg);
@@ -2047,6 +2162,13 @@ impl AppStore {
         self.onboarding_dismissed.set(true);
     }
 
+    /// Applies the curated starter pack, syncs the 8 classics (~5s), and queues
+    /// non-blocking progressive L0 lakehouse synchronization right afterward if L0 is empty.
+    pub fn start_starter_pack_and_progressive_l0(self) {
+        self.pending_progressive_l0_after_sync.set(true);
+        self.start_starter_pack_and_sync();
+    }
+
     /// Applies the curated Berkshire × Munger starter pack, refreshes store state,
     /// switches to Circle Overview, and launches background SEC/price sync.
     pub fn start_starter_pack_and_sync(self) {
@@ -2185,8 +2307,18 @@ impl AppStore {
                                 failed.join(", ")
                             ));
                         }
+                        if self.pending_progressive_l0_after_sync.get_untracked() {
+                            self.pending_progressive_l0_after_sync.set(false);
+                            let l0_empty = self.universe_summary.with_untracked(|s| {
+                                s.as_ref().is_none_or(|u| u.total_companies == 0)
+                            });
+                            if l0_empty {
+                                self.start_universe_sync(false);
+                            }
+                        }
                     }
                     Err(err) => {
+                        self.pending_progressive_l0_after_sync.set(false);
                         self.set_error_notice(format!("{}: {err}", l.t("同步失败", "Sync failed")));
                     }
                 }
@@ -3093,6 +3225,7 @@ impl AppStore {
             return;
         }
         self.universe_syncing.set(true);
+        self.universe_sync_progress_detail.set(None);
         self.universe_sync_progress.set(Some(
             l.t(
                 "正在启动全美股 L0 同步（SEC EDGAR Bulk + 质量分层）…",
@@ -3116,20 +3249,31 @@ impl AppStore {
                     full_sec,
                     ..UniverseSyncOptions::default()
                 };
-                let res = universe::sync_universe_with_progress(&paths, &opts, |msg| {
-                    let _ = tx.send(UniverseSyncMsg::Progress(msg.to_owned()));
+                let res = universe::sync_universe_with_structured_progress(&paths, &opts, |prog| {
+                    let _ = tx.send(UniverseSyncMsg::Progress(prog));
                 })
                 .map_err(|e| format!("{e:#}"));
                 let _ = tx.send(UniverseSyncMsg::Finished(Box::new(res)));
             },
             move |msg| match msg {
-                UniverseSyncMsg::Progress(p) => {
-                    self.universe_sync_progress.set(Some(p));
+                UniverseSyncMsg::Progress(prog) => {
+                    let l = self.lang.get_untracked();
+                    let was_lake_ready = self
+                        .universe_sync_progress_detail
+                        .with_untracked(|d| d.as_ref().is_some_and(|p| p.lake_ready));
+                    let formatted = format_universe_sync_progress(&prog, l);
+                    let became_ready = !was_lake_ready && prog.lake_ready;
+                    self.universe_sync_progress.set(Some(formatted));
+                    self.universe_sync_progress_detail.set(Some(prog));
+                    if became_ready {
+                        self.reload_universe_from_lake();
+                    }
                 }
                 UniverseSyncMsg::Finished(res) => {
                     let res = *res;
                     self.universe_syncing.set(false);
                     self.universe_sync_progress.set(None);
+                    self.universe_sync_progress_detail.set(None);
                     let l = self.lang.get_untracked();
                     match res {
                         Ok(report) => {
@@ -3148,6 +3292,8 @@ impl AppStore {
             },
             move || {
                 self.universe_syncing.set(false);
+                self.universe_sync_progress.set(None);
+                self.universe_sync_progress_detail.set(None);
             },
         );
     }

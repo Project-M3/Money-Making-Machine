@@ -130,13 +130,13 @@ pub fn onboarding_card(store: AppStore) -> View {
                             .to_owned()
                     } else {
                         l.t(
-                            "装载 8 家经典标的并同步 (~5s)",
-                            "Load 8 Classic Companies & Sync (~5s)",
+                            "快速开局：8 家经典标的 + 后台渐进 L0 (~5s 可用)",
+                            "Quick Start: 8 Classics + Progressive L0 (~5s ready)",
                         )
                         .to_owned()
                     },
                     true,
-                    move || store.start_starter_pack_and_sync(),
+                    move || store.start_starter_pack_and_progressive_l0(),
                 ))
                 .child(action_button(
                     if syncing_universe {
@@ -147,8 +147,8 @@ pub fn onboarding_card(store: AppStore) -> View {
                         .to_owned()
                     } else {
                         l.t(
-                            "后台同步全美股 L0 湖仓 (6,000+ 家)",
-                            "Sync Full-US L0 Lakehouse (6,000+ issuers, background)",
+                            "仅后台同步全美股 L0 (6,000+ 家)",
+                            "Sync Full-US L0 Only (6,000+ issuers)",
                         )
                         .to_owned()
                     },
