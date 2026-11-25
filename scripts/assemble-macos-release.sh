@@ -30,25 +30,22 @@ fi
 
 mkdir -p "$M3_RELEASE_OUT_DIR"
 
-# Build workspace binaries directly with Cargo (nsh CLI is optional so CI runners do not require it).
-echo "Building m3-nsh & m3-cli target=$M3_TARGET version=$M3_BUILD_VERSION channel=$M3_BUILD_CHANNEL commit=$M3_BUILD_COMMIT"
+# Build dual-mode workspace binary directly with Cargo (nsh CLI is optional so CI runners do not require it).
+# Staged as `Contents/MacOS/m3-desktop` inside M3.app for seamless in-app upgrades from legacy GPUI builds
+# without duplicating a separate CLI binary inside the app bundle.
+echo "Building m3-nsh target=$M3_TARGET version=$M3_BUILD_VERSION channel=$M3_BUILD_CHANNEL commit=$M3_BUILD_COMMIT"
 (
   cd "$ROOT_DIR"
   export M3_BUILD_VERSION
   export M3_BUILD_CHANNEL
   export M3_BUILD_COMMIT
-  cargo build --release --locked -p m3-nsh -p m3-cli --target "$M3_TARGET" -j 4
+  cargo build --release --locked -p m3-nsh --target "$M3_TARGET" -j 4
 )
 
 TARGET_DIR="$(cd "$ROOT_DIR" && cargo metadata --no-deps --format-version 1 | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
 APP_BINARY_PATH="$TARGET_DIR/$M3_TARGET/release/m3-nsh"
-CLI_BINARY_PATH="$TARGET_DIR/$M3_TARGET/release/m3"
 if [ ! -x "$APP_BINARY_PATH" ]; then
   echo "error: built m3-nsh binary missing at $APP_BINARY_PATH" >&2
-  exit 1
-fi
-if [ ! -x "$CLI_BINARY_PATH" ]; then
-  echo "error: built m3 CLI binary missing at $CLI_BINARY_PATH" >&2
   exit 1
 fi
 
@@ -67,10 +64,8 @@ cp "$APP_CRATE_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $M3_RELEASE_VERSION" "$CONTENTS_DIR/Info.plist"
 /usr/bin/plutil -lint "$CONTENTS_DIR/Info.plist" >/dev/null
 
-cp "$APP_BINARY_PATH" "$CONTENTS_DIR/MacOS/m3-nsh"
-chmod 755 "$CONTENTS_DIR/MacOS/m3-nsh"
-cp "$CLI_BINARY_PATH" "$CONTENTS_DIR/MacOS/m3"
-chmod 755 "$CONTENTS_DIR/MacOS/m3"
+cp "$APP_BINARY_PATH" "$CONTENTS_DIR/MacOS/m3-desktop"
+chmod 755 "$CONTENTS_DIR/MacOS/m3-desktop"
 
 if [ -f "$APP_CRATE_DIR/assets/AppIcon.icns" ]; then
   cp "$APP_CRATE_DIR/assets/AppIcon.icns" "$CONTENTS_DIR/Resources/AppIcon.icns"
@@ -151,24 +146,18 @@ if [ -n "${M3_SIGN_PROOF_OUT:-}" ]; then
   } > "$M3_SIGN_PROOF_OUT"
 fi
 
-BINARY_SHA256="$(shasum -a 256 "$CONTENTS_DIR/MacOS/m3-nsh" | awk '{print $1}')"
+BINARY_SHA256="$(shasum -a 256 "$CONTENTS_DIR/MacOS/m3-desktop" | awk '{print $1}')"
 
 # Native smoke test on matching host arch before archiving.
 host_arch="$(uname -m)"
 if { [ "$host_arch" = "arm64" ] && [ "$M3_TARGET" = "aarch64-apple-darwin" ]; } || \
    { [ "$host_arch" = "x86_64" ] && [ "$M3_TARGET" = "x86_64-apple-darwin" ]; }; then
-  short_ver="$("$CONTENTS_DIR/MacOS/m3-nsh" -V)"
+  short_ver="$("$CONTENTS_DIR/MacOS/m3-desktop" -V)"
   if [ "$short_ver" != "m3 $M3_RELEASE_VERSION" ]; then
-    echo "error: m3-nsh smoke test failed: expected 'm3 $M3_RELEASE_VERSION', got '$short_ver'" >&2
+    echo "error: m3-desktop (m3-nsh) smoke test failed: expected 'm3 $M3_RELEASE_VERSION', got '$short_ver'" >&2
     exit 1
   fi
-  "$CONTENTS_DIR/MacOS/m3-nsh" --version
-  cli_short_ver="$("$CONTENTS_DIR/MacOS/m3" -V)"
-  if [ "$cli_short_ver" != "m3 $M3_RELEASE_VERSION" ]; then
-    echo "error: m3 CLI smoke test failed: expected 'm3 $M3_RELEASE_VERSION', got '$cli_short_ver'" >&2
-    exit 1
-  fi
-  "$CONTENTS_DIR/MacOS/m3" --version
+  "$CONTENTS_DIR/MacOS/m3-desktop" --version
 fi
 
 python3 - "$STAGE_ROOT/manifest.json" "$M3_RELEASE_VERSION" "$M3_BUILD_CHANNEL" "$M3_TARGET" "$M3_BUILD_COMMIT" "$BINARY_SHA256" "$SIGNED" "$NOTARIZED" <<'PY'

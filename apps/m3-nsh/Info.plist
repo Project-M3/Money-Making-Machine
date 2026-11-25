@@ -4,7 +4,7 @@
 <key>CFBundleIdentifier</key><string>systems.thinksmart.m3</string>
 <key>CFBundleName</key><string>M3</string>
 <key>CFBundleDisplayName</key><string>M3</string>
-<key>CFBundleExecutable</key><string>m3-nsh</string>
+<key>CFBundleExecutable</key><string>m3-desktop</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>0.3.0</string>
