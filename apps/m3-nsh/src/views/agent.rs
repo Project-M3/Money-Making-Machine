@@ -1215,8 +1215,8 @@ fn embedded_alan_console(store: AppStore, tape_drawer_open: Signal<bool>) -> Vie
             if msgs.is_empty() {
                 stream = stream.child(
                     text(l.t(
-                        "点击「费曼审讯」或在上方输入追问，直接驱动进程内 EmbeddedAlan V2；工具受红线策略钩子硬保护（严禁触碰 human_judgment 与 computed/*）。",
-                        "Click \"Feynman Interrogation\" or enter a follow-up above to drive in-process EmbeddedAlan V2; tools are enforced by redline policy hooks (blocking human_judgment and computed/*).",
+                        "点击「费曼审讯」或在上方输入追问，直接与内置 Alan 对话；工具受红线策略钩子硬保护（严禁触碰 human_judgment 与 computed/*）。",
+                        "Click \"Feynman Interrogation\" or enter a follow-up above to talk directly with Alan; tools are enforced by redline policy hooks (blocking human_judgment and computed/*).",
                     ))
                     .font_family(FONT_UI)
                     .text_size(px(TEXT_XS))

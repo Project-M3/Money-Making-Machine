@@ -11,7 +11,7 @@ body:
         - Desktop App (m3-nsh)
         - Core Financial Engine & Lakehouse (m3-core)
         - CLI (m3)
-        - EmbeddedAlan Research & Guardrails
+        - Alan Research & Guardrails
         - Website / Docs
     validations:
       required: true

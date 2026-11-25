@@ -1242,7 +1242,7 @@ fn render_statusline(store: AppStore) -> impl IntoElement {
                     "1 Financials & Memo · 2 Deep Research & Alan · 3 XBRL · t TTM/FY · j/k switch · esc back",
                 ),
                 if is_alan {
-                    "EMBEDDED ALAN · PAPER ONLY"
+                    "ALAN · PAPER ONLY"
                 } else {
                     "ZERO-LLM · PAPER ONLY"
                 },
@@ -1271,7 +1271,7 @@ fn render_statusline(store: AppStore) -> impl IntoElement {
                     "新建行业 / 选中代表公司 / Alan 4 视角深研 + Web 检索 + 费曼通关进能力圈 · s 同步 SIC 聚类 · ⌘K 命令",
                     "New Study / Bound Peers / Alan 4-Lens + Web Search + Feynman Graduation · s sync SIC clusters · ⌘K commands",
                 ),
-                "EMBEDDED ALAN · PAPER ONLY",
+                "ALAN · PAPER ONLY",
             ),
             WorkspaceTab::Baskets => (
                 EMERALD_FG,

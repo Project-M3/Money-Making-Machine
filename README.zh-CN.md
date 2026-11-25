@@ -12,7 +12,7 @@
 [![Platform: macOS Apple Silicon](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-black.svg)](https://github.com/Project-M3/Money-Making-Machine/releases)
 [![Website](https://img.shields.io/badge/website-m3.thinksmart.systems-10b981.svg)](https://m3.thinksmart.systems)
 
-Project M3 把查理·芒格的投资纪律工程化为本地优先工具：基于一手 SEC EDGAR XBRL 财报的确定性 Rust 会计核算、嵌入式 `EmbeddedAlan` 跨学科逆向审讯，以及分阶段演进的自主 Agent 与受控程序化执行闭环。
+Project M3 把查理·芒格的投资纪律工程化为本地优先工具：基于一手 SEC EDGAR XBRL 财报的确定性 Rust 会计核算、内置 **Alan** 跨学科逆向审讯，以及分阶段演进的自主 Agent 与受控程序化执行闭环。
 
 > **当前阶段说明（`v0.4.x`）**：目前 M3 仍专注于**本地投研、全市场湖仓与模拟决策账本（`PAPER RESEARCH`）**，尚未接入实盘券商接口。后续 `v0.5 → v1.0` 如何逐步补齐开箱 BYOK、`m3 mcp`、可编程价值策略引擎、内置模拟盘与受确定性 Rust `RiskEngine` 保护的券商执行，详见 [ROADMAP.md](./ROADMAP.md)。
 
@@ -24,7 +24,7 @@ Project M3 把查理·芒格的投资纪律工程化为本地优先工具：基�
 - **三层本地优先研究湖仓**：
   - **L0 全美股湖仓**：批量解析 SEC EDGAR `companyfacts.zip` 与 `submissions.zip`，沉淀为不可变 ZSTD Parquet 代际目录与嵌入式 `m3.duckdb`，支持毫秒级多维筛选与同 SIC 同行分位对照。
   - **L1 事件简报收件箱**：零旗舰 Token 消耗监控 `8-K`、`10-K`、`10-Q` 与新闻 RSS，并通过本地 256 维语义/BM25 混合索引生成带一手原文摘录的 `Discovery`、`Ripple`、`Strike`、`Red Flag` 卡片。
-  - **L2 `EmbeddedAlan` 深度研究**：受月度 USD / Token 硬上限与周度配额保护的 4 视角并行深研（护城河、会计排雷、隐空间同行、5 年事前验尸），并永久保护人类手写栏位（`human_judgment` 与 `## Human Notes`）不被覆盖。
+  - **L2 Alan 深度研究**：由内置 Alan 执行的 4 视角并行深研（护城河、会计排雷、隐空间同行、5 年事前验尸），受月度 USD / Token 硬上限与周度配额保护，并永久保护人类手写栏位（`human_judgment` 与 `## Human Notes`）不被覆盖。
 - **macOS 原生桌面工作台（`apps/m3-nsh`）**：基于 Rust 与 Longbridge NSH `0.7.0` 构建，支持中英双语即时切换、能力圈门控击球区（`Core / Watch / Out / Too Hard`）、行业研究工作台（Industry Research Studio）、Canvas 交互式 K 线与 ROIC × FCF 散点图、`⌘K` 命令面板、macOS 风格存储管理以及带实时进度条的 SHA-256 原子自更新。
 - **Agent 原生 JSON CLI（`m3`）**：完整覆盖工作台、湖仓、存储清理与自更新能力；交互终端下自动格式化缩进 JSON，管道模式下输出单行紧凑 schema v1 JSON（`--pretty` / `--compact` 可随时显式指定）。
 

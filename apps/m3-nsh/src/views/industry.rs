@@ -2458,8 +2458,8 @@ fn render_live_research_and_tutor_card(store: AppStore, profile: &IndustryProfil
                                             .lang
                                             .get()
                                             .t(
-                                                "Embedded Alan 行业导师与费曼考官",
-                                                "Embedded Alan Industry Tutor & Feynman Examiner",
+                                                "Alan 行业导师与费曼考官",
+                                                "Alan Industry Tutor & Feynman Examiner",
                                             )
                                             .to_owned()
                                     })

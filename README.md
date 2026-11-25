@@ -12,7 +12,7 @@
 [![Platform: macOS Apple Silicon](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-black.svg)](https://github.com/Project-M3/Money-Making-Machine/releases)
 [![Website](https://img.shields.io/badge/website-m3.thinksmart.systems-10b981.svg)](https://m3.thinksmart.systems)
 
-Project M3 is a local-first desktop & CLI instrument that turns Charlie Munger's investment discipline into software: deterministic accounting over primary SEC EDGAR XBRL filings, cross-disciplinary adversarial research via `EmbeddedAlan`, and an explicit path toward autonomous Agents and guarded programmatic execution.
+Project M3 is a local-first desktop & CLI instrument that turns Charlie Munger's investment discipline into software: deterministic accounting over primary SEC EDGAR XBRL filings, cross-disciplinary adversarial research powered by built-in **Alan**, and an explicit path toward autonomous Agents and guarded programmatic execution.
 
 > **Current Status (`v0.4.x`)**: Today M3 ships as a local-first research & paper-journaling workbench (`PAPER RESEARCH` — no brokerage credentials or live order execution yet). See [ROADMAP.md](./ROADMAP.md) for how `v0.5 → v1.0` adds zero-friction BYOK onboarding, `m3 mcp`, programmable value strategies, and autonomous portfolio execution behind a hardcoded Rust `RiskEngine`.
 
@@ -24,7 +24,7 @@ Project M3 is a local-first desktop & CLI instrument that turns Charlie Munger's
 - **Three-Layer Local-First Lakehouse**
   - **L0 Market Lakehouse**: Full-US SEC EDGAR XBRL (`companyfacts.zip` & `submissions.zip`) materialized into immutable ZSTD Parquet generations and embedded `m3.duckdb` for sub-second multi-factor screening and SIC peer percentile comparisons.
   - **L1 Event Inbox**: Zero-LLM-token filing watcher & 256-dimensional local semantic/BM25 indexer (`8-K`, `10-K`, `10-Q`, RSS news) surfacing *Discovery*, *Ripple*, *Strike*, and *Red Flag* cards with verbatim primary-source excerpts.
-  - **L2 EmbeddedAlan Deep Research**: Opt-in 4-perspective parallel interrogation (*Moat*, *Accounting*, *Latent Peers*, *5Y Pre-Mortem*) gated by hard monthly USD/token caps and weekly auto-research quotas. Human judgment (`human_judgment`) and `## Human Notes` are strictly protected from AI overwrite.
+  - **L2 Alan Deep Research**: Opt-in 4-perspective parallel interrogation by built-in Alan (*Moat*, *Accounting*, *Latent Peers*, *5Y Pre-Mortem*) gated by hard monthly USD/token caps and weekly auto-research quotas. Human judgment (`human_judgment`) and `## Human Notes` are strictly protected from AI overwrite.
 - **Native macOS Desktop Workbench (`apps/m3-nsh`)** — Built with Rust and Longbridge NSH `0.7.0`: bilingual English/Chinese UI, Circle-gated Strike Zone (`Core / Watch / Out / Too Hard`), Industry Research Studio, Canvas K-line & ROIC scatter charts, `⌘K` Command Palette, macOS-style Storage Manager, and SHA-256 verified atomic in-app updates.
 - **Agent-Native JSON CLI (`m3`)** — Every workbench, lakehouse, storage, and updater workflow is exposed via structured schema-v1 JSON (`m3 --help`, `m3 doctor`, `m3 storage status`), auto-pretty on interactive TTYs and compact single-line JSON when piped.
 

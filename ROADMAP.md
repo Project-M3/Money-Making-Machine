@@ -17,7 +17,7 @@ Project M3 has completed its local-first research foundation across `v0.2`–`v0
 - **Deterministic Financial Kernel (`m3-core`)**: Fixed-point `rust_decimal` Charlie Calculator (ROIC, Strict Owner Earnings `OCF - CapEx - SBC`, 3Y share dilution, reverse-implied growth, Strike Price, accounting red flags) with SEC EDGAR XBRL SHA-256 provenance.
 - **L0 Full-US Lakehouse**: Bulk `companyfacts.zip` & `submissions.zip` ingestion into immutable ZSTD Parquet generations and embedded `m3.duckdb` (`6,000+` issuers), sub-second screening, and SIC peer percentiles.
 - **L1 Event Inbox & Latent Search**: Zero-LLM-token filing watcher (`8-K`, `10-K`, `10-Q`, RSS news) and local 256d cosine + BM25 hybrid retrieval with verbatim primary-source evidence cards.
-- **L2 `EmbeddedAlan` & Industry Studio**: Four-perspective adversarial interrogation (*Moat*, *Accounting*, *Latent Peers*, *5Y Pre-Mortem*) behind hard monthly USD/token and weekly quotas, preserving `human_judgment` and `## Human Notes`.
+- **L2 Alan Deep Research & Industry Studio**: Four-perspective adversarial interrogation by built-in **Alan** (*Moat*, *Accounting*, *Latent Peers*, *5Y Pre-Mortem*) behind hard monthly USD/token and weekly quotas, preserving `human_judgment` and `## Human Notes`.
 - **Native macOS Desktop (`apps/m3-nsh`) & Agent CLI (`m3`)**: Longbridge NSH `0.7.0` bilingual Zh/En workbench, Canvas K-line & scatter charts, `⌘K` Command Palette, macOS-style Storage Manager, SHA-256 atomic updater, and structured `m3` CLI (`doctor`, `storage`, `industry`, `--help`, TTY formatting).
 
 > **Honest `0.x` Boundary**: As of `v0.4.2`, M3 is strictly a **research & paper-journaling instrument** (`PAPER RESEARCH`). It does not yet connect to brokerage accounts or execute live trades. Milestones `v0.5 → v1.0` close that loop deliberately and safely.
@@ -29,11 +29,11 @@ Project M3 has completed its local-first research foundation across `v0.2`–`v0
 | Version | Milestone | Focus | Status |
 | :--- | :--- | :--- | :--- |
 | **`v0.4.x`** | **Munger Research Workbench** | Full-US Lakehouse (`L0`/`L1`/`L2`), Industry Studio, NSH 0.7 macOS UI, Storage Manager, `m3` CLI | **Shipped** |
-| **`v0.5`** | **Zero-Friction Onboarding & Agent Foundation** | In-app BYOK LLM setup, guided starter workspace, progressive L0 bootstrap, `m3 mcp` server & Agent Skills | **Next** |
-| **`v0.6`** | **Proactive Research Agent & Multi-Market** | Event-driven auto-triage, falsification watchdog, scheduled Circle briefings, interactive Feynman tutor, HK equities | **Planned** |
+| **`v0.5`** | **Zero-Friction Onboarding & Alan Setup** | In-app Alan connection setup, guided starter workspace, progressive L0 bootstrap, `m3 mcp` server & Agent Skills | **Next** |
+| **`v0.6`** | **Proactive Alan & Multi-Market** | Event-driven Alan auto-triage, falsification watchdog, scheduled Circle briefings, interactive Feynman tutor, HK equities | **Planned** |
 | **`v0.7`** | **Programmable Strategy Engine & Paper Broker** | Declarative/scriptable value strategies, point-in-time historical backtesting on DuckDB/Parquet, built-in Paper Broker | **Planned** |
 | **`v0.8`** | **Deterministic RiskEngine & Brokerage Adapters** | Hardcoded Rust `RiskEngine` guardrails + unified `BrokerAdapter` (**Longbridge OpenAPI** US/HK + **Alpaca** US) | **Planned** |
-| **`v0.9 – v1.0`** | **Autonomous Portfolio Agent** | Owner-defined capital sleeves & investment mandates with `Research Only` / `Approval` / `Autonomous` execution | **Planned** |
+| **`v0.9 – v1.0`** | **Autonomous Alan Portfolio Sleeves** | Owner-defined capital sleeves & investment mandates driven by built-in Alan (`Research Only` / `Approval` / `Autonomous`) | **Planned** |
 
 ---
 
@@ -41,23 +41,23 @@ Project M3 has completed its local-first research foundation across `v0.2`–`v0
 
 ### `v0.5` — Zero-Friction Onboarding & Agent Foundation (`Next`)
 
-Make M3 immediately useful within two minutes of installation—both for first-time desktop users and for external AI agents:
+Make M3 immediately useful within two minutes of installation—both for first-time desktop users (without external CLI prerequisites) and for external AI agents:
 
-- **In-App BYOK Provider Setup**: Configure model providers, API keys, and endpoints directly in Settings (stored securely in macOS Host Store / Keychain) so users no longer need to run external `alan` CLI setup commands first.
+- **In-App Alan Connection Setup**: Configure Alan's model providers, API keys, and endpoints directly in Settings (stored securely in macOS Host Store / Keychain) so users no longer need to run external `alan` CLI setup commands first.
 - **Guided First-Run Experience**:
   - Optional curated starter pack (e.g., classic Berkshire/Munger case studies) alongside a clean empty slate.
   - Non-blocking background progressive `L0` lakehouse bootstrap so new users can explore the UI right away instead of waiting on a multi-GB cold download.
-- **`m3 mcp` Server & Agent Skill**: Expose M3's deterministic financial reports, `L0` screener, `L1` event inbox, dossiers, and industry studies cleanly to external agents (`Claude Code`, `Codex`, `Alan`, etc.) via Model Context Protocol (`m3 mcp`) and a first-party Skill.
+- **`m3 mcp` Server & Agent Skill**: Expose M3's deterministic financial reports, `L0` screener, `L1` event inbox, dossiers, and industry studies cleanly to external agents (`Claude Code`, `Codex`, external `Alan` sessions, etc.) via Model Context Protocol (`m3 mcp`) and a first-party Skill.
 
 ---
 
-### `v0.6` — Proactive Research Agent & Multi-Market Foundation
+### `v0.6` — Proactive Alan & Multi-Market Foundation
 
-Turn M3 from a passive workbench you query into a calm, proactive Munger-style analyst:
+Turn M3's built-in **Alan** runtime from an on-demand responder into a calm, proactive Munger-style analyst:
 
-- **Event-Driven Research Agent**: Automatically triage newly ingested `8-K` / `10-K` / `10-Q` filings against your active Circle companies and pre-registered falsification criteria (`falsification_metrics`).
+- **Event-Driven Alan Monitoring**: Automatically triage newly ingested `8-K` / `10-K` / `10-Q` filings against your active Circle companies and pre-registered falsification criteria (`falsification_metrics`).
 - **Scheduled Briefings & Falsification Watchdog**: Surface calm daily/weekly digests only when fundamentals move meaningfully or a valuation approaches Strike Price—never noisy intraday tick alerts.
-- **Interactive Feynman Coach**: Structured voice/text Socratic defense drills inside Industry Studio and Company Desk to test understanding before graduating a company into `Core`.
+- **Interactive Feynman Coach**: Structured voice/text Socratic defense drills with Alan inside Industry Studio and Company Desk before graduating a company into `Core`.
 - **Hong Kong Equities (`HKEX`) Expansion**: Unified multi-currency accounting & filing ingestion alongside US SEC EDGAR inside the shared `m3-core` model and DuckDB lakehouse.
 
 ---
@@ -76,7 +76,7 @@ Bridge qualitative value research and systematic capital allocation—before ris
 
 Connect real markets behind non-bypassable deterministic code guardrails:
 
-- **Deterministic Rust `RiskEngine`**: Every order intent—whether emitted by a strategy rule or an autonomous Agent—must pass a deterministic Rust validation gate that **cannot be overridden by prompts or LLMs**:
+- **Deterministic Rust `RiskEngine`**: Every order intent—whether emitted by a strategy rule or by Alan—must pass a deterministic Rust validation gate that **cannot be overridden by prompts or LLMs**:
   - Dedicated capital sleeve ceiling (`max_sleeve_capital`)
   - Single-position weight ceiling (`max_position_pct`) & Circle membership check
   - Strict zero-margin / zero-naked-leverage enforcement
@@ -90,14 +90,14 @@ Connect real markets behind non-bypassable deterministic code guardrails:
 
 ---
 
-### `v0.9 – v1.0` — Autonomous Portfolio Agent & Closed-Loop Machine
+### `v0.9 – v1.0` — Autonomous Alan Portfolio Sleeves & Closed-Loop Machine
 
 Graduate M3 to an autonomous, owner-governed **Money · Making · Machine**:
 
-- **Owner Investment Mandate & Capital Sleeves**: Partition capital into independent sleeves with explicit autonomy levels:
+- **Owner Investment Mandate & Capital Sleeves**: Partition capital into independent sleeves with explicit autonomy levels for Alan:
   - `Research Only` — insights and dossier updates only
-  - `Approval Required` — agent prepares sized limit-order drafts & rationale for one-click owner sign-off
-  - `Autonomous within Mandate` — agent continuously screens, conducts deep research, rebalances, and executes strategy rules inside the owner's hard `RiskEngine` boundaries
+  - `Approval Required` — Alan prepares sized limit-order drafts & rationale for one-click owner sign-off
+  - `Autonomous within Mandate` — Alan continuously screens, conducts deep research, rebalances, and executes strategy rules inside the owner's hard `RiskEngine` boundaries
 - **Closed-Loop Attribution**: Track real post-execution cash flows, dividend reinvestment, tax-lot holding periods, opportunity cost vs. cash & index benchmarks, and strategy drift inside one calm obsidian ledger.
 
 ---
@@ -105,6 +105,7 @@ Graduate M3 to an autonomous, owner-governed **Money · Making · Machine**:
 ## Non-Negotiable Architecture Invariants (`0.x → 1.0`)
 
 1. **Zero-LLM Financial Arithmetic**: All accounting metrics, valuations, backtest returns, position sizing math, and risk checks run deterministically in Rust with `rust_decimal` and SHA-256 provenance.
-2. **Deterministic Execution Gate**: In `v0.8+`, `RiskEngine` sits in deterministic Rust between any Agent/strategy intent and `BrokerAdapter`. No LLM can alter risk limits, increase leverage, or disable the Kill Switch.
-3. **Owner Sovereignty**: The human owner writes the Investment Mandate, risk ceilings, Circle definitions, and `human_judgment`. Autonomy is always opt-in, scoped, and reversible.
-4. **Local-First Ownership**: Filings, DuckDB/Parquet lakehouse, research memos, strategy logs, and keys live on the user's machine—with zero mandatory cloud backend.
+2. **Built-In Agent = Alan**: M3 does not invent a separate proprietary agent runtime—all built-in agent capabilities (deep research, Feynman coaching, proactive monitoring, and sleeve execution) run on **Alan**, embedded in-process and strictly scoped by M3 tools and policies.
+3. **Deterministic Execution Gate**: In `v0.8+`, `RiskEngine` sits in deterministic Rust between any Alan/strategy intent and `BrokerAdapter`. No LLM can alter risk limits, increase leverage, or disable the Kill Switch.
+4. **Owner Sovereignty**: The human owner writes the Investment Mandate, risk ceilings, Circle definitions, and `human_judgment`. Autonomy is always opt-in, scoped, and reversible.
+5. **Local-First Ownership**: Filings, DuckDB/Parquet lakehouse, research memos, strategy logs, and keys live on the user's machine—with zero mandatory cloud backend.

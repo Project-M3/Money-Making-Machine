@@ -31,7 +31,7 @@ Money-Making-Machine/
 │       ├── calculator.rs      # 确定性查理计算器与预警引擎
 │       ├── store.rs           # 原子持久化与全量同步协调
 │       ├── lake*.rs           # L0/L1/L2 DuckDB + ZSTD Parquet 湖仓
-│       └── alan_interrogator.rs # 进程内 EmbeddedAlan 审讯台与红线策略钩子
+│       └── alan_interrogator.rs # 内置 Alan 审讯台与红线策略钩子
 ├── crates/m3-cli/             # 独立结构化 JSON CLI（`m3` 二进制）
 ├── apps/m3-nsh/               # Rust + Longbridge NSH 0.7.0 原生桌面工作台
 │   ├── src/

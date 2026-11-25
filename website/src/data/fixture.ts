@@ -1283,7 +1283,7 @@ export const PIPELINE_LAYERS: PipelineLayer[] = [
     stat: '4 independent lenses · Hard cap',
     heading: 'Test where an idea breaks before allowing yourself to believe it',
     summary:
-      'When an opportunity clears every quantitative filter, M3 deploys four read-only EmbeddedAlan lenses—Moat, Accounting, Latent Peers, and a harsh Pre-Mortem—against locked filing facts before handing judgment back to you.',
+      'When an opportunity clears every quantitative filter, M3 deploys four read-only Alan lenses—Moat, Accounting, Latent Peers, and a harsh Pre-Mortem—against locked filing facts before handing judgment back to you.',
     bullets: [
       'Structurally forbidden from inventing numbers or issuing buy/sell advice',
       'Hard monthly dollar cap enforces calm selectivity instead of shallow volume',

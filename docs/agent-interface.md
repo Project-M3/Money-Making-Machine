@@ -91,8 +91,8 @@ apps/m3-nsh/m3 themes list
 #### `m3 research`、`m3 budget` 与 `m3 themes` 子命令契约
 
 - `m3 research run <TICKER> [--focus "..."] [--trigger manual|inbox|cli]`：
-  - 先读取 `workbench/budget.json` 与 `m3.duckdb` 当月累计消耗并执行 `evaluate_budget_gate` **硬预算预检**；若超限或月/次配额为 `0`，在启动 `EmbeddedAlan` 或发起任何 LLM 请求前立即阻断，记录 `blocked_budget` 审计行并返回 `ok: false`（附带结构化 `DeepResearchResult`）。
-  - 预算放行后，启动受 `M3ToolPolicyHook` 保护的进程内 `EmbeddedAlan` 并并行调度 4 个只读子分析师会话（`护城河`、`会计排雷`、`隐空间同行`、`5年逆向验尸`），写入 `workbench/memos/<TICKER>.md`（保留既有的 `## Human Notes` 人类手写区）并记录 `research_runs` 审计行。
+  - 先读取 `workbench/budget.json` 与 `m3.duckdb` 当月累计消耗并执行 `evaluate_budget_gate` **硬预算预检**；若超限或月/次配额为 `0`，在启动内置 `Alan` 或发起任何 LLM 请求前立即阻断，记录 `blocked_budget` 审计行并返回 `ok: false`（附带结构化 `DeepResearchResult`）。
+  - 预算放行后，启动受 `M3ToolPolicyHook` 保护的内置 `Alan` 并并行调度 4 个只读子分析师会话（`护城河`、`会计排雷`、`隐空间同行`、`5年逆向验尸`），写入 `workbench/memos/<TICKER>.md`（保留既有的 `## Human Notes` 人类手写区）并记录 `research_runs` 审计行。
 - `m3 research status [--ticker SYM] [--limit N]`：查询 `m3.duckdb` 中的 `research_runs` 历史记录（`--limit` 默认 `20`，范围 `1..=500`）及当前月度预算状态；未同步湖仓时返回空列表与默认预算配置。
 - `m3 budget status`：返回 `BudgetStatusReport`（`workbench/budget.json` 配额配置 + 当月 Token / USD 消耗 + 剩余额度 + 周度自动触发剩余配额）。
 - `m3 themes sync` / `m3 themes list`：`sync` 基于 `universe_snapshot` 与 `doc_chunks` 确定性聚合 SIC + 隐空间商业原型簇并原子写入 `workbench/themes.json`（保留人类编辑的 `user_notes`）；`list` 读取 `workbench/themes.json`。

@@ -13,5 +13,5 @@
 ## 当前基线与演进路线（`v0.4.2` 已交付 → `v0.5–v1.0`）
 
 1. **历史量化原型归档**：2026 年 10 月验证的 `BTC/USDT` 小时 SMA20 趋势策略（2025 留出期净亏 16.21%）与 1 万元资金费率对冲（2025 扣出入金后净赚约 76 元、2024 合约钱包资金不足）已完成事前审计并归档于 `spikes/nautilus-trend/` 与 `docs/research/`。不得再调用或重启 `m3-paper` 与相关定时采集任务。
-2. **研究工作台基线已落地（`v0.4.2`）**：已建成全 Rust 栈（`crates/m3-core` + `crates/m3-cli` + `apps/m3-nsh`）、SEC EDGAR XBRL 全美股 DuckDB/Parquet 湖仓（`L0`/`L1`/`L2`）、行业研究工作台、能力圈门控击球区、`EmbeddedAlan` 四视角逆向审讯与 macOS 风格存储管理。
+2. **研究工作台基线已落地（`v0.4.2`）**：已建成全 Rust 栈（`crates/m3-core` + `crates/m3-cli` + `apps/m3-nsh`）、SEC EDGAR XBRL 全美股 DuckDB/Parquet 湖仓（`L0`/`L1`/`L2`）、行业研究工作台、能力圈门控击球区、内置 Alan 四视角逆向审讯与 macOS 风格存储管理。
 3. **未来规划（`v0.5 → v1.0`）**：按 [ROADMAP.md](ROADMAP.md) 分阶段演进至零门槛开箱 BYOK 与 MCP 接口（`v0.5`）、主动投研 Agent 与港股扩展（`v0.6`）、可编程价值策略引擎与内置 `Paper Broker`（`v0.7`）、以及基于确定性 Rust `RiskEngine` 硬护栏的券商适配与自主组合管理（`v0.8–v1.0`）。

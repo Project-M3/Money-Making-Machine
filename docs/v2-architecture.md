@@ -7,7 +7,7 @@
 
 ## 1. 核心范式跃迁（Why v2）
 
-v1 验证了确定性 Rust XBRL 计算、桌面工作台与进程内 `EmbeddedAlan` 审讯的基本闭环，但只覆盖手选的 9 只股票——其中明星白马（`AAPL`、`COST`、`SNPS` 等）长期显著高于击球价，暴露出**“人手选股带宽受限”**的根本瓶颈。
+v1 验证了确定性 Rust XBRL 计算、桌面工作台与内置 `Alan` 审讯的基本闭环，但只覆盖手选的 9 只股票——其中明星白马（`AAPL`、`COST`、`SNPS` 等）长期显著高于击球价，暴露出**“人手选股带宽受限”**的根本瓶颈。
 
 查理·芒格集中投资的本质是**决策集中**（只打好球、重仓少做），而**“只能精读几十家公司”只是碳基大脑的带宽约束，并非投资优势**。v2 用机器规模打破研究带宽瓶颈，同时保留两条不可动摇的铁律：
 
@@ -48,7 +48,7 @@ v1 验证了确定性 Rust XBRL 计算、桌面工作台与进程内 `EmbeddedAl
         │
         ▼ (由人类主动派单，或周度硬配额内的高分新发现/击球触发)
 [L2 · Alan 股票分析师集群 | Deep Research | 严格成本闸门]
-  底座升级: 基于 EmbeddedAlan (alan v0.1.4+ / open_session / spawn_child_session)
+  底座升级: 基于 Alan (alan v0.1.4+ / open_session / spawn_child_session)
   分析师工具: 只读 DuckDB 工具 (全市场筛选、同行分位数、语义近邻、事件流) + 受控一手原文/新闻工具
   并行视角: ① 商业模式与护城河  ② 会计与现金流排雷  ③ 跨公司隐空间/产业链综合  ④ 5 年逆向空头验尸
   硬防线: M3ToolPolicyHook 阻断任何对真值湖仓、human_judgment、watchlist、journal 的写操作
@@ -79,7 +79,7 @@ v1 验证了确定性 Rust XBRL 计算、桌面工作台与进程内 `EmbeddedAl
 
 ### 2.3 L2：Alan 股票分析师集群与成本/权限门控
 
-- **多会话并行深研**：基于 `crates/m3-core/src/alan_interrogator.rs` 现有的 `EmbeddedAlan` 集成（固定在公开仓库 `alan` `v0.1.4+`），通过 `open_session` / `spawn_child_session` 调度专业化子分析师会话，并行完成商业护城河、会计排雷、隐空间同行对比与 5 年逆向验尸，最终汇总为可演化研报。
+- **多会话并行深研**：基于 `crates/m3-core/src/alan_interrogator.rs` 的内置 `Alan` 集成（固定在公开仓库 `alan` `v0.1.4+`），通过 `open_session` / `spawn_child_session` 调度专业化子分析师会话，并行完成商业护城河、会计排雷、隐空间同行对比与 5 年逆向验尸，最终汇总为可演化研报。
 - **面向分析的只读工具集**：在现有 `m3_status / m3_report / m3_dossier / m3_update_draft` 基础上，新增只读湖仓查询工具（`m3_universe_query`、`m3_peer_percentiles`、`m3_semantic_neighbors`、`m3_events_for_ticker`）及受控的一手原文/新闻片段抓取工具。
 - **预算与红线双闸门**：
   - `workbench/budget.json` 定义月度 Token/费用硬上限、单次 Deep Research 预算上限以及自动触发配额（默认关闭自动唤醒旗舰模型，只允许手动派单或每周有限高分信号名额）。
@@ -189,7 +189,7 @@ Money-Making-Machine/
 ### Milestone C — L2 Alan 股票分析师集群 + Deep Research + 活研报
 
 - **工程范围**：
-  - 在 `src/alan_interrogator.rs` 中为 `EmbeddedAlan` 挂载只读 DuckDB 工具与受控原文/新闻检索工具，并通过 `open_session` / `spawn_child_session` 实现多视角并行深研编排；
+  - 在 `src/alan_interrogator.rs` 中为 `Alan` 挂载只读 DuckDB 工具与受控原文/新闻检索工具，并通过 `open_session` / `spawn_child_session` 实现多视角并行深研编排；
   - 落地 `workbench/budget.json` 与 `research_runs` 硬预算闸门，落盘 `workbench/memos/<TICKER>.md` 与 `workbench/themes.json`；
   - 将单公司页升级为 `Research Desk`，增加 `Themes` 图谱联动视图。
 - **硬验收标准**：

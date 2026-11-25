@@ -186,7 +186,7 @@ export function mountWorkbench(container: HTMLElement): void {
         return {
           dot: 'var(--violet)',
           legend: '4-lens Alan study · SEC 10-K vs Web · Feynman check · human valuation anchor',
-          mode: 'EMBEDDED ALAN + WEB · PAPER ONLY',
+          mode: 'ALAN + WEB · PAPER ONLY',
         };
       case 'baskets':
         return {
@@ -198,7 +198,7 @@ export function mountWorkbench(container: HTMLElement): void {
         return {
           dot: state.companySubTab === 'alan' ? 'var(--violet)' : 'var(--emerald)',
           legend: '1 Memo · 2 Deep Research & Alan · 3 XBRL · esc back to Circle',
-          mode: state.companySubTab === 'alan' ? 'EMBEDDED ALAN · PAPER ONLY' : 'ZERO-LLM ARITHMETIC',
+          mode: state.companySubTab === 'alan' ? 'ALAN · PAPER ONLY' : 'ZERO-LLM ARITHMETIC',
         };
       case 'journal':
         return {
@@ -965,7 +965,7 @@ export function mountWorkbench(container: HTMLElement): void {
                 : `
               <div>
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.6rem;">
-                  <span class="kv-label">EmbeddedAlan 4-Perspective Interrogation</span>
+                  <span class="kv-label">Alan 4-Perspective Interrogation</span>
                   <span class="status-pill pill-violet">Read-Only Tools</span>
                 </div>
 
@@ -1061,7 +1061,7 @@ export function mountWorkbench(container: HTMLElement): void {
               · Bound Peers: <span class="mono">${escapeHtml(ind.boundTickers.join(', '))}</span>
             </div>
           </div>
-          <span class="status-pill pill-violet">Embedded Alan 4-Lens Ready</span>
+          <span class="status-pill pill-violet">Alan 4-Lens Ready</span>
         </div>
 
         <div class="perspective-tabs" role="tablist" aria-label="Industry 4 Perspectives">
@@ -1204,8 +1204,8 @@ export function mountWorkbench(container: HTMLElement): void {
   function renderSettingsView(): string {
     const zh = state.settingsLang === 'zh';
     const budgetTip = zh
-      ? 'L0/L1 全程零 LLM；仅在手动启动 Embedded Alan 深研或行业研究时计费，到达月度上限自动拦截。'
-      : 'L0/L1 spend 0 LLM tokens. Hard ceilings block Embedded Alan L2 runs before spending.';
+      ? 'L0/L1 全程零 LLM；仅在手动启动 Alan 深研或行业研究时计费，到达月度上限自动拦截。'
+      : 'L0/L1 spend 0 LLM tokens. Hard ceilings block Alan L2 runs before spending.';
     return `
       <div class="view-toolbar">
         <div class="view-summary">${zh ? '偏好设置' : 'Settings'}</div>

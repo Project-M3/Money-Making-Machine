@@ -3530,11 +3530,7 @@ impl AppStore {
         self.agent_session_ticker.set(Some(ticker.to_owned()));
         self.agent_streaming.set(true);
         self.agent_status_hint.set(Some(
-            l.t(
-                "正在连接 EmbeddedAlan V2…",
-                "Connecting to EmbeddedAlan V2…",
-            )
-            .to_owned(),
+            l.t("正在连接 Alan…", "Connecting to Alan…").to_owned(),
         ));
 
         let short_q: String = question.chars().take(72).collect();
@@ -4242,9 +4238,7 @@ pub(crate) fn apply_interrogator_event(
                 seq,
                 call_id: None,
                 kind: TuringTapeKind::Error,
-                summary: lang
-                    .t("EmbeddedAlan 状态提示", "EmbeddedAlan status notice")
-                    .to_owned(),
+                summary: lang.t("Alan 状态提示", "Alan status notice").to_owned(),
                 detail: Some(message.clone()),
                 status: "error".to_owned(),
             });

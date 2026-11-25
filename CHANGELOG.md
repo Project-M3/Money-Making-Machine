@@ -43,13 +43,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - **L0 Full-US Lakehouse**: Bulk SEC EDGAR `submissions.zip` & `companyfacts.zip` ingestion into immutable ZSTD Parquet generations and embedded `m3.duckdb`, multi-factor screener, and SIC peer percentiles.
 - **L1 Event Inbox**: Zero-LLM-token SEC filing & news watcher with local 256-dimensional cosine + BM25 hybrid lookalike search and verbatim evidence cards.
-- **L2 Deep Research & Budget Guardrails**: `EmbeddedAlan` 4-perspective parallel interrogation behind hard monthly USD/token and weekly quota gates, plus Commercial Archetype Themes and Industry Research Studio.
+- **L2 Deep Research & Budget Guardrails**: Built-in **Alan** 4-perspective parallel interrogation behind hard monthly USD/token and weekly quota gates, plus Commercial Archetype Themes and Industry Research Studio.
 - **Bilingual Zh/En UI & Self-Updater**: Real-time language switching, `stable` / `beta` release channels, and signed/SHA-256 verified macOS distribution.
 
 ## [0.2.0] - 2026-11-19
 
 ### Added
-- Initial **Munger Focus Value Research & Decision Workbench** (`v1`), deterministic SEC EDGAR XBRL & Yahoo Finance Charlie Calculator, `EmbeddedAlan` interrogator with `M3ToolPolicyHook`, and `m3` JSON CLI.
+- Initial **Munger Focus Value Research & Decision Workbench** (`v1`), deterministic SEC EDGAR XBRL & Yahoo Finance Charlie Calculator, built-in **Alan** interrogator with `M3ToolPolicyHook`, and `m3` JSON CLI.
 
 [Unreleased]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.2...main
 [0.4.2]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.1...v0.4.2

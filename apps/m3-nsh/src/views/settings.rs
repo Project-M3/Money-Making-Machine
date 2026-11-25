@@ -441,8 +441,8 @@ fn render_budget_card(store: AppStore) -> View {
                 .lang
                 .get()
                 .t(
-                    "L0/L1 全程零 LLM；到达月度或单次硬上限后禁止启动 Embedded Alan。",
-                    "L0/L1 stay Zero-LLM. Hard ceilings block Embedded Alan L2 runs before spending.",
+                    "L0/L1 全程零 LLM；到达月度或单次硬上限后禁止启动 Alan。",
+                    "L0/L1 stay Zero-LLM. Hard ceilings block Alan L2 runs before spending.",
                 )
                 .to_owned()
         })),
@@ -679,14 +679,11 @@ fn render_budget_card(store: AppStore) -> View {
                         )),
                 )
             }))
-            // Embedded Alan Connection Profile
+            // Alan Connection Profile
             .child(dynamic(move || {
                 let l = store.lang.get();
                 setting_row_static(
-                    l.t(
-                        "Embedded Alan 模型连接配置",
-                        "Embedded Alan Connection Profile",
-                    ),
+                    l.t("Alan 模型连接配置", "Alan Connection Profile"),
                     Some(ALAN_SETUP_CMD),
                     None,
                     true,

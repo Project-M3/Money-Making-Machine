@@ -34,7 +34,7 @@ COMMANDS:
     themes            Sync and list commercial archetype theme clusters
 
   Research & Guardrails:
-    research          Run or inspect L2 EmbeddedAlan Deep Research sessions
+    research          Run or inspect L2 Alan Deep Research sessions
     budget            Inspect monthly/per-run AI research budget & usage
 
   System & Maintenance:
@@ -236,7 +236,7 @@ EXAMPLES:
 "
         }
         "research" => {
-            "m3 research — Run or inspect L2 EmbeddedAlan Deep Research sessions
+            "m3 research — Run or inspect L2 Alan Deep Research sessions
 
 USAGE:
   m3 research [status] [--ticker <SYM>] [--limit <N>]
