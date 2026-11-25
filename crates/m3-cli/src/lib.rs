@@ -1,44 +1,175 @@
+mod help;
+
 use anyhow::{Context, Result, ensure};
 use m3_core::{
     app_config,
     budget::{self, ThemesFile},
     events::{self, EventCatchupOptions},
+    industry,
     lake::{LakeDb, UniverseFilter, UniverseSortBy, UniverseSummary},
     lake_l1::{L1Summary, SignalKind, SignalStatus, SimilarSearchFilter},
     lake_l2,
     model::{Bucket, JournalAction, SyncStatusFile, parse_decimal_token},
     research::{self, DeepResearchRequest},
+    storage::{self, StorageCategory, StorageReport},
     store::{self, WorkspacePaths},
     universe::{self, UniverseSyncOptions},
-    update::{self, ReleaseChannel, UpdateOptions},
+    update::{self, ReleaseChannel, UpdateOptions, UpdateProgress, UpdateStage},
 };
 use rust_decimal::Decimal;
 use serde_json::json;
-use std::{path::PathBuf, str::FromStr, time::Instant};
+use std::{
+    io::{IsTerminal, Write as _},
+    path::PathBuf,
+    str::FromStr,
+    time::{Duration, Instant},
+};
 
-/// Dispatch CLI arguments (including `-V`, `--version`, standalone, and workspace commands),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Auto,
+    Pretty,
+    Compact,
+}
+
+fn flag_takes_value(args: &[String], flag_idx: usize) -> bool {
+    let flag = args[flag_idx].as_str();
+    let is_universe_similar = args.first().map(String::as_str) == Some("universe")
+        && args.get(1).map(String::as_str) == Some("similar");
+    if flag == "--ticker" && is_universe_similar {
+        return false;
+    }
+    matches!(
+        flag,
+        "--ticker"
+            | "--bucket"
+            | "--circle"
+            | "--name"
+            | "--reason"
+            | "--action"
+            | "--note"
+            | "--shares"
+            | "--falsification"
+            | "--min-roic"
+            | "--max-sbc-ocf"
+            | "--max-share-change-3y"
+            | "--max-net-debt-to-oe"
+            | "--min-years"
+            | "--query"
+            | "--sort"
+            | "--limit"
+            | "--prices-top"
+            | "--max-ciks"
+            | "--max-docs"
+            | "--max-news-tickers"
+            | "--type"
+            | "--status"
+            | "--kind"
+            | "--focus"
+            | "--trigger"
+            | "--channel"
+            | "--version"
+            | "--app-dir"
+            | "--bin-dir"
+            | "--manifest-url"
+    )
+}
+
+fn extract_global_format(args: &[String]) -> (OutputFormat, Vec<String>) {
+    let mut format = OutputFormat::Auto;
+    let mut cleaned = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+
+    for (idx, arg) in args.iter().enumerate() {
+        if skip_next {
+            cleaned.push(arg.clone());
+            skip_next = false;
+            continue;
+        }
+        match arg.as_str() {
+            "--pretty" => {
+                format = OutputFormat::Pretty;
+                continue;
+            }
+            "--compact" | "--json" => {
+                format = OutputFormat::Compact;
+                continue;
+            }
+            _ => {}
+        }
+        if flag_takes_value(args, idx) {
+            skip_next = true;
+        }
+        cleaned.push(arg.clone());
+    }
+
+    (format, cleaned)
+}
+
+fn maybe_handle_help(args: &[String], format: OutputFormat) -> Option<i32> {
+    if args == ["-h"] || args == ["--help"] || args == ["help"] {
+        print!("{}", help::render_root_help());
+        return Some(0);
+    }
+    if args.first().map(String::as_str) == Some("help") {
+        if let Some(topic) = args.get(1)
+            && args.len() == 2
+        {
+            if let Some(doc) = help::render_command_help(topic) {
+                print!("{doc}");
+                return Some(0);
+            }
+            return Some(print_cli_result(
+                Err(anyhow::anyhow!(
+                    "unknown help topic `{topic}`; run 'm3 --help' to see available commands"
+                )),
+                format,
+            ));
+        }
+        return Some(print_cli_result(
+            Err(anyhow::anyhow!("usage: m3 help [COMMAND]")),
+            format,
+        ));
+    }
+    if args.len() >= 2
+        && args[1..].iter().any(|a| a == "-h" || a == "--help")
+        && let Some(doc) = help::render_command_help(&args[0])
+    {
+        print!("{doc}");
+        return Some(0);
+    }
+    None
+}
+
+/// Dispatch CLI arguments (including `-h`/`--help`, `-V`/`--version`, standalone, and workspace commands),
 /// print the output to stdout, and return the process exit code (`0` or `1`).
 pub fn run_cli_args(args: &[String]) -> Result<i32> {
-    if args == ["-V"] {
+    let (format, forwarded) = extract_global_format(args);
+
+    if forwarded == ["-V"] {
         println!("m3 {}", update::current_binary_version());
         return Ok(0);
     }
-    if args == ["--version"] {
+    if forwarded == ["--version"] {
         println!("m3 {}", update::current_long_version());
         return Ok(0);
     }
-    if !args.is_empty()
-        && let Some(standalone) = run_standalone(args)
+    if let Some(help_code) = maybe_handle_help(&forwarded, format) {
+        return Ok(help_code);
+    }
+
+    if !forwarded.is_empty()
+        && let Some(standalone) = run_standalone(&forwarded)
     {
-        return Ok(print_cli_result(standalone));
+        return Ok(print_cli_result(standalone, format));
     }
 
     let repo_root = store::resolve_repo_root()?;
     let paths = WorkspacePaths::from_root(repo_root);
-    Ok(print_cli_result(run(&paths, args)))
+    Ok(print_cli_result(run(&paths, &forwarded), format))
 }
 
-fn print_cli_result(result: Result<serde_json::Value>) -> i32 {
+fn print_cli_result(result: Result<serde_json::Value>, format: OutputFormat) -> i32 {
     let (value, code) = match result {
         Ok(val) => {
             let code = if val["ok"] == false { 1 } else { 0 };
@@ -53,11 +184,21 @@ fn print_cli_result(result: Result<serde_json::Value>) -> i32 {
             1,
         ),
     };
-    println!("{value}");
+    let use_pretty = match format {
+        OutputFormat::Pretty => true,
+        OutputFormat::Compact => false,
+        OutputFormat::Auto => std::io::stdout().is_terminal(),
+    };
+    if use_pretty {
+        let formatted = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+        println!("{formatted}");
+    } else {
+        println!("{value}");
+    }
     code
 }
 
-/// Execute workspace-independent CLI subcommands (`version`, `workspace`, `update`).
+/// Execute workspace-independent CLI subcommands (`version`, `workspace`, `update`, `doctor`).
 /// Returns `None` if the subcommand requires an initialized M3 workspace.
 pub fn run_standalone(args: &[String]) -> Option<Result<serde_json::Value>> {
     let sub = args.first().map(String::as_str)?;
@@ -66,6 +207,7 @@ pub fn run_standalone(args: &[String]) -> Option<Result<serde_json::Value>> {
         "version" => Some(cmd_version(rest)),
         "workspace" => Some(cmd_workspace(rest)),
         "update" => Some(cmd_update(rest)),
+        "doctor" => Some(cmd_doctor(rest)),
         _ => None,
     }
 }
@@ -83,16 +225,16 @@ pub fn run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
         "dossier" => cmd_dossier(paths, rest),
         "add" => cmd_add(paths, rest),
         "journal" => cmd_journal(paths, rest),
+        "industry" => cmd_industry(paths, rest),
         "universe" => cmd_universe(paths, rest),
         "events" => cmd_events(paths, rest),
         "inbox" => cmd_inbox(paths, rest),
         "research" => cmd_research(paths, rest),
         "budget" => cmd_budget(paths, rest),
         "themes" => cmd_themes(paths, rest),
+        "storage" => cmd_storage(paths, rest),
         "start" => cmd_start(paths),
-        _ => anyhow::bail!(
-            "usage: m3 status | sync [--ticker SYM] [--prices-only] | report <SYM> | dossier <SYM> | add <SYM> ... | journal [list|record ...] | universe [status|sync|screen|peers|similar ...] | events [catchup|list ...] | inbox [list|triage ...] | research [run|status ...] | budget status | themes [list|sync] | version | workspace [show|set <PATH>] | update [--check] [--channel stable|beta] [channel [stable|beta]] | start"
-        ),
+        _ => anyhow::bail!("unknown command `{sub}`; run 'm3 --help' to see available commands"),
     }
 }
 
@@ -1202,6 +1344,38 @@ fn cmd_workspace(args: &[String]) -> Result<serde_json::Value> {
     }
 }
 
+fn update_stage_label(stage: UpdateStage) -> &'static str {
+    match stage {
+        UpdateStage::Resolving => "Resolving release",
+        UpdateStage::Downloading => "Downloading archive",
+        UpdateStage::Verifying => "Verifying SHA-256",
+        UpdateStage::Extracting => "Extracting bundle",
+        UpdateStage::Installing => "Installing app",
+        UpdateStage::Completed => "Completed",
+    }
+}
+
+fn render_update_progress(progress: &UpdateProgress) -> String {
+    const BAR_WIDTH: usize = 20;
+    let clamped = progress.fraction.clamp(0.0, 1.0);
+    let pct = (clamped * 100.0).round() as u32;
+    let filled = ((clamped * BAR_WIDTH as f32).round() as usize).min(BAR_WIDTH);
+    let empty = BAR_WIDTH.saturating_sub(filled);
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+    let label = update_stage_label(progress.stage);
+
+    if progress.stage == UpdateStage::Downloading {
+        let dl = storage::format_bytes(progress.downloaded_bytes);
+        if let Some(total) = progress.total_bytes.filter(|t| *t > 0) {
+            let tot = storage::format_bytes(total);
+            return format!("[{bar}] {pct:>3}% · {label} ({dl} / {tot})");
+        }
+        return format!("[{bar}] {pct:>3}% · {label} ({dl})");
+    }
+
+    format!("[{bar}] {pct:>3}% · {label}")
+}
+
 fn cmd_update(args: &[String]) -> Result<serde_json::Value> {
     if args.first().map(String::as_str) == Some("channel") {
         let rest = args.get(1..).unwrap_or(&[]);
@@ -1244,13 +1418,39 @@ fn cmd_update(args: &[String]) -> Result<serde_json::Value> {
                 opts.manifest_url = Some(raw.clone());
             }
             other => anyhow::bail!(
-                "unknown update argument `{other}`; usage: m3 update [--check] [--channel stable|beta] [--version VER] [--force] [--app-dir DIR] [--bin-dir DIR] [--no-cli-link] [--manifest-url URL] [--json] | channel [stable|beta]"
+                "unknown update argument `{other}`; usage: m3 update [--check] [--channel stable|beta] [--version VER] [--force] [--app-dir DIR] [--bin-dir DIR] [--no-cli-link] [--manifest-url URL] | channel [stable|beta]"
             ),
         }
         i += 1;
     }
 
-    let report = update::run_update(&opts)?;
+    let report = if !opts.check_only && std::io::stderr().is_terminal() {
+        let mut last_stage: Option<UpdateStage> = None;
+        let mut last_draw: Option<Instant> = None;
+        let mut drew_any = false;
+        let result = update::run_update_with_progress(&opts, |progress| {
+            let now = Instant::now();
+            let stage_changed = last_stage != Some(progress.stage);
+            let throttle_elapsed = last_draw
+                .map(|prev| now.duration_since(prev) >= Duration::from_millis(80))
+                .unwrap_or(true);
+            if stage_changed || progress.stage == UpdateStage::Completed || throttle_elapsed {
+                let line = render_update_progress(&progress);
+                let mut err = std::io::stderr();
+                let _ = write!(err, "\r\x1b[2K  {line}");
+                let _ = err.flush();
+                last_stage = Some(progress.stage);
+                last_draw = Some(now);
+                drew_any = true;
+            }
+        });
+        if drew_any {
+            let _ = writeln!(std::io::stderr());
+        }
+        result?
+    } else {
+        update::run_update(&opts)?
+    };
     Ok(json!({
         "schema_version": 1,
         "ok": true,
@@ -1282,6 +1482,343 @@ fn cmd_update_channel(args: &[String]) -> Result<serde_json::Value> {
         "schema_version": 1,
         "ok": true,
         "data": status
+    }))
+}
+
+fn storage_report_to_json(report: &StorageReport) -> serde_json::Value {
+    let categories = report
+        .categories
+        .iter()
+        .map(|cat| {
+            json!({
+                "category": cat.category,
+                "bytes": cat.bytes,
+                "human": storage::format_bytes(cat.bytes),
+                "file_count": cat.file_count,
+                "cleanable": cat.cleanable,
+                "reveal_path": cat.reveal_path.display().to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "total_bytes": report.total_bytes,
+        "total_human": storage::format_bytes(report.total_bytes),
+        "cleanable_bytes": report.cleanable_bytes,
+        "cleanable_human": storage::format_bytes(report.cleanable_bytes),
+        "scanned_at_ms": report.scanned_at_ms,
+        "categories": categories,
+    })
+}
+
+fn parse_storage_clean_targets(raw: &str) -> Result<Vec<StorageCategory>> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "sec_bulk_archives" | "sec-bulk" => Ok(vec![StorageCategory::SecBulkArchives]),
+        "sec_filings_cache" | "sec-filings" => Ok(vec![StorageCategory::SecFilingsCache]),
+        "duckdb_lakehouse" | "duck_db_lakehouse" | "duckdb" => {
+            Ok(vec![StorageCategory::DuckDbLakehouse])
+        }
+        "quotes_and_cache" | "quotes" => Ok(vec![StorageCategory::QuotesAndCache]),
+        "personal_workbench" | "workbench" => Ok(vec![StorageCategory::PersonalWorkbench]),
+        "all" => Ok(vec![
+            StorageCategory::SecBulkArchives,
+            StorageCategory::SecFilingsCache,
+            StorageCategory::DuckDbLakehouse,
+            StorageCategory::QuotesAndCache,
+        ]),
+        _ => anyhow::bail!(
+            "unknown storage category `{raw}`; use sec_bulk_archives | sec_filings_cache | duckdb_lakehouse | quotes_and_cache | all"
+        ),
+    }
+}
+
+fn cmd_storage(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let updater_dir = app_config::M3Paths::resolve().ok().map(|p| p.updater_dir());
+    cmd_storage_with_updater(paths, args, updater_dir.as_deref())
+}
+
+fn cmd_storage_with_updater(
+    paths: &WorkspacePaths,
+    args: &[String],
+    updater_dir: Option<&std::path::Path>,
+) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("status");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "status" => {
+            if let Some(unexpected) = rest.first() {
+                anyhow::bail!("unknown storage status argument: {unexpected}");
+            }
+            let report = storage::scan_workspace_storage(paths, updater_dir);
+            Ok(json!({
+                "schema_version": 1,
+                "ok": true,
+                "data": storage_report_to_json(&report),
+            }))
+        }
+        "clean" => {
+            let target_raw = rest
+                .first()
+                .filter(|s| !s.starts_with('-'))
+                .context("usage: m3 storage clean <CATEGORY|all>")?;
+            if let Some(extra) = rest.get(1) {
+                anyhow::bail!("unexpected extra argument for storage clean: {extra}");
+            }
+            let targets = parse_storage_clean_targets(target_raw)?;
+            let mut freed_bytes = 0u64;
+            for category in &targets {
+                let freed = storage::clean_storage_category(paths, updater_dir, *category)?;
+                freed_bytes = freed_bytes.saturating_add(freed);
+            }
+            let after = storage::scan_workspace_storage(paths, updater_dir);
+            Ok(json!({
+                "schema_version": 1,
+                "ok": true,
+                "data": {
+                    "cleaned_categories": targets,
+                    "freed_bytes": freed_bytes,
+                    "freed_human": storage::format_bytes(freed_bytes),
+                    "storage": storage_report_to_json(&after),
+                }
+            }))
+        }
+        _ => anyhow::bail!("usage: m3 storage [status | clean <CATEGORY|all>]"),
+    }
+}
+
+fn cmd_industry(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("list");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "list" => {
+            if let Some(unexpected) = rest.first() {
+                anyhow::bail!("unknown industry list argument: {unexpected}");
+            }
+            let profiles = industry::list_industries(paths)?;
+            let items = profiles
+                .iter()
+                .map(|p| {
+                    let feynman_done = p.feynman_checked.iter().filter(|&&done| done).count();
+                    let primer_path = paths.industry_primer_path(&p.slug);
+                    json!({
+                        "slug": p.slug,
+                        "title": p.title,
+                        "status": p.status,
+                        "sic_codes": p.sic_codes,
+                        "bound_tickers": p.bound_tickers,
+                        "valuation_anchor": p.valuation_anchor_label(),
+                        "feynman_done": feynman_done,
+                        "feynman_total": p.feynman_questions.len(),
+                        "has_primer": primer_path.exists(),
+                        "updated_at_ms": p.updated_at_ms,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "schema_version": 1,
+                "ok": true,
+                "data": {
+                    "count": items.len(),
+                    "industries": items,
+                }
+            }))
+        }
+        "show" => {
+            let slug = rest
+                .first()
+                .filter(|s| !s.starts_with('-'))
+                .context("usage: m3 industry show <SLUG>")?;
+            if let Some(extra) = rest.get(1) {
+                anyhow::bail!("unexpected extra argument for industry show: {extra}");
+            }
+            let profile = industry::load_industry(paths, slug)?;
+            let primer_path = paths.industry_primer_path(&profile.slug);
+            let primer_markdown = industry::load_industry_primer_md(paths, &profile.slug);
+            Ok(json!({
+                "schema_version": 1,
+                "ok": true,
+                "data": {
+                    "profile": profile,
+                    "primer_path": primer_path.exists().then(|| primer_path.display().to_string()),
+                    "primer_markdown": primer_markdown,
+                }
+            }))
+        }
+        _ => anyhow::bail!("usage: m3 industry [list | show <SLUG>]"),
+    }
+}
+
+fn binary_on_host(name: &str) -> Option<String> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|raw| std::env::split_paths(&raw).collect())
+        .unwrap_or_default();
+    for fallback in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+        let p = PathBuf::from(fallback);
+        if !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let local_bin = PathBuf::from(home).join(".local/bin");
+        if !dirs.contains(&local_bin) {
+            dirs.push(local_bin);
+        }
+    }
+    for dir in dirs {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.display().to_string());
+        }
+    }
+    None
+}
+
+fn cmd_doctor(args: &[String]) -> Result<serde_json::Value> {
+    if let Some(unexpected) = args.first() {
+        anyhow::bail!("unknown doctor argument: {unexpected}");
+    }
+    let resolved_paths = store::resolve_repo_root()
+        .ok()
+        .map(WorkspacePaths::from_root);
+    let updater_dir = app_config::M3Paths::resolve().ok().map(|p| p.updater_dir());
+    cmd_doctor_for_workspace(resolved_paths.as_ref(), updater_dir.as_deref())
+}
+
+fn cmd_doctor_for_workspace(
+    workspace: Option<&WorkspacePaths>,
+    updater_dir: Option<&std::path::Path>,
+) -> Result<serde_json::Value> {
+    let (effective_channel, channel_source) = update::effective_channel();
+    let config_path = app_config::config_path().ok();
+    let config_exists = config_path.as_ref().is_some_and(|p| p.exists());
+
+    let mut checks = Vec::new();
+    checks.push(json!({
+        "id": "binary",
+        "ok": true,
+        "detail": update::current_long_version(),
+    }));
+    checks.push(json!({
+        "id": "config",
+        "ok": config_path.is_some(),
+        "detail": config_path.as_ref().map(|p| p.display().to_string()),
+    }));
+
+    let workspace_info = if let Some(paths) = workspace {
+        let ws_exists = paths.repo_root.exists();
+        let watchlist_count = store::load_watchlist(paths)
+            .map(|w| w.companies.len())
+            .unwrap_or(0);
+        let journal_count = store::load_journal(paths)
+            .map(|j| j.entries.len())
+            .unwrap_or(0);
+        let industries_count = industry::list_industries(paths)
+            .map(|list| list.len())
+            .unwrap_or(0);
+        let lake_db_path = paths.lake_db_path();
+        let duckdb_exists = lake_db_path.exists();
+        let (l0_companies, l1_signals) = match LakeDb::open_read_only_if_exists(paths) {
+            Ok(Some(db)) => {
+                let l0 = db
+                    .universe_summary()
+                    .map(|u| u.total_companies)
+                    .unwrap_or(0);
+                let l1 = db.l1_summary().map(|s| s.total_signals).unwrap_or(0);
+                (l0, l1)
+            }
+            _ => (0, 0),
+        };
+        let storage_report = storage::scan_workspace_storage(paths, updater_dir);
+
+        checks.push(json!({
+            "id": "workspace",
+            "ok": ws_exists,
+            "detail": paths.repo_root.display().to_string(),
+        }));
+        checks.push(json!({
+            "id": "lakehouse",
+            "ok": duckdb_exists,
+            "detail": if duckdb_exists {
+                format!("{l0_companies} L0 companies, {l1_signals} L1 signals")
+            } else {
+                "m3.duckdb not initialized yet".to_owned()
+            },
+        }));
+
+        Some(json!({
+            "root": paths.repo_root.display().to_string(),
+            "exists": ws_exists,
+            "watchlist_companies": watchlist_count,
+            "journal_entries": journal_count,
+            "industries_count": industries_count,
+            "duckdb_path": lake_db_path.display().to_string(),
+            "duckdb_exists": duckdb_exists,
+            "l0_companies": l0_companies,
+            "l1_signals": l1_signals,
+            "storage": {
+                "total_bytes": storage_report.total_bytes,
+                "total_human": storage::format_bytes(storage_report.total_bytes),
+                "cleanable_bytes": storage_report.cleanable_bytes,
+                "cleanable_human": storage::format_bytes(storage_report.cleanable_bytes),
+            },
+        }))
+    } else {
+        checks.push(json!({
+            "id": "workspace",
+            "ok": false,
+            "detail": "unable to resolve active M3 workspace",
+        }));
+        None
+    };
+
+    let app_bundle = PathBuf::from("/Applications/M3.app");
+    let app_bundle_installed = app_bundle.exists();
+    let gh_path = binary_on_host("gh");
+    let alan_path = binary_on_host("alan");
+
+    checks.push(json!({
+        "id": "desktop_app",
+        "ok": app_bundle_installed,
+        "detail": if app_bundle_installed {
+            app_bundle.display().to_string()
+        } else {
+            "/Applications/M3.app not installed".to_owned()
+        },
+    }));
+
+    let healthy = checks
+        .iter()
+        .filter(|c| matches!(c["id"].as_str(), Some("binary" | "workspace")))
+        .all(|c| c["ok"] == true);
+
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "healthy": healthy,
+            "binary": {
+                "version": update::current_binary_version(),
+                "long_version": update::current_long_version(),
+                "channel": update::current_binary_channel().as_str(),
+                "effective_channel": effective_channel.as_str(),
+                "channel_source": channel_source.as_str(),
+                "commit": update::current_build_commit(),
+                "target": update::semver::current_target_triple().ok(),
+                "exe_path": std::env::current_exe().ok().map(|p| p.display().to_string()),
+            },
+            "config": {
+                "path": config_path.map(|p| p.display().to_string()),
+                "exists": config_exists,
+            },
+            "workspace": workspace_info,
+            "host_tools": {
+                "app_bundle_path": app_bundle.display().to_string(),
+                "app_bundle_installed": app_bundle_installed,
+                "gh_path": gh_path,
+                "alan_path": alan_path,
+            },
+            "checks": checks,
+        }
     }))
 }
 
@@ -2843,6 +3380,221 @@ mod tests {
         assert_eq!(b_after["data"]["usage"]["completed_runs"], 1);
         assert_eq!(b_after["data"]["usage"]["blocked_runs"], 1);
         assert_eq!(b_after["data"]["usage"]["total_cost_usd"], "0.15");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_help_covers_all_commands_and_extracts_global_flags() {
+        let root = help::render_root_help();
+        let commands = [
+            "status",
+            "sync",
+            "report",
+            "dossier",
+            "add",
+            "journal",
+            "industry",
+            "start",
+            "universe",
+            "events",
+            "inbox",
+            "themes",
+            "research",
+            "budget",
+            "storage",
+            "doctor",
+            "workspace",
+            "update",
+            "version",
+            "help",
+        ];
+        for cmd in commands {
+            assert!(root.contains(cmd), "root help missing `{cmd}`");
+            assert!(
+                help::render_command_help(cmd).is_some(),
+                "command help missing for `{cmd}`"
+            );
+        }
+        assert!(help::render_command_help("nonexistent-command").is_none());
+
+        let (fmt_pretty, stripped_pretty) =
+            extract_global_format(&["status".into(), "--pretty".into()]);
+        assert_eq!(fmt_pretty, OutputFormat::Pretty);
+        assert_eq!(stripped_pretty, vec!["status".to_string()]);
+
+        let (fmt_compact, stripped_compact) =
+            extract_global_format(&["--json".into(), "doctor".into()]);
+        assert_eq!(fmt_compact, OutputFormat::Compact);
+        assert_eq!(stripped_compact, vec!["doctor".to_string()]);
+
+        let (fmt_note_literal, preserved_note) = extract_global_format(&[
+            "journal".into(),
+            "record".into(),
+            "--note".into(),
+            "--pretty".into(),
+        ]);
+        assert_eq!(fmt_note_literal, OutputFormat::Auto);
+        assert_eq!(
+            preserved_note,
+            vec![
+                "journal".to_string(),
+                "record".to_string(),
+                "--note".to_string(),
+                "--pretty".to_string(),
+            ]
+        );
+
+        let (fmt_similar, stripped_similar) = extract_global_format(&[
+            "universe".into(),
+            "similar".into(),
+            "AAPL".into(),
+            "--ticker".into(),
+            "--pretty".into(),
+        ]);
+        assert_eq!(fmt_similar, OutputFormat::Pretty);
+        assert_eq!(
+            stripped_similar,
+            vec![
+                "universe".to_string(),
+                "similar".to_string(),
+                "AAPL".to_string(),
+                "--ticker".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn cli_storage_status_and_clean_protects_workbench() {
+        let dir = std::env::temp_dir().join(format!(
+            "m3-cli-storage-{}-{}",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let paths = WorkspacePaths::from_root(dir.clone());
+        fs::create_dir_all(paths.lake_raw_sec_dir()).unwrap();
+        fs::create_dir_all(paths.data_dir.join("raw")).unwrap();
+        fs::create_dir_all(&paths.workbench_dir).unwrap();
+
+        fs::write(paths.lake_raw_sec_dir().join("bulk.zip"), vec![b's'; 1500]).unwrap();
+        fs::write(paths.data_dir.join("raw/prices.json"), vec![b'q'; 400]).unwrap();
+        let watchlist = paths.workbench_dir.join("watchlist.json");
+        fs::write(&watchlist, br#"{"schema_version":1,"companies":[]}"#).unwrap();
+
+        let status = cmd_storage_with_updater(&paths, &["status".into()], None).unwrap();
+        assert_eq!(status["schema_version"], 1);
+        assert_eq!(status["ok"], true);
+        assert!(status["data"]["cleanable_bytes"].as_u64().unwrap() >= 1900);
+
+        let via_run = run(&paths, &["storage".into(), "status".into()]).unwrap();
+        assert_eq!(via_run["ok"], true);
+
+        let blocked_err =
+            cmd_storage_with_updater(&paths, &["clean".into(), "personal_workbench".into()], None)
+                .unwrap_err();
+        assert!(blocked_err.to_string().contains("protected"));
+        assert!(watchlist.exists());
+
+        let cleaned_sec =
+            cmd_storage_with_updater(&paths, &["clean".into(), "sec_bulk_archives".into()], None)
+                .unwrap();
+        assert_eq!(cleaned_sec["ok"], true);
+        assert_eq!(cleaned_sec["data"]["freed_bytes"], 1500);
+        assert!(watchlist.exists());
+
+        let cleaned_all =
+            cmd_storage_with_updater(&paths, &["clean".into(), "all".into()], None).unwrap();
+        assert_eq!(cleaned_all["ok"], true);
+        assert_eq!(cleaned_all["data"]["freed_bytes"], 400);
+        assert_eq!(cleaned_all["data"]["storage"]["cleanable_bytes"], 0);
+        assert!(watchlist.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_industry_list_and_show_emit_valid_schema() {
+        let dir = std::env::temp_dir().join(format!(
+            "m3-cli-industry-{}-{}",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let paths = WorkspacePaths::from_root(dir.clone());
+        fs::create_dir_all(paths.industries_dir()).unwrap();
+
+        let profile = industry::IndustryProfile {
+            slug: "credit-ratings".into(),
+            title: "Credit Ratings Oligopoly".into(),
+            status: industry::IndustryStatus::InsideCircle,
+            sic_codes: vec![7320],
+            keywords: vec!["ratings".into(), "royalty".into()],
+            bound_tickers: vec!["MCO".into()],
+            multiple_low: Some(Decimal::from(20)),
+            multiple_high: Some(Decimal::from(25)),
+            key_kpis: vec!["Issuance volume".into()],
+            feynman_questions: vec!["Why do issuers pay for two ratings?".into()],
+            feynman_checked: vec![true],
+            human_notes: "Regulatory moat.".into(),
+            created_at_ms: 1000,
+            updated_at_ms: 2000,
+            last_research_run_id: None,
+        };
+        industry::save_industry(&paths, &profile).unwrap();
+        industry::write_industry_primer_preserving_human_notes(
+            &paths,
+            "credit-ratings",
+            "# Credit Ratings\nToll-bridge economics.",
+            Some("Human memo"),
+        )
+        .unwrap();
+
+        let listed = run(&paths, &["industry".into(), "list".into()]).unwrap();
+        assert_eq!(listed["schema_version"], 1);
+        assert_eq!(listed["ok"], true);
+        assert_eq!(listed["data"]["count"], 1);
+        assert_eq!(listed["data"]["industries"][0]["slug"], "credit-ratings");
+        assert_eq!(listed["data"]["industries"][0]["has_primer"], true);
+        assert_eq!(listed["data"]["industries"][0]["feynman_done"], 1);
+
+        let shown = run(
+            &paths,
+            &["industry".into(), "show".into(), "credit-ratings".into()],
+        )
+        .unwrap();
+        assert_eq!(shown["ok"], true);
+        assert_eq!(
+            shown["data"]["profile"]["title"],
+            "Credit Ratings Oligopoly"
+        );
+        assert!(
+            shown["data"]["primer_markdown"]
+                .as_str()
+                .unwrap()
+                .contains("Toll-bridge economics")
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_doctor_emits_valid_schema() {
+        let dir = std::env::temp_dir().join(format!(
+            "m3-cli-doctor-{}-{}",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workbench")).unwrap();
+        let paths = WorkspacePaths::from_root(dir.clone());
+
+        let report = cmd_doctor_for_workspace(Some(&paths), None).unwrap();
+        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["ok"], true);
+        assert_eq!(report["data"]["healthy"], true);
+        assert!(report["data"]["checks"].as_array().unwrap().len() >= 4);
+        assert_eq!(report["data"]["workspace"]["exists"], true);
 
         let _ = fs::remove_dir_all(&dir);
     }
