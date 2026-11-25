@@ -466,3 +466,51 @@ fn channel_selection_roundtrips_with_explicit_m3_paths() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn update_progress_fractions_increase_monotonically_across_stages() {
+    use super::{UpdateProgress, UpdateStage};
+
+    let resolving = UpdateProgress::for_stage(UpdateStage::Resolving, 0, None);
+    let dl_start = UpdateProgress::for_stage(UpdateStage::Downloading, 0, Some(1_000));
+    let dl_mid = UpdateProgress::for_stage(UpdateStage::Downloading, 500, Some(1_000));
+    let dl_end = UpdateProgress::for_stage(UpdateStage::Downloading, 1_000, Some(1_000));
+    let verifying = UpdateProgress::for_stage(UpdateStage::Verifying, 1_000, Some(1_000));
+    let extracting = UpdateProgress::for_stage(UpdateStage::Extracting, 1_000, Some(1_000));
+    let installing = UpdateProgress::for_stage(UpdateStage::Installing, 1_000, Some(1_000));
+    let completed = UpdateProgress::for_stage(UpdateStage::Completed, 1_000, Some(1_000));
+
+    assert!(resolving.fraction <= dl_start.fraction);
+    assert!(dl_start.fraction < dl_mid.fraction);
+    assert!(dl_mid.fraction < dl_end.fraction);
+    assert!(dl_end.fraction < verifying.fraction);
+    assert!(verifying.fraction < extracting.fraction);
+    assert!(extracting.fraction < installing.fraction);
+    assert!(installing.fraction < completed.fraction);
+    assert!((completed.fraction - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn os_worker_thread_drops_reqwest_blocking_client_cleanly_from_tokio_runtime() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let res = rt.block_on(async {
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        std::thread::Builder::new()
+            .name("m3-worker-test".into())
+            .spawn(move || {
+                let built = reqwest::blocking::Client::builder()
+                    .build()
+                    .map(|_client| ())
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(built);
+            })
+            .unwrap();
+        rx.await.unwrap()
+    });
+
+    assert!(res.is_ok(), "unexpected error: {res:?}");
+}

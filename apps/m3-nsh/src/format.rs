@@ -1124,3 +1124,38 @@ pub fn apply_deep_research_event_compat(
         }
     }
 }
+
+/// Formats a live [`m3_core::update::UpdateProgress`] payload for Settings & Sidebar Dock.
+pub fn format_update_progress(p: &m3_core::update::UpdateProgress, lang: UiLang) -> String {
+    use m3_core::storage::format_bytes;
+    use m3_core::update::UpdateStage;
+
+    match p.stage {
+        UpdateStage::Resolving => lang
+            .t("正在获取版本清单…", "Resolving release manifest…")
+            .to_owned(),
+        UpdateStage::Downloading => match p.total_bytes {
+            Some(total) if total > 0 => {
+                let pct =
+                    ((p.downloaded_bytes.min(total) as f64 / total as f64) * 100.0).round() as u32;
+                let got = format_bytes(p.downloaded_bytes);
+                let all = format_bytes(total);
+                match lang {
+                    UiLang::Zh => format!("下载中 {got} / {all} ({pct}%)"),
+                    UiLang::En => format!("Downloading {got} / {all} ({pct}%)"),
+                }
+            }
+            _ => {
+                let got = format_bytes(p.downloaded_bytes);
+                match lang {
+                    UiLang::Zh => format!("下载中 {got}…"),
+                    UiLang::En => format!("Downloading {got}…"),
+                }
+            }
+        },
+        UpdateStage::Verifying => lang.t("正在校验 SHA-256…", "Verifying SHA-256…").to_owned(),
+        UpdateStage::Extracting => lang.t("正在解压 M3.app…", "Extracting M3.app…").to_owned(),
+        UpdateStage::Installing => lang.t("正在原子替换安装…", "Installing update…").to_owned(),
+        UpdateStage::Completed => lang.t("安装完成", "Install complete").to_owned(),
+    }
+}

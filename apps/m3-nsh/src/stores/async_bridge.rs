@@ -1,31 +1,40 @@
-//! Event-driven Tokio -> NSH Signal async bridge (zero idle polling).
+//! Event-driven Worker Thread -> NSH Signal async bridge (zero idle polling).
 //!
-//! Uses `tokio::sync::mpsc::unbounded_channel`, `nsh_core::prelude::spawn`,
-//! and `nsh_core::prelude::blocking` so background DuckDB/SEC/LLM workers wake
-//! the NSH engine thread immediately via `TaskWaker` instead of polling timers.
+//! Spawns plain OS worker threads (`m3-worker`, outside Tokio's `spawn_blocking`
+//! context so `reqwest::blocking::Client` never panics on drop) and wakes the
+//! NSH engine thread immediately via `oneshot` / `mpsc` channels.
 
-use nsh_core::prelude::{blocking, spawn};
+use nsh_core::prelude::spawn;
 use std::sync::Arc;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, oneshot};
 
-/// Runs a blocking closure on Tokio's blocking pool and delivers the result back on the engine thread.
+/// Runs a blocking closure on a plain OS worker thread and delivers the result back on the engine thread.
 pub fn run_blocking_result<T, F, C>(work: F, on_done: C)
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
     C: FnOnce(T) + 'static,
 {
+    let (tx, rx) = oneshot::channel::<T>();
+    if let Err(err) = std::thread::Builder::new()
+        .name("m3-worker".into())
+        .spawn(move || {
+            let result = work();
+            let _ = tx.send(result);
+        })
+    {
+        log::warn!("m3-nsh failed to spawn worker thread: {err}");
+    }
     spawn(async move {
-        match blocking(work).await {
-            Ok(result) => on_done(result),
-            Err(err) => {
-                log::warn!("m3-nsh blocking task failed to join: {err}");
-            }
+        if let Ok(result) = rx.await {
+            on_done(result);
+        } else {
+            log::warn!("m3-nsh blocking worker exited without delivering a result");
         }
     });
 }
 
-/// Runs a streaming blocking task using an `unbounded_channel` for zero-poll event delivery.
+/// Runs a streaming blocking task using a plain OS worker thread and `unbounded_channel`.
 ///
 /// Each event sent to `tx` immediately wakes the engine-thread `spawn` task via `rx.recv().await`.
 pub fn run_streamed_blocking<E, F, C, D>(work: F, mut on_event: C, on_finished: D)
@@ -36,12 +45,16 @@ where
     D: FnOnce() + 'static,
 {
     let (tx, mut rx) = mpsc::unbounded_channel::<E>();
-    let join = blocking(move || work(tx));
+    if let Err(err) = std::thread::Builder::new()
+        .name("m3-worker".into())
+        .spawn(move || work(tx))
+    {
+        log::warn!("m3-nsh failed to spawn streaming worker thread: {err}");
+    }
     spawn(async move {
         while let Some(ev) = rx.recv().await {
             on_event(ev);
         }
-        let _ = join.await;
         on_finished();
     });
 }

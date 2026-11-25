@@ -182,6 +182,26 @@ pub fn concept_hint_static(explanation: &str) -> View {
     concept_hint(move || owned.clone())
 }
 
+/// Horizontal Obsidian progress track (`0.0..=1.0`).
+pub fn progress_bar(fraction: f32, fill_color: u32) -> View {
+    let f = fraction.clamp(0.02, 1.0);
+    let mut track = view()
+        .w_full()
+        .h(px(5.0))
+        .rounded_full()
+        .bg(rgb(BG_WELL))
+        .border_1()
+        .border_color(rgb(BORDER_HAIRLINE))
+        .overflow_hidden()
+        .flex()
+        .flex_row()
+        .child(view().w(px(0.0)).flex_grow(f).h_full().bg(rgb(fill_color)));
+    if f < 1.0 {
+        track = track.child(view().w(px(0.0)).flex_grow(1.0 - f).h_full());
+    }
+    track
+}
+
 /// Compact clickable action button in Obsidian style.
 pub fn action_button<M>(
     label: impl IntoReactive<SharedString>,

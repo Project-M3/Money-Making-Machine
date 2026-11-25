@@ -196,6 +196,7 @@ pub struct AppStore {
     pub update_checking: Signal<bool>,
     pub update_applying: Signal<bool>,
     pub update_progress: Signal<Option<String>>,
+    pub update_progress_detail: Signal<Option<update::UpdateProgress>>,
     pub update_applied_version: Signal<Option<String>>,
     pub settings_monthly_budget_draft: Signal<String>,
     pub settings_monthly_tokens_draft: Signal<String>,
@@ -613,6 +614,7 @@ impl AppStore {
             update_checking: signal(false),
             update_applying: signal(false),
             update_progress: signal(None),
+            update_progress_detail: signal_with(None, SignalEquals::Never),
             update_applied_version: signal(None),
             settings_monthly_budget_draft: signal(initial_budget.monthly_budget_usd.to_string()),
             settings_monthly_tokens_draft: signal(initial_budget.monthly_token_limit.to_string()),
@@ -3885,76 +3887,107 @@ impl AppStore {
 
     pub fn start_update_apply(self) {
         let l = self.lang.get_untracked();
-        if self.update_applying.get_untracked() || self.update_checking.get_untracked() {
+        if self.update_applying.get_untracked() {
+            return;
+        }
+        if self.update_checking.get_untracked() {
             self.set_info_notice(
-                l.t("正在处理更新任务，请稍候…", "Update task already running…")
+                l.t("正在检查更新，请稍候…", "Checking for updates…")
                     .to_owned(),
             );
             return;
         }
         let target_channel = self.update_channel.get_untracked();
+        let initial = update::UpdateProgress::for_stage(update::UpdateStage::Resolving, 0, None);
         self.update_applying.set(true);
-        self.update_progress.set(Some(
-            l.t("正在下载并校验更新…", "Downloading and verifying update…")
-                .to_owned(),
-        ));
-        self.set_info_notice(match l {
-            UiLang::Zh => format!("正在从 {} 通道下载并校验 M3 更新…", target_channel.as_str()),
-            UiLang::En => format!(
-                "Downloading and verifying M3 update from {} channel…",
-                target_channel.as_str()
-            ),
-        });
-        run_blocking_result(
-            move || {
-                update::run_update(&UpdateOptions {
-                    check_only: false,
-                    channel: Some(target_channel),
-                    ..Default::default()
-                })
-                .map_err(|e| format!("{e:#}"))
+        self.update_progress
+            .set(Some(crate::format::format_update_progress(&initial, l)));
+        self.update_progress_detail.set(Some(initial));
+        if self
+            .notice
+            .with_untracked(|n| n.as_ref().is_some_and(|(_, err)| !*err))
+        {
+            self.clear_notice();
+        }
+
+        enum UpdateApplyEvent {
+            Progress(update::UpdateProgress),
+            Finished(Box<Result<UpdateReport, String>>),
+        }
+
+        run_streamed_blocking(
+            move |tx| {
+                let res = update::run_update_with_progress(
+                    &UpdateOptions {
+                        check_only: false,
+                        channel: Some(target_channel),
+                        ..Default::default()
+                    },
+                    |progress| {
+                        let _ = tx.send(UpdateApplyEvent::Progress(progress));
+                    },
+                )
+                .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(UpdateApplyEvent::Finished(Box::new(res)));
             },
-            move |res: Result<UpdateReport, String>| {
-                self.update_applying.set(false);
-                self.update_progress.set(None);
-                let l = self.lang.get_untracked();
-                match res {
-                    Ok(report) => {
-                        if let Ok(ch) = ReleaseChannel::parse(&report.channel) {
-                            self.update_channel.set(ch);
+            move |ev| match ev {
+                UpdateApplyEvent::Progress(p) => {
+                    let cur_lang = self.lang.get_untracked();
+                    self.update_progress
+                        .set(Some(crate::format::format_update_progress(&p, cur_lang)));
+                    self.update_progress_detail.set(Some(p));
+                }
+                UpdateApplyEvent::Finished(res) => {
+                    let res = *res;
+                    self.update_applying.set(false);
+                    self.update_progress.set(None);
+                    self.update_progress_detail.set(None);
+                    let l = self.lang.get_untracked();
+                    match res {
+                        Ok(report) => {
+                            if let Ok(ch) = ReleaseChannel::parse(&report.channel) {
+                                self.update_channel.set(ch);
+                            }
+                            self.update_notice.set(None);
+                            if report.updated {
+                                self.update_applied_version
+                                    .set(Some(report.target_version.clone()));
+                                self.set_info_notice(match l {
+                                    UiLang::Zh => format!(
+                                        "已安装 M3 v{}（{}），点击「重启」以生效",
+                                        report.target_version, report.channel
+                                    ),
+                                    UiLang::En => format!(
+                                        "Installed M3 v{} ({}) — click Restart to apply",
+                                        report.target_version, report.channel
+                                    ),
+                                });
+                            } else {
+                                self.set_info_notice(match l {
+                                    UiLang::Zh => {
+                                        format!("当前已是最新版本 (v{})", report.current_version)
+                                    }
+                                    UiLang::En => format!(
+                                        "Already running the latest version (v{})",
+                                        report.current_version
+                                    ),
+                                });
+                            }
                         }
-                        self.update_notice.set(None);
-                        if report.updated {
-                            self.update_applied_version
-                                .set(Some(report.target_version.clone()));
-                            self.set_info_notice(match l {
-                                UiLang::Zh => format!(
-                                    "已安装 M3 v{}（{}），点击「重启」以生效",
-                                    report.target_version, report.channel
-                                ),
-                                UiLang::En => format!(
-                                    "Installed M3 v{} ({}) — click Restart to apply",
-                                    report.target_version, report.channel
-                                ),
-                            });
-                        } else {
-                            self.set_info_notice(match l {
-                                UiLang::Zh => {
-                                    format!("当前已是最新版本 (v{})", report.current_version)
-                                }
-                                UiLang::En => format!(
-                                    "Already running the latest version (v{})",
-                                    report.current_version
-                                ),
-                            });
+                        Err(err) => {
+                            self.set_error_notice(format!(
+                                "{}: {err}",
+                                l.t("安装更新失败", "Update install failed")
+                            ));
                         }
                     }
-                    Err(err) => {
-                        self.set_error_notice(format!(
-                            "{}: {err}",
-                            l.t("安装更新失败", "Update install failed")
-                        ));
-                    }
+                }
+            },
+            move || {
+                if self.update_applying.get_untracked() {
+                    self.update_applying.set(false);
+                    self.update_progress.set(None);
+                    self.update_progress_detail.set(None);
                 }
             },
         );

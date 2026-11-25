@@ -728,6 +728,7 @@ pub fn command_palette_overlay(store: AppStore) -> impl IntoElement {
                 .flex_col()
                 .child(
                     view()
+                        .flex_shrink_0()
                         .px(px(16.0))
                         .py(px(10.0))
                         .border_b_1()
@@ -779,15 +780,22 @@ pub fn command_palette_overlay(store: AppStore) -> impl IntoElement {
                 )
                 .child(
                     scroll()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .max_h(px(400.0))
+                        .w_full()
+                        .h(move || {
+                            let count = filtered_items.get().len();
+                            if count == 0 {
+                                px(72.0)
+                            } else {
+                                px(((count as f32) * 52.0 + 12.0).min(400.0))
+                            }
+                        })
                         .child(dynamic(move || {
                             let list = filtered_items.get();
                             let active_idx =
                                 store.palette_cursor.get().min(list.len().saturating_sub(1));
                             if list.is_empty() {
                                 return view()
+                                    .w_full()
                                     .p(px(24.0))
                                     .flex()
                                     .items_center()
@@ -808,7 +816,7 @@ pub fn command_palette_overlay(store: AppStore) -> impl IntoElement {
                                         .text_color(rgb(INK_MUTED)),
                                     );
                             }
-                            view().flex().flex_col().py(px(6.0)).children(
+                            view().w_full().flex().flex_col().py(px(6.0)).children(
                                 list.into_iter().enumerate().map(|(idx, item)| {
                                     let is_active = idx == active_idx;
                                     let action = item.action.clone();

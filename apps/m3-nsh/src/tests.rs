@@ -6,9 +6,9 @@ use crate::format::{
     compute_today_pulse, count_inbox_filter, filter_inbox_signals, filter_palette_items,
     filter_reports_for_basket, fmt_money_compact, fmt_money_compact_opt, fmt_pct_clean,
     fmt_time_cn_for, fmt_volume_compact, format_theme_member_distance, format_theme_member_roic,
-    parse_research_memo, resolve_active_inbox_signal, resolve_sidebar_dock_notice_for,
-    should_skip_auto_catchup, should_skip_auto_catchup_with, signal_kind_badge_for,
-    signal_status_badge_for, sort_reports, step_inbox_selection,
+    format_update_progress, parse_research_memo, resolve_active_inbox_signal,
+    resolve_sidebar_dock_notice_for, should_skip_auto_catchup, should_skip_auto_catchup_with,
+    signal_kind_badge_for, signal_status_badge_for, sort_reports, step_inbox_selection,
 };
 use crate::palette::{build_palette_items_from_store, execute_palette_action};
 use crate::platform_desktop::build_app_menus;
@@ -1787,4 +1787,27 @@ fn settings_storage_signals_scan_and_protect_workbench() {
         },
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn update_progress_formats_stages_and_bytes_bilingually() {
+    use m3_core::update::{UpdateProgress, UpdateStage};
+
+    let dl = UpdateProgress::for_stage(
+        UpdateStage::Downloading,
+        5 * 1024 * 1024,
+        Some(10 * 1024 * 1024),
+    );
+    let zh_dl = format_update_progress(&dl, UiLang::Zh);
+    let en_dl = format_update_progress(&dl, UiLang::En);
+    assert!(zh_dl.contains("5.0 MB / 10.0 MB (50%)"));
+    assert!(en_dl.contains("5.0 MB / 10.0 MB (50%)"));
+
+    let ver = UpdateProgress::for_stage(UpdateStage::Verifying, 0, None);
+    assert!(format_update_progress(&ver, UiLang::Zh).contains("SHA-256"));
+    assert!(format_update_progress(&ver, UiLang::En).contains("SHA-256"));
+
+    let ext = UpdateProgress::for_stage(UpdateStage::Extracting, 0, None);
+    assert!(format_update_progress(&ext, UiLang::Zh).contains("M3.app"));
+    assert!(format_update_progress(&ext, UiLang::En).contains("M3.app"));
 }

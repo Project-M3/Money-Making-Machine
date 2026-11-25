@@ -11,6 +11,54 @@ mod tests;
 pub use channel::{ReleaseChannel, effective_channel};
 pub use passive_check::PassiveUpdateNotice;
 
+/// Granular lifecycle stage emitted during [`run_update_with_progress`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateStage {
+    Resolving,
+    Downloading,
+    Verifying,
+    Extracting,
+    Installing,
+    Completed,
+}
+
+/// Real-time update progress payload streamed to CLI/desktop UIs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateProgress {
+    pub stage: UpdateStage,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    /// Monotonic overall progress fraction in `0.0..=1.0`.
+    pub fraction: f32,
+}
+
+impl UpdateProgress {
+    /// Builds a normalized [`UpdateProgress`] snapshot with monotonic overall progress.
+    pub fn for_stage(stage: UpdateStage, downloaded_bytes: u64, total_bytes: Option<u64>) -> Self {
+        let fraction = match stage {
+            UpdateStage::Resolving => 0.05,
+            UpdateStage::Downloading => match total_bytes {
+                Some(total) if total > 0 => {
+                    let ratio = downloaded_bytes.min(total) as f32 / total as f32;
+                    0.05 + 0.75 * ratio
+                }
+                _ => 0.25,
+            },
+            UpdateStage::Verifying => 0.84,
+            UpdateStage::Extracting => 0.90,
+            UpdateStage::Installing => 0.96,
+            UpdateStage::Completed => 1.0,
+        };
+        Self {
+            stage,
+            downloaded_bytes,
+            total_bytes,
+            fraction,
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 use anyhow::Context as _;
 use anyhow::{Result, bail, ensure};
@@ -55,8 +103,6 @@ pub const GITHUB_API_BASE: &str = "https://api.github.com";
 const MANIFEST_TIMEOUT_SECS: u64 = 15;
 #[cfg(target_os = "macos")]
 const ARCHIVE_CONNECT_TIMEOUT_SECS: u64 = 30;
-#[cfg(target_os = "macos")]
-const ARCHIVE_READ_TIMEOUT_SECS: u64 = 60;
 #[cfg(target_os = "macos")]
 const ARCHIVE_MAX_TOTAL_TIMEOUT_SECS: u64 = 600;
 #[cfg(target_os = "macos")]
@@ -256,7 +302,7 @@ fn build_clients() -> Result<(Client, Client)> {
     let standard = Client::builder()
         .user_agent(ua.clone())
         .connect_timeout(Duration::from_secs(ARCHIVE_CONNECT_TIMEOUT_SECS))
-        .timeout(Duration::from_secs(ARCHIVE_READ_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(ARCHIVE_MAX_TOTAL_TIMEOUT_SECS))
         .build()
         .context("build HTTP client for M3 updater")?;
     let no_redirect = Client::builder()
@@ -643,20 +689,33 @@ fn download_and_verify_archive(
     standard: &Client,
     no_redirect: &Client,
     source: &DownloadSource,
-    expected_sha256: &str,
-    expected_size: u64,
+    artifact: &TargetArtifact,
     archive_path: &Path,
     token: Option<&str>,
+    on_progress: &mut impl FnMut(UpdateProgress),
 ) -> Result<()> {
+    let expected_size = artifact.size;
+    let expected_sha256 = artifact.sha256.as_str();
     let mut response = open_archive_stream(standard, no_redirect, source, token)?;
     let file = File::create(archive_path)
         .with_context(|| format!("create staged archive `{}`", archive_path.display()))?;
     let mut writer = BufWriter::new(file);
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
+    let total_bytes = (expected_size > 0)
+        .then_some(expected_size)
+        .or_else(|| response.content_length().filter(|&n| n > 0));
     let started = Instant::now();
+    let mut last_emit = Instant::now();
+    let mut last_emit_bytes: u64 = 0;
     let deadline = Duration::from_secs(ARCHIVE_MAX_TOTAL_TIMEOUT_SECS);
     let mut buf = [0u8; 64 * 1024];
+
+    on_progress(UpdateProgress::for_stage(
+        UpdateStage::Downloading,
+        0,
+        total_bytes,
+    ));
 
     loop {
         ensure!(
@@ -679,7 +738,24 @@ fn download_and_verify_archive(
             .write_all(&buf[..read])
             .with_context(|| format!("write staged archive `{}`", archive_path.display()))?;
         hasher.update(&buf[..read]);
+        if last_emit.elapsed() >= Duration::from_millis(60)
+            || downloaded.saturating_sub(last_emit_bytes) >= 256 * 1024
+        {
+            on_progress(UpdateProgress::for_stage(
+                UpdateStage::Downloading,
+                downloaded,
+                total_bytes,
+            ));
+            last_emit = Instant::now();
+            last_emit_bytes = downloaded;
+        }
     }
+
+    on_progress(UpdateProgress::for_stage(
+        UpdateStage::Downloading,
+        downloaded,
+        total_bytes,
+    ));
 
     writer
         .flush()
@@ -692,6 +768,12 @@ fn download_and_verify_archive(
             "downloaded archive size mismatch (expected {expected_size} bytes, got {downloaded})"
         );
     }
+
+    on_progress(UpdateProgress::for_stage(
+        UpdateStage::Verifying,
+        downloaded,
+        total_bytes,
+    ));
 
     let actual_sha256 = encode_lower_hex(&hasher.finalize());
     let expected_lower = expected_sha256.to_ascii_lowercase();
@@ -733,6 +815,15 @@ fn write_last_check_cache_best_effort(manifest: &ReleaseManifest, channel: Relea
 /// Execute `m3 update` check or apply against GitHub Releases (or explicit manifest URL).
 #[cfg(target_os = "macos")]
 pub fn run_update(opts: &UpdateOptions) -> Result<UpdateReport> {
+    run_update_with_progress(opts, |_| {})
+}
+
+/// Execute `m3 update` while streaming granular [`UpdateProgress`] stages.
+#[cfg(target_os = "macos")]
+pub fn run_update_with_progress(
+    opts: &UpdateOptions,
+    mut on_progress: impl FnMut(UpdateProgress),
+) -> Result<UpdateReport> {
     let target_triple = current_target_triple()?;
     let current_version = current_binary_version();
     let binary_channel = current_binary_channel();
@@ -751,6 +842,7 @@ pub fn run_update(opts: &UpdateOptions) -> Result<UpdateReport> {
         Some(resolve_cli_link_path(opts.bin_dir.as_deref())?)
     };
 
+    on_progress(UpdateProgress::for_stage(UpdateStage::Resolving, 0, None));
     let (standard, no_redirect) = build_clients()?;
     let resolved = resolve_release(&standard, &no_redirect, opts, target_channel, target_triple)?;
     let manifest_channel = ReleaseChannel::parse(&resolved.manifest.channel)?;
@@ -827,16 +919,23 @@ pub fn run_update(opts: &UpdateOptions) -> Result<UpdateReport> {
     let archive_path = staging.path().join(&asset_name);
     let token = resolve_github_token();
 
+    let archive_total = (resolved.artifact.size > 0).then_some(resolved.artifact.size);
+
     download_and_verify_archive(
         &standard,
         &no_redirect,
         &resolved.archive_download,
-        &resolved.artifact.sha256,
-        resolved.artifact.size,
+        &resolved.artifact,
         &archive_path,
         token.as_deref(),
+        &mut on_progress,
     )?;
 
+    on_progress(UpdateProgress::for_stage(
+        UpdateStage::Extracting,
+        resolved.artifact.size,
+        archive_total,
+    ));
     let (staged_app, archive_manifest) = extract_and_verify_bundle(
         &archive_path,
         staging.path(),
@@ -845,6 +944,11 @@ pub fn run_update(opts: &UpdateOptions) -> Result<UpdateReport> {
         target_triple,
     )?;
 
+    on_progress(UpdateProgress::for_stage(
+        UpdateStage::Installing,
+        resolved.artifact.size,
+        archive_total,
+    ));
     let receipt = atomic_swap_app_bundle(
         &staged_app,
         &target_app,
@@ -856,6 +960,12 @@ pub fn run_update(opts: &UpdateOptions) -> Result<UpdateReport> {
         &resolved.artifact.sha256.to_ascii_lowercase(),
         &archive_manifest.binary_sha256.to_ascii_lowercase(),
     )?;
+
+    on_progress(UpdateProgress::for_stage(
+        UpdateStage::Completed,
+        resolved.artifact.size,
+        archive_total,
+    ));
 
     if opts.version.is_none() {
         write_last_check_cache_best_effort(&resolved.manifest, manifest_channel);
@@ -888,6 +998,15 @@ pub fn run_update(opts: &UpdateOptions) -> Result<UpdateReport> {
 /// Execute `m3 update` check or apply (non-macOS platforms are unsupported).
 #[cfg(not(target_os = "macos"))]
 pub fn run_update(_opts: &UpdateOptions) -> Result<UpdateReport> {
+    bail!("self-update is only supported on macOS")
+}
+
+/// Execute `m3 update` with progress reporting (non-macOS platforms are unsupported).
+#[cfg(not(target_os = "macos"))]
+pub fn run_update_with_progress(
+    _opts: &UpdateOptions,
+    _on_progress: impl FnMut(UpdateProgress),
+) -> Result<UpdateReport> {
     bail!("self-update is only supported on macOS")
 }
 

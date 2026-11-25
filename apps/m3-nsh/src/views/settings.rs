@@ -1,8 +1,8 @@
 //! Settings & Guardrails view (`⌘,`) in a 2-column Obsidian layout.
 
 use crate::components::{
-    action_button, badge_pill, concept_hint, concept_hint_static, obsidian_card, seg_group,
-    seg_tab, styled_input,
+    action_button, badge_pill, concept_hint, concept_hint_static, obsidian_card, progress_bar,
+    seg_group, seg_tab, styled_input,
 };
 use crate::format::fmt_time_cn_for;
 use crate::platform_desktop::{
@@ -272,6 +272,7 @@ fn render_updates_card(store: AppStore, ver_text: &str) -> View {
                 let checking = store.update_checking.get();
                 let notice = store.update_notice.get();
                 let progress = store.update_progress.get();
+                let prog_detail = store.update_progress_detail.get();
 
                 let action_el = if let Some(ver) = applied {
                     setting_chip(
@@ -348,19 +349,44 @@ fn render_updates_card(store: AppStore, ver_text: &str) -> View {
                 );
 
                 if let Some(prog) = progress {
+                    let frac = prog_detail.as_ref().map(|d| d.fraction).unwrap_or(0.15);
+                    let pct_lbl = prog_detail
+                        .as_ref()
+                        .map(|d| format!("{}%", (d.fraction * 100.0).round() as u32))
+                        .unwrap_or_default();
                     col = col.child(
                         view()
                             .px(px(16.0))
-                            .py(px(8.0))
+                            .py(px(10.0))
                             .bg(rgba(SKY_BG))
                             .border_b_1()
                             .border_color(rgb(BORDER_HAIRLINE))
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
                             .child(
-                                text(prog)
-                                    .font_family(FONT_MONO_TERM)
-                                    .text_size(px(TEXT_XS))
-                                    .text_color(rgb(SKY_FG)),
-                            ),
+                                view()
+                                    .w_full()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(8.0))
+                                    .child(
+                                        text(prog)
+                                            .font_family(FONT_MONO_TERM)
+                                            .text_size(px(TEXT_XS))
+                                            .text_color(rgb(SKY_FG)),
+                                    )
+                                    .child(
+                                        text(pct_lbl)
+                                            .font_family(FONT_MONO_NUM)
+                                            .text_size(px(TEXT_XS))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(SKY_FG)),
+                                    ),
+                            )
+                            .child(progress_bar(frac, SKY_FG)),
                     );
                 }
 

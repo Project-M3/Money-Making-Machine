@@ -1,6 +1,6 @@
 //! Root M3 shell: left sidebar, Circle summary, Status Dock, topbar, shortcuts, and viewport.
 
-use crate::components::{kbd, pixel_m3_mark};
+use crate::components::{kbd, pixel_m3_mark, progress_bar};
 use crate::format::{
     budget_watermark_summary_for, compact_sidebar_version_label, filter_palette_items, fmt_price,
     fmt_time_cn_for, resolve_sidebar_dock_notice_for,
@@ -654,9 +654,11 @@ fn render_sidebar_status_dock(store: AppStore) -> impl IntoElement {
             let t_sync = store.themes_syncing.get();
             let upd_chk = store.update_checking.get();
             let upd_app = store.update_applying.get();
+            let upd_prog = store.update_progress.get();
+            let upd_detail = store.update_progress_detail.get();
             let l = store.lang.get();
 
-            let Some(n) = resolve_sidebar_dock_notice_for(
+            let Some(mut n) = resolve_sidebar_dock_notice_for(
                 notice.as_ref(),
                 u_sync,
                 u_prog.as_deref(),
@@ -673,6 +675,13 @@ fn render_sidebar_status_dock(store: AppStore) -> impl IntoElement {
             ) else {
                 return view().into_element();
             };
+
+            if upd_app && let Some(prog_msg) = upd_prog {
+                n.message = prog_msg;
+            }
+            let upd_frac = upd_app
+                .then(|| upd_detail.as_ref().map(|d| d.fraction))
+                .flatten();
 
             let mut hdr = view()
                 .flex()
@@ -701,6 +710,15 @@ fn render_sidebar_status_dock(store: AppStore) -> impl IntoElement {
                                 .text_color(rgb(n.dot_color)),
                         ),
                 );
+            if let Some(frac) = upd_frac {
+                hdr = hdr.child(
+                    text(format!("{}%", (frac * 100.0).round() as u32))
+                        .font_family(FONT_MONO_NUM)
+                        .text_size(px(TEXT_2XS))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(n.dot_color)),
+                );
+            }
             if n.dismissible {
                 hdr = hdr.child(
                     view()
@@ -718,7 +736,7 @@ fn render_sidebar_status_dock(store: AppStore) -> impl IntoElement {
                 );
             }
 
-            view()
+            let mut card = view()
                 .rounded_md()
                 .bg(rgb(BG_SURFACE))
                 .border_1()
@@ -734,8 +752,11 @@ fn render_sidebar_status_dock(store: AppStore) -> impl IntoElement {
                         .text_size(px(TEXT_XS))
                         .line_height(px(16.0))
                         .text_color(rgb(INK_PRIMARY)),
-                )
-                .into_element()
+                );
+            if let Some(frac) = upd_frac {
+                card = card.child(progress_bar(frac, n.dot_color));
+            }
+            card.into_element()
         }))
         .child(dynamic(move || {
             let l = store.lang.get();
