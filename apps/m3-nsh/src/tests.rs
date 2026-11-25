@@ -1875,6 +1875,89 @@ fn onboarding_visibility_and_starter_helpers() {
             assert_eq!(store.reports.with_untracked(|r| r.len()), 8);
         },
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
 
+#[test]
+fn settings_alan_connection_drafts_and_provider_switching() {
+    use m3_core::alan_connection::{
+        AlanConnectionProfileSummary, AlanConnectionProvider, AlanConnectionStatus,
+    };
+
+    let root = temp_workspace("settings_alan_conn");
+    let paths = WorkspacePaths::from_root(root.clone());
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        |store| {
+            // Default unconfigured state
+            assert!(store.alan_conn_status.get_untracked().is_none());
+            assert_eq!(
+                store.alan_conn_provider.get_untracked(),
+                AlanConnectionProvider::OpenRouter
+            );
+            assert_eq!(
+                store.alan_conn_profile_id_draft.get_untracked(),
+                "openrouter-main"
+            );
+
+            // Switching provider updates default profile ID and model when still on default values
+            store.select_alan_conn_provider(AlanConnectionProvider::OpenAiResponses);
+            assert_eq!(
+                store.alan_conn_provider.get_untracked(),
+                AlanConnectionProvider::OpenAiResponses
+            );
+            assert_eq!(
+                store.alan_conn_profile_id_draft.get_untracked(),
+                "openai-main"
+            );
+            assert_eq!(store.alan_conn_model_draft.get_untracked(), "gpt-5.4");
+
+            // Applying loaded status populates drafts from the active default profile
+            let status = AlanConnectionStatus {
+                default_profile: Some("my-or".to_owned()),
+                profiles: vec![
+                    AlanConnectionProfileSummary {
+                        id: "my-or".to_owned(),
+                        provider: "openrouter".to_owned(),
+                        model: Some("anthropic/claude-sonnet-4.6".to_owned()),
+                        base_url: Some("https://openrouter.ai/api/v1".to_owned()),
+                        has_secret: true,
+                        masked_hint: Some("sk-o••••9876".to_owned()),
+                        is_default: true,
+                    },
+                    AlanConnectionProfileSummary {
+                        id: "work-oai".to_owned(),
+                        provider: "openai_responses".to_owned(),
+                        model: Some("gpt-5.4".to_owned()),
+                        base_url: Some("https://proxy.example/v1".to_owned()),
+                        has_secret: true,
+                        masked_hint: Some("sk-p••••4321".to_owned()),
+                        is_default: false,
+                    },
+                ],
+            };
+            store.apply_alan_connection_status(status);
+            assert_eq!(
+                store.alan_conn_provider.get_untracked(),
+                AlanConnectionProvider::OpenRouter
+            );
+            assert_eq!(store.alan_conn_profile_id_draft.get_untracked(), "my-or");
+            assert_eq!(
+                store.alan_conn_model_draft.get_untracked(),
+                "anthropic/claude-sonnet-4.6"
+            );
+            assert_eq!(store.alan_conn_base_url_draft.get_untracked(), "");
+
+            // Switching to OpenAI loads the existing OpenAI profile & custom base URL
+            store.select_alan_conn_provider(AlanConnectionProvider::OpenAiResponses);
+            assert_eq!(store.alan_conn_profile_id_draft.get_untracked(), "work-oai");
+            assert_eq!(store.alan_conn_model_draft.get_untracked(), "gpt-5.4");
+            assert_eq!(
+                store.alan_conn_base_url_draft.get_untracked(),
+                "https://proxy.example/v1"
+            );
+        },
+    );
     let _ = std::fs::remove_dir_all(&root);
 }

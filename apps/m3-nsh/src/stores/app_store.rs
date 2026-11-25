@@ -20,6 +20,10 @@ use crate::stores::types::{
     ParsedResearchMemo, SortCol, StatusQuickFilter, UniversePreset, UniverseSearchMode,
     UniverseViewState, WorkspaceTab, apply_ui_row_guards, default_deep_research_perspectives,
 };
+use m3_core::alan_connection::{
+    self, AlanConnectionProfileSummary, AlanConnectionProvider, AlanConnectionStatus,
+    AlanConnectionTestResult, SaveAlanConnectionRequest,
+};
 use m3_core::alan_interrogator::{
     InterrogatorEvent, M3InterrogatorHandle, TuringTapeEntry, TuringTapeKind,
     compose_feynman_quiz_turn, compose_industry_tutor_turn, parse_acme_evidence_tokens,
@@ -203,6 +207,15 @@ pub struct AppStore {
     pub update_applied_version: Signal<Option<String>>,
     pub settings_monthly_budget_draft: Signal<String>,
     pub settings_monthly_tokens_draft: Signal<String>,
+    pub alan_conn_status: Signal<Option<AlanConnectionStatus>>,
+    pub alan_conn_provider: Signal<AlanConnectionProvider>,
+    pub alan_conn_profile_id_draft: Signal<String>,
+    pub alan_conn_model_draft: Signal<String>,
+    pub alan_conn_base_url_draft: Signal<String>,
+    pub alan_conn_api_key_draft: Signal<String>,
+    pub alan_conn_saving: Signal<bool>,
+    pub alan_conn_testing: Signal<bool>,
+    pub alan_conn_feedback: Signal<Option<(String, bool)>>,
     pub storage_report: Signal<Option<StorageReport>>,
     pub storage_scanning: Signal<bool>,
     pub storage_cleaning: Signal<Option<StorageCategory>>,
@@ -250,6 +263,7 @@ struct StartupHydrationSnapshot {
     selected_research_runs: Vec<ResearchRunRow>,
     selected_peers: Option<PeerComparison>,
     selected_similar_hits: Vec<SimilarCompanyHit>,
+    alan_conn_status: Option<AlanConnectionStatus>,
 }
 
 fn load_startup_snapshot(
@@ -422,6 +436,8 @@ fn load_startup_snapshot(
         budget_report = Some(report);
     }
 
+    let alan_conn_status = alan_connection::list_alan_connection_status().ok();
+
     StartupHydrationSnapshot {
         repo_root: paths.repo_root.clone(),
         benchmark_symbol,
@@ -458,6 +474,7 @@ fn load_startup_snapshot(
         selected_research_runs,
         selected_peers,
         selected_similar_hits,
+        alan_conn_status,
     }
 }
 
@@ -624,6 +641,23 @@ impl AppStore {
             update_applied_version: signal(None),
             settings_monthly_budget_draft: signal(initial_budget.monthly_budget_usd.to_string()),
             settings_monthly_tokens_draft: signal(initial_budget.monthly_token_limit.to_string()),
+            alan_conn_status: signal_with(None, SignalEquals::Never),
+            alan_conn_provider: signal(AlanConnectionProvider::OpenRouter),
+            alan_conn_profile_id_draft: signal(
+                AlanConnectionProvider::OpenRouter
+                    .default_profile_id()
+                    .to_owned(),
+            ),
+            alan_conn_model_draft: signal(
+                AlanConnectionProvider::OpenRouter
+                    .default_model()
+                    .to_owned(),
+            ),
+            alan_conn_base_url_draft: signal(String::new()),
+            alan_conn_api_key_draft: signal(String::new()),
+            alan_conn_saving: signal(false),
+            alan_conn_testing: signal(false),
+            alan_conn_feedback: signal(None),
             storage_report: signal_with(None, SignalEquals::Never),
             storage_scanning: signal(false),
             storage_cleaning: signal(None),
@@ -779,6 +813,9 @@ impl AppStore {
                 }
 
                 self.startup_hydrated.set(true);
+                if let Some(status) = snap.alan_conn_status {
+                    self.apply_alan_connection_status(status);
+                }
                 self.bootstrap_background();
             },
         );
@@ -981,6 +1018,9 @@ impl AppStore {
             WorkspaceTab::Settings => {
                 if !self.storage_scanning.get_untracked() {
                     self.refresh_storage_report();
+                }
+                if self.alan_conn_status.with_untracked(|s| s.is_none()) {
+                    self.refresh_alan_connection_status();
                 }
             }
         }
@@ -1349,6 +1389,227 @@ impl AppStore {
                 );
             }
         }
+    }
+
+    // ── Alan Connection Setup ────────────────────────────────────────────────
+
+    fn populate_alan_drafts_from_profile(
+        self,
+        profile: &AlanConnectionProfileSummary,
+        provider: AlanConnectionProvider,
+    ) {
+        self.alan_conn_provider.set(provider);
+        self.alan_conn_profile_id_draft.set(profile.id.clone());
+        self.alan_conn_model_draft.set(
+            profile
+                .model
+                .clone()
+                .unwrap_or_else(|| provider.default_model().to_owned()),
+        );
+        let custom_base = profile
+            .base_url
+            .as_deref()
+            .filter(|url| *url != provider.default_base_url())
+            .unwrap_or("");
+        self.alan_conn_base_url_draft.set(custom_base.to_owned());
+    }
+
+    /// Applies an updated [`AlanConnectionStatus`] snapshot and syncs form drafts
+    /// to the active or first supported profile when available.
+    pub fn apply_alan_connection_status(self, status: AlanConnectionStatus) {
+        let preferred = status
+            .active_profile()
+            .and_then(|p| {
+                AlanConnectionProvider::parse(&p.provider)
+                    .ok()
+                    .map(|prov| (p, prov))
+            })
+            .or_else(|| {
+                status.profiles.iter().find_map(|p| {
+                    AlanConnectionProvider::parse(&p.provider)
+                        .ok()
+                        .map(|prov| (p, prov))
+                })
+            });
+
+        if let Some((profile, provider)) = preferred {
+            self.populate_alan_drafts_from_profile(profile, provider);
+        }
+        self.alan_conn_status.set(Some(status));
+    }
+
+    /// Switches the selected Alan provider in the Settings form and updates default drafts.
+    pub fn select_alan_conn_provider(self, provider: AlanConnectionProvider) {
+        self.alan_conn_provider.set(provider);
+        self.alan_conn_feedback.set(None);
+
+        let existing = self.alan_conn_status.with_untracked(|opt| {
+            opt.as_ref().and_then(|st| {
+                st.profiles
+                    .iter()
+                    .find(|p| p.provider == provider.as_str() && p.is_default)
+                    .or_else(|| st.profiles.iter().find(|p| p.provider == provider.as_str()))
+                    .cloned()
+            })
+        });
+
+        if let Some(profile) = existing {
+            self.populate_alan_drafts_from_profile(&profile, provider);
+            return;
+        }
+
+        let other = match provider {
+            AlanConnectionProvider::OpenRouter => AlanConnectionProvider::OpenAiResponses,
+            AlanConnectionProvider::OpenAiResponses => AlanConnectionProvider::OpenRouter,
+        };
+        let cur_id = self.alan_conn_profile_id_draft.get_untracked();
+        if cur_id.trim().is_empty() || cur_id.trim() == other.default_profile_id() {
+            self.alan_conn_profile_id_draft
+                .set(provider.default_profile_id().to_owned());
+        }
+        let cur_model = self.alan_conn_model_draft.get_untracked();
+        if cur_model.trim().is_empty() || cur_model.trim() == other.default_model() {
+            self.alan_conn_model_draft
+                .set(provider.default_model().to_owned());
+        }
+        let cur_base = self.alan_conn_base_url_draft.get_untracked();
+        if cur_base.trim() == other.default_base_url() {
+            self.alan_conn_base_url_draft.set(String::new());
+        }
+    }
+
+    /// Reloads Alan's canonical connection status off-thread.
+    pub fn refresh_alan_connection_status(self) {
+        run_blocking_result(alan_connection::list_alan_connection_status, move |res| {
+            if let Ok(status) = res {
+                self.apply_alan_connection_status(status);
+            }
+        });
+    }
+
+    /// Saves the current Alan connection form into Alan's canonical System & Host Stores
+    /// and sets the profile as Alan's default.
+    pub fn save_alan_connection(self) {
+        if self.alan_conn_saving.get_untracked() {
+            return;
+        }
+
+        let provider = self.alan_conn_provider.get_untracked();
+        let profile_id = self.alan_conn_profile_id_draft.get_untracked();
+        let model = self.alan_conn_model_draft.get_untracked();
+        let base_url_raw = self.alan_conn_base_url_draft.get_untracked();
+        let api_key_raw = self.alan_conn_api_key_draft.get_untracked();
+
+        let req = SaveAlanConnectionRequest {
+            provider,
+            profile_id,
+            model,
+            base_url: (!base_url_raw.trim().is_empty()).then_some(base_url_raw),
+            api_key: (!api_key_raw.trim().is_empty()).then_some(api_key_raw),
+            set_as_default: true,
+        };
+
+        self.alan_conn_saving.set(true);
+        self.alan_conn_feedback.set(None);
+
+        run_blocking_result(
+            move || -> Result<(AlanConnectionProfileSummary, AlanConnectionStatus), String> {
+                let saved =
+                    alan_connection::save_alan_connection(&req).map_err(|e| format!("{e:#}"))?;
+                let status =
+                    alan_connection::list_alan_connection_status().map_err(|e| format!("{e:#}"))?;
+                Ok((saved, status))
+            },
+            move |res| {
+                self.alan_conn_saving.set(false);
+                let l = self.lang.get_untracked();
+                match res {
+                    Ok((saved, status)) => {
+                        self.alan_conn_api_key_draft.set(String::new());
+                        self.apply_alan_connection_status(status);
+                        let msg = match l {
+                            UiLang::Zh => format!(
+                                "已保存并设为默认连接：{} ({})",
+                                saved.id,
+                                saved.model.as_deref().unwrap_or(&saved.provider)
+                            ),
+                            UiLang::En => format!(
+                                "Saved & set default: {} ({})",
+                                saved.id,
+                                saved.model.as_deref().unwrap_or(&saved.provider)
+                            ),
+                        };
+                        self.alan_conn_feedback.set(Some((msg.clone(), false)));
+                        self.set_info_notice(msg);
+                    }
+                    Err(err) => {
+                        let msg = format!(
+                            "{}: {err}",
+                            l.t("保存 Alan 连接失败", "Failed to save Alan connection")
+                        );
+                        self.alan_conn_feedback.set(Some((msg.clone(), true)));
+                        self.set_error_notice(msg);
+                    }
+                }
+            },
+        );
+    }
+
+    /// Tests connectivity for the configured Alan connection profile off-thread.
+    pub fn test_alan_connection(self) {
+        if self.alan_conn_testing.get_untracked() {
+            return;
+        }
+
+        let draft_id = self.alan_conn_profile_id_draft.get_untracked();
+        let target_profile = self.alan_conn_status.with_untracked(|opt| {
+            let trimmed = draft_id.trim();
+            if let Some(st) = opt
+                && !trimmed.is_empty()
+                && st.profiles.iter().any(|p| p.id == trimmed)
+            {
+                return Some(trimmed.to_owned());
+            }
+            None
+        });
+
+        self.alan_conn_testing.set(true);
+        self.alan_conn_feedback.set(None);
+
+        run_blocking_result(
+            move || -> Result<AlanConnectionTestResult, String> {
+                alan_connection::test_alan_connection(target_profile.as_deref())
+                    .map_err(|e| format!("{e:#}"))
+            },
+            move |res| {
+                self.alan_conn_testing.set(false);
+                let l = self.lang.get_untracked();
+                match res {
+                    Ok(report) => {
+                        let msg = match l {
+                            UiLang::Zh => format!(
+                                "连接测试成功：{} · HTTP {} ({}ms)",
+                                report.profile_id, report.status_code, report.latency_ms
+                            ),
+                            UiLang::En => format!(
+                                "Connection OK: {} · HTTP {} ({}ms)",
+                                report.profile_id, report.status_code, report.latency_ms
+                            ),
+                        };
+                        self.alan_conn_feedback.set(Some((msg.clone(), false)));
+                        self.set_info_notice(msg);
+                    }
+                    Err(err) => {
+                        let msg = format!(
+                            "{}: {err}",
+                            l.t("Alan 连接测试失败", "Alan connection test failed")
+                        );
+                        self.alan_conn_feedback.set(Some((msg.clone(), true)));
+                        self.set_error_notice(msg);
+                    }
+                }
+            },
+        );
     }
 
     // ── Circle Overview / Baskets / Dossier Actions ──────────────────────────

@@ -2417,6 +2417,7 @@ dependencies = [
  "alan-ap",
  "alan-llm",
  "alan-os-host",
+ "alan-service-manager",
  "alan-shell",
  "anyhow",
  "async-trait",

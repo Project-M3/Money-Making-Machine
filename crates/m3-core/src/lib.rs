@@ -1,9 +1,10 @@
 //! Core domain library for Project M3 (Munger Workbench).
 //!
 //! Contains deterministic `rust_decimal` financial calculations, SEC EDGAR and market data ingestion,
-//! DuckDB/Parquet lakehouse storage (`lake`, `lake_l1`, `lake_l2`), EmbeddedAlan orchestration,
+//! DuckDB/Parquet lakehouse storage (`lake`, `lake_l1`, `lake_l2`), Alan orchestration,
 //! and platform-agnostic configuration/update state via [`M3Paths`].
 
+pub mod alan_connection;
 pub mod alan_interrogator;
 pub mod app_config;
 pub mod budget;
