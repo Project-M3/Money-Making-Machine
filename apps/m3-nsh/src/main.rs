@@ -1,5 +1,5 @@
 //! Dual-mode entrypoint for `m3-nsh`: CLI subcommands run synchronously via `m3-cli`,
-//! otherwise launches the NSH 0.5.1 Obsidian workbench.
+//! otherwise launches the NSH 0.7.0 Obsidian workbench.
 
 use anyhow::Result;
 
@@ -51,9 +51,7 @@ fn main() -> Result<()> {
 fn run_gui() -> std::process::ExitCode {
     platform::run_app(
         platform::AppSource::Rust(
-            platform::Root::of::<m3_nsh::App>()
-                .app_id("systems.thinksmart.m3")
-                .main_window(m3_nsh::platform_desktop::main_window_options()),
+            platform::Root::of::<m3_nsh::App>().app_id("systems.thinksmart.m3"),
         ),
         platform::AppOptions {
             title: "M3".to_owned(),

@@ -9,7 +9,7 @@ use crate::palette::{
     build_palette_items_from_store, command_palette_overlay, execute_palette_action,
 };
 use crate::platform_desktop::{
-    bind_live_application_menu, restart_after_update, reveal_main_window_after_mount,
+    bind_live_application_menu, main_window_attributes, restart_after_update,
     show_company_context_menu, titlebar_left_inset,
 };
 use crate::stores::{AppStore, CompanyViewTab, WorkspaceTab};
@@ -22,64 +22,83 @@ use m3_core::i18n::UiLang;
 use m3_core::lake_l1::SignalStatus;
 use m3_core::model::Bucket;
 use m3_core::update;
+use nsh_core::desktop::WindowKind;
+use nsh_core::element::desktop::{on_reopen, window};
 use nsh_core::keymap::When;
 use nsh_core::prelude::*;
 
-/// Mounts the M3 reactive shell, configures desktop window chrome, menus, and shortcuts.
+/// Mounts the M3 reactive shell inside NSH 0.7.0's declarative `window()`, configuring desktop
+/// chrome, live menus, Dock reopen behavior, and global keyboard shortcuts.
 pub fn render_app_root() -> impl IntoElement {
     let store = AppStore::start();
     provide_context(store);
     bind_live_application_menu(store);
     register_keyboard_shortcuts(store);
 
-    let root = view()
-        .relative()
-        .w_full()
-        .h_full()
-        .flex()
-        .flex_row()
-        .bg(rgb(BG_SHELL))
-        .text_color(rgb(INK_PRIMARY))
-        .font_family(FONT_UI)
-        .text_size(px(TEXT_SM))
-        .child(render_sidebar(store))
-        .child(
-            view()
-                .flex_1()
-                .min_w(px(0.0))
+    let main_open = signal(true);
+    on_reopen(move || {
+        if !main_open.get_untracked() {
+            main_open.set(true);
+        }
+    });
+
+    window()
+        .id("main")
+        .kind(WindowKind::Normal)
+        .title("M3")
+        .default_size(size(px(1380.0), px(880.0)))
+        .restore_bounds(true)
+        .attributes(main_window_attributes())
+        .open(main_open)
+        .on_open_change(move |e| main_open.set(e.open))
+        .content(move || {
+            let root = view()
+                .relative()
+                .w_full()
                 .h_full()
-                .pt(px(6.0))
-                .pr(px(6.0))
-                .pb(px(6.0))
+                .flex()
+                .flex_row()
                 .bg(rgb(BG_SHELL))
+                .text_color(rgb(INK_PRIMARY))
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_SM))
+                .child(render_sidebar(store))
                 .child(
                     view()
-                        .w_full()
+                        .flex_1()
+                        .min_w(px(0.0))
                         .h_full()
-                        .rounded_lg()
-                        .bg(rgb(BG_VIEWPORT))
-                        .border_1()
-                        .border_color(rgb(BORDER_VIEWPORT))
-                        .overflow_hidden()
-                        .flex()
-                        .flex_col()
-                        .child(render_topbar(store))
-                        .child(render_main_viewport(store))
-                        .child(render_statusline(store)),
-                ),
-        )
-        .child(when(
-            move || store.palette_open.get(),
-            move || command_palette_overlay(store),
-        ));
+                        .pt(px(6.0))
+                        .pr(px(6.0))
+                        .pb(px(6.0))
+                        .bg(rgb(BG_SHELL))
+                        .child(
+                            view()
+                                .w_full()
+                                .h_full()
+                                .rounded_lg()
+                                .bg(rgb(BG_VIEWPORT))
+                                .border_1()
+                                .border_color(rgb(BORDER_VIEWPORT))
+                                .overflow_hidden()
+                                .flex()
+                                .flex_col()
+                                .child(render_topbar(store))
+                                .child(render_main_viewport(store))
+                                .child(render_statusline(store)),
+                        ),
+                )
+                .child(when(
+                    move || store.palette_open.get(),
+                    move || command_palette_overlay(store),
+                ));
 
-    let built = if os().is_desktop() {
-        root
-    } else {
-        root.p_safe_area()
-    };
-    reveal_main_window_after_mount();
-    built
+            if os().is_desktop() {
+                root
+            } else {
+                root.p_safe_area()
+            }
+        })
 }
 
 fn render_main_viewport(store: AppStore) -> impl IntoElement {
@@ -1296,6 +1315,7 @@ fn register_keyboard_shortcuts(store: AppStore) {
             when: When::Always,
             repeat: false,
             pass_through: false,
+            ..Default::default()
         },
         move |_| {
             if store.palette_open.get_untracked() {
@@ -1353,6 +1373,7 @@ fn register_keyboard_shortcuts(store: AppStore) {
                 when: When::Always,
                 repeat: true,
                 pass_through: false,
+                ..Default::default()
             },
             move |_| {
                 if store.palette_open.get_untracked() {
@@ -1391,6 +1412,7 @@ fn register_keyboard_shortcuts(store: AppStore) {
         when: When::NotEditing,
         repeat: false,
         pass_through: false,
+        ..Default::default()
     };
 
     on_key_with("j", not_editing, move |_| {

@@ -1,4 +1,4 @@
-//! NSH 0.5.1 cross-platform UI crate for Project M3.
+//! NSH 0.7.0 cross-platform UI crate for Project M3.
 
 pub mod app;
 pub mod components;

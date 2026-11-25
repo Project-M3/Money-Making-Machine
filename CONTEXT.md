@@ -17,4 +17,4 @@
    - Rust 确定性引擎（`crates/m3-core`，macOS 主力 + iOS-ready）：直接抓取 SEC EDGAR 官方 Company Facts XBRL 原始财报 + Yahoo Finance 日级公开股价，计算 5–8 年财务指标、TTM、10-Q 预警与交互式估值。
    - 文件原生工作区：`workbench/`（Git 跟踪观察池、公司审讯档案、模拟决策账本），`data/munger/`（Git 忽略原始 JSON 缓存与计算快照）。
    - Agent 接口：`crates/m3-cli`（`m3` 二进制 / `apps/m3-nsh/m3` 包装脚本）输出 schema v1 JSON，供 Alan 读写与开展费曼问答，绝不依赖屏幕截图或 Computer Use。
-   - Longbridge NSH `0.5.1` 桌面工作台（`apps/m3-nsh`）：深黑曜石低焦虑高密度原生界面，提供简报收件箱、全市场雷达、行业研究、能力圈矩阵、公司体检卡（含 Canvas K 线与查理沙盒）、Too Hard 博物馆与决策账本。
+   - Longbridge NSH `0.7.0` 桌面工作台（`apps/m3-nsh`）：深黑曜石低焦虑高密度原生界面，提供简报收件箱、全市场雷达、行业研究、能力圈矩阵、公司体检卡（含 Canvas K 线与查理沙盒）、Too Hard 博物馆与决策账本。

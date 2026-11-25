@@ -22,7 +22,7 @@
 
 ## 当前方向与约束（2026-11-19 确认）
 
-- **全 Rust 栈 + Longbridge NSH `0.5.1`**：沿用 Rust 1.98.1 + Longbridge NSH `0.5.1`（`apps/m3-nsh`）构建 macOS 原生桌面工作台，并将确定性内核（`crates/m3-core`，macOS 主力 + iOS-ready 路径抽象，零 UI 框架依赖）与 JSON CLI（`crates/m3-cli` / `m3`）拆分为清晰边界（[apps/m3-nsh/README.md](apps/m3-nsh/README.md)）。
+- **全 Rust 栈 + Longbridge NSH `0.7.0`**：沿用 Rust 1.98.1 + Longbridge NSH `0.7.0`（`apps/m3-nsh`）构建 macOS 原生桌面工作台，并将确定性内核（`crates/m3-core`，macOS 主力 + iOS-ready 路径抽象，零 UI 框架依赖）与 JSON CLI（`crates/m3-cli` / `m3`）拆分为清晰边界（[apps/m3-nsh/README.md](apps/m3-nsh/README.md)）。
 - **算术与推理严格分离**：所有财务指标（ROIC、严苛股东盈余 `OCF - CapEx - SBC`、股本缩减/稀释率、反向隐含增速、击球价）必须由确定性 Rust 代码直接从一手官方数据源（美股首选 SEC EDGAR Company Facts XBRL）计算并附 SHA-256 溯源；**绝不让 LLM 估算或编造财报数字**。
 - **第一版范围**：先做 **15–20 家能力圈深度观察台 + 查理计算器 + Alan 逆向审讯**，把全市场 5000 股筛选器留待二期。
 - **首批能力圈观察池**：美股（SEC EDGAR 一手数据）先行覆盖 `AAPL`、`GOOGL`、`ADSK`、`PTC`、`SNPS`、`COST` 与 `Too Hard` 样本 `INTC`；非美股 `DSY.PA`（达索，欧元实时报价+待录 IFRS 财报）与 `1810.HK`（小米，`Too Hard` 样本）纳入统一结构。

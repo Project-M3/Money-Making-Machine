@@ -2,7 +2,7 @@
 
 ## 1. 项目阶段与定位
 
-Project M3 当前处于 **芒格集中价值研究工作台（Munger Workbench）** 建设与验证阶段（2026-11-19 从早期短周期量化实验正式转向）。最终交付采用 **全 Rust 栈，桌面界面使用 Longbridge NSH `0.5.1`（`apps/m3-nsh`），确定性内核位于 `crates/m3-core`（macOS 主力 + iOS-ready `M3Paths` 抽象，零 UI 框架依赖），命令行入口位于 `crates/m3-cli`（`m3`）**。
+Project M3 当前处于 **芒格集中价值研究工作台（Munger Workbench）** 建设与验证阶段（2026-11-19 从早期短周期量化实验正式转向）。最终交付采用 **全 Rust 栈，桌面界面使用 Longbridge NSH `0.7.0`（`apps/m3-nsh`），确定性内核位于 `crates/m3-core`（macOS 主力 + iOS-ready `M3Paths` 抽象，零 UI 框架依赖），命令行入口位于 `crates/m3-cli`（`m3`）**。
 
 - 先读 [README.md](README.md)、[CONTEXT.md](CONTEXT.md)、[docs/architecture.md](docs/architecture.md)、[docs/munger-workflow.md](docs/munger-workflow.md) 与 [map.md](.scratch/quant-validation/map.md)。
 - 区分已核验的一手财报事实（`data/munger/`）、AI 跨学科草稿（`dossier.draft_source`）、用户确认的判断（`dossier.human_judgment`）与决策账本记录（`workbench/journal.json`）。
@@ -17,7 +17,7 @@ Project M3 当前处于 **芒格集中价值研究工作台（Munger Workbench�
 
 ## 3. 工程质量与最小实现
 
-- 全 Rust 栈 + Longbridge NSH `0.5.1`（`apps/m3-nsh`、`crates/m3-core`、`crates/m3-cli`），复用已有稳定 crate（`rust_decimal`、`serde`、`serde_json`、`sha2`、`reqwest`），保持 `crates/m3-core` 纯净（零 `nsh` 依赖、iOS-ready 路径抽象）、桌面平台桥接隔离在 `apps/m3-nsh/src/platform_desktop.rs`。
+- 全 Rust 栈 + Longbridge NSH `0.7.0`（`apps/m3-nsh`、`crates/m3-core`、`crates/m3-cli`），复用已有稳定 crate（`rust_decimal`、`serde`、`serde_json`、`sha2`、`reqwest`），保持 `crates/m3-core` 纯净（零 `nsh` 依赖、iOS-ready 路径抽象）、桌面平台桥接隔离在 `apps/m3-nsh/src/platform_desktop.rs`。
 - 所有金额、价格、股本、比率及估值计算使用 `rust_decimal::Decimal`；若在统计辅助中出现精度/舍入边界，必须显式文档化。
 - 执行链路**不得依赖 `unwrap()` / `expect()`**；网络请求（SEC EDGAR / Yahoo Finance）必须设置明确超时、Fair Access `User-Agent` 与请求节流，失败时保留既有本地缓存并输出可诊断错误，不得写入空值覆盖历史快照。
 - 文件写入采用“写临时文件 + 原子重命名”，确保损坏风险最小化。

@@ -1,4 +1,4 @@
-//! Shared Obsidian UI primitives built on native NSH 0.5.1 elements.
+//! Shared Obsidian UI primitives built on native NSH 0.7.0 elements.
 
 use crate::theme::*;
 use m3_core::i18n::UiLang;

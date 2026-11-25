@@ -38,9 +38,9 @@ const COL_FCF_W: f32 = 58.0;
 const COL_SHRS_W: f32 = 56.0;
 const COL_SBC_W: f32 = 52.0;
 const COL_NDOE_W: f32 = 48.0;
-const COL_PRICE_W: f32 = 56.0;
-const COL_STRIKE_W: f32 = 56.0;
-const COL_GAP_W: f32 = 62.0;
+const COL_PRICE_W: f32 = 68.0;
+const COL_STRIKE_W: f32 = 68.0;
+const COL_GAP_W: f32 = 72.0;
 const COL_WARN_W: f32 = 38.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1551,6 +1551,7 @@ fn render_universe_table_card(store: AppStore) -> View {
             )
             .flex_1()
             .min_h(px(0.0))
+            .scrollbar(true)
             .estimated_item_size(px(TABLE_ROW_HEIGHT))
             .keys(move || {
                 store

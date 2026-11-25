@@ -1,6 +1,6 @@
 # Agent 接口：Munger Workbench 数据与 CLI 契约
 
-人类使用 Longbridge NSH `0.5.1` 原生桌面窗口（`open apps/m3-nsh/artifacts/M3.app` 或 `/Applications/M3.app`）浏览、调参和记录判断；Alan / Agent 通过 `m3` CLI（`~/.local/bin/m3`、`apps/m3-nsh/m3` 或 `cargo run -p m3-cli --`）与本地 JSON 文件工作，**不依赖屏幕截图或 Computer Use**。
+人类使用 Longbridge NSH `0.7.0` 原生桌面窗口（`open apps/m3-nsh/artifacts/M3.app` 或 `/Applications/M3.app`）浏览、调参和记录判断；Alan / Agent 通过 `m3` CLI（`~/.local/bin/m3`、`apps/m3-nsh/m3` 或 `cargo run -p m3-cli --`）与本地 JSON 文件工作，**不依赖屏幕截图或 Computer Use**。
 
 ## 1. CLI 命令一览
 

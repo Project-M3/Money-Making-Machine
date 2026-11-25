@@ -1,6 +1,6 @@
 # M3 NSH 芒格价值研究工作台
 
-低焦虑、高密度的 macOS 原生桌面研究工作台，基于 Rust 1.98.1 + Longbridge NSH `0.5.1` 构建；确定性内核与 CLI 分别沉淀在 `crates/m3-core`（macOS 主力 + iOS-ready 路径抽象，零 UI 框架依赖）与 `crates/m3-cli`（`m3`）。采用与黑底白字像素风 `M3` 应用图标一脉相承的**深黑曜石精度仪表盘**设计：原生透明沉浸式标题栏（Immersive Titlebar）、左侧边栏、像素风 `M3` 徽标与 `TTM / FY` 分段控制器。由确定性本地 Rust 引擎从 SEC EDGAR 官方 XBRL 财报与 Yahoo Finance 日级公开行情计算 5–8 年 ROIC、严苛股东盈余（`OCF - CapEx - SBC`）、股本缩减/稀释率、反向隐含增速与击球价，配合 Alan 的跨学科审讯档案与费曼答辩记录使用。
+低焦虑、高密度的 macOS 原生桌面研究工作台，基于 Rust 1.98.1 + Longbridge NSH `0.7.0` 构建；确定性内核与 CLI 分别沉淀在 `crates/m3-core`（macOS 主力 + iOS-ready 路径抽象，零 UI 框架依赖）与 `crates/m3-cli`（`m3`）。采用与黑底白字像素风 `M3` 应用图标一脉相承的**深黑曜石精度仪表盘**设计：原生透明沉浸式标题栏（Immersive Titlebar）、左侧边栏、像素风 `M3` 徽标与 `TTM / FY` 分段控制器。由确定性本地 Rust 引擎从 SEC EDGAR 官方 XBRL 财报与 Yahoo Finance 日级公开行情计算 5–8 年 ROIC、严苛股东盈余（`OCF - CapEx - SBC`）、股本缩减/稀释率、反向隐含增速与击球价，配合 Alan 的跨学科审讯档案与费曼答辩记录使用。
 
 ```sh
 # 本机正常安装到 /Applications/M3.app + ~/.local/bin/m3（从 GitHub Release 下载并绑定工作区）
