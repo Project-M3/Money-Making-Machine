@@ -2051,3 +2051,147 @@ fn update_check_state_machine_handles_channel_switch_and_stale_results() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn async_bridge_tasks_survive_transient_owner_disposal() {
+    use crate::stores::async_bridge::{run_blocking_or_err, run_streamed_blocking};
+    use nsh_core::element::{RustCall, RustOp, ToJs};
+    use nsh_core::{ApproxTextEngine, Core, Op};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::time::{Duration, Instant};
+
+    fn run_in_core(core: &mut Core<ApproxTextEngine>, call: u32, f: impl FnOnce() + 'static) {
+        let slot = RefCell::new(Some(f));
+        core.apply(Op::Rust(RustOp {
+            call,
+            run: RustCall::Op(Box::new(move |_| {
+                if let Some(cb) = slot.borrow_mut().take() {
+                    cb();
+                }
+                Ok(Box::new(()) as Box<dyn ToJs>)
+            })),
+        }))
+        .unwrap();
+    }
+
+    fn pump_until(core: &mut Core<ApproxTextEngine>, flag: &AtomicBool) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !flag.load(Ordering::Acquire) && Instant::now() < deadline {
+            core.run_component_tasks();
+            if !flag.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        assert!(
+            flag.load(Ordering::Acquire),
+            "timed out waiting for async_bridge callback"
+        );
+    }
+
+    let mut core = Core::new(ApproxTextEngine, size(px(800.0), px(600.0)));
+
+    // Scenario A: Live transient owner (e.g. a `dynamic(...)` branch) is disposed before worker finishes.
+    let (gate_a_tx, gate_a_rx) = mpsc::channel::<()>();
+    let done_a = Arc::new(AtomicBool::new(false));
+    let done_a_cb = done_a.clone();
+    let sig_a = Rc::new(RefCell::new(None::<Signal<Option<Result<i32, String>>>>));
+    let sig_a_setup = sig_a.clone();
+    run_in_core(&mut core, 1, move || {
+        let target = signal(None);
+        *sig_a_setup.borrow_mut() = Some(target);
+        let (transient_owner, ()) = create_root(|| {
+            run_blocking_or_err(
+                move || {
+                    let _ = gate_a_rx.recv();
+                    42
+                },
+                move |res| {
+                    target.set(Some(res));
+                    done_a_cb.store(true, Ordering::Release);
+                },
+            );
+        });
+        transient_owner.dispose();
+    });
+    gate_a_tx.send(()).unwrap();
+    pump_until(&mut core, &done_a);
+    let outcome_a = Rc::new(RefCell::new(None));
+    let outcome_a_read = outcome_a.clone();
+    let target_a = sig_a.borrow().unwrap();
+    run_in_core(&mut core, 2, move || {
+        *outcome_a_read.borrow_mut() = target_a.get_untracked();
+    });
+    assert_eq!(outcome_a.borrow().as_ref(), Some(&Ok(42)));
+
+    // Scenario B: Caller runs inside an already-disposed owner (synchronous signal flush invalidated it).
+    let done_b = Arc::new(AtomicBool::new(false));
+    let done_b_cb = done_b.clone();
+    let sig_b = Rc::new(RefCell::new(
+        None::<Signal<Option<Result<&'static str, String>>>>,
+    ));
+    let sig_b_setup = sig_b.clone();
+    run_in_core(&mut core, 3, move || {
+        let target = signal(None);
+        *sig_b_setup.borrow_mut() = Some(target);
+        let (disposed_owner, ()) = create_root(|| {});
+        disposed_owner.dispose();
+        disposed_owner.run(|| {
+            run_blocking_or_err(
+                || "ok",
+                move |res| {
+                    target.set(Some(res));
+                    done_b_cb.store(true, Ordering::Release);
+                },
+            );
+        });
+    });
+    pump_until(&mut core, &done_b);
+    let outcome_b = Rc::new(RefCell::new(None));
+    let outcome_b_read = outcome_b.clone();
+    let target_b = sig_b.borrow().unwrap();
+    run_in_core(&mut core, 4, move || {
+        *outcome_b_read.borrow_mut() = target_b.get_untracked();
+    });
+    assert_eq!(outcome_b.borrow().as_ref(), Some(&Ok("ok")));
+
+    // Scenario C: Streamed blocking task survives transient owner disposal.
+    let (gate_c_tx, gate_c_rx) = mpsc::channel::<()>();
+    let done_c = Arc::new(AtomicBool::new(false));
+    let done_c_cb = done_c.clone();
+    let sig_c = Rc::new(Cell::new(None::<(Signal<Vec<i32>>, Signal<bool>)>));
+    let sig_c_setup = sig_c.clone();
+    run_in_core(&mut core, 5, move || {
+        let events = signal(Vec::new());
+        let finished = signal(false);
+        sig_c_setup.set(Some((events, finished)));
+        let (transient_owner, ()) = create_root(|| {
+            run_streamed_blocking(
+                move |tx| {
+                    let _ = gate_c_rx.recv();
+                    let _ = tx.send(10);
+                    let _ = tx.send(20);
+                },
+                move |ev| {
+                    events.update(|v| v.push(ev));
+                },
+                move || {
+                    finished.set(true);
+                    done_c_cb.store(true, Ordering::Release);
+                },
+            );
+        });
+        transient_owner.dispose();
+    });
+    gate_c_tx.send(()).unwrap();
+    pump_until(&mut core, &done_c);
+    let result_c = Rc::new(RefCell::new((Vec::new(), false)));
+    let result_c_read = result_c.clone();
+    let (events_c, finished_c) = sig_c.get().unwrap();
+    run_in_core(&mut core, 6, move || {
+        *result_c_read.borrow_mut() = (events_c.get_untracked(), finished_c.get_untracked());
+    });
+    assert_eq!(*result_c.borrow(), (vec![10, 20], true));
+}

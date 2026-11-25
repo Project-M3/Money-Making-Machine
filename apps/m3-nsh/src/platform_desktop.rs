@@ -266,7 +266,7 @@ pub fn copy_text_with_notice(store: AppStore, text: String, label: &str) {
 
 /// Reads the system clipboard asynchronously and delivers the text to `on_read`.
 pub fn read_clipboard_async(on_read: impl FnOnce(String) + 'static) {
-    spawn(async move {
+    crate::stores::async_bridge::spawn_detached(async move {
         let s = clipboard_string().await;
         on_read(s);
     });
@@ -285,7 +285,7 @@ pub fn prompt_choose_workspace(store: AppStore) {
         )
         .to_owned();
     let button = l.t("选择工作区", "Select Workspace").to_owned();
-    spawn(async move {
+    crate::stores::async_bridge::spawn_detached(async move {
         if let Ok(Some(paths)) =
             pick_paths(OpenDialog::folders().title(title).button_label(button)).await
             && let Some(dir) = paths.into_iter().next()

@@ -4,9 +4,21 @@
 //! context so `reqwest::blocking::Client` never panics on drop) and wakes the
 //! NSH engine thread immediately via `oneshot` / `mpsc` channels.
 
-use nsh_core::prelude::spawn;
+use nsh_core::prelude::{Owner, spawn};
 use std::sync::Arc;
 use tokio::sync::{Notify, mpsc, oneshot};
+
+/// Spawns an engine-thread async task under `Owner::detached()` so re-rendering a
+/// `dynamic(...)` / `when(...)` branch into a loading state or switching tabs never
+/// cancels an in-flight background store task before its callback runs.
+pub fn spawn_detached<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + 'static,
+{
+    Owner::detached().run(move || {
+        drop(spawn(future));
+    });
+}
 
 fn format_panic_payload(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
@@ -38,12 +50,12 @@ where
     {
         log::warn!("m3-nsh failed to spawn worker thread: {err}");
         let msg = format!("failed to spawn worker thread: {err}");
-        spawn(async move {
+        spawn_detached(async move {
             on_done(Err(msg));
         });
         return;
     }
-    spawn(async move {
+    spawn_detached(async move {
         let outcome = match rx.await {
             Ok(res) => res,
             Err(_) => {
@@ -92,7 +104,7 @@ where
     {
         log::warn!("m3-nsh failed to spawn streaming worker thread: {err}");
     }
-    spawn(async move {
+    spawn_detached(async move {
         while let Some(ev) = rx.recv().await {
             on_event(ev);
         }
@@ -105,7 +117,7 @@ where
 /// The task suspends at `notify.notified().await` (consuming 0 CPU/tokens) and wakes immediately
 /// whenever `M3InterrogatorHandle` pushes an `InterrogatorEvent`.
 pub fn spawn_notify_listener(notify: Arc<Notify>, mut on_wake: impl FnMut() + 'static) {
-    spawn(async move {
+    spawn_detached(async move {
         loop {
             notify.notified().await;
             on_wake();
