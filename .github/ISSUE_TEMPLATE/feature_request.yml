@@ -1,0 +1,39 @@
+name: Feature Request
+description: Propose a new capability, metric, workflow improvement, or UI polish
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Desktop App (m3-nsh)
+        - Core Financial Engine & Lakehouse (m3-core)
+        - CLI (m3)
+        - EmbeddedAlan Research & Guardrails
+        - Website / Docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Motivation
+      description: What workflow gap or friction are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe how this should behave in the UI, CLI, or core engine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered (Optional)
+      description: Any existing workarounds or constraints (including Munger / human-sovereignty boundaries).

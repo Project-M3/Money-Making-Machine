@@ -4,7 +4,9 @@
 
 ## 1. CLI 命令一览
 
-在仓库根目录执行（已安装用户可直接使用 `m3 ...`），所有命令均输出 JSON 至 `stdout`：
+在仓库根目录执行（已安装用户可直接使用 `m3 ...`），所有业务命令均输出 JSON 至 `stdout`：
+- 交互终端（TTY）下自动使用多行缩进美化格式；在管道/重定向给脚本或 Agent 时自动输出单行紧凑 JSON（也可用 `--pretty` 或 `--compact`/`--json` 显式覆盖）。
+- `m3 --help`、`m3 help <command>`、`m3 <command> --help` 直接在 `stdout` 输出结构化帮助文本并退出码为 `0`；`m3 update` 在交互式 `stderr` 下自动渲染单行实时进度条（不影响 `stdout` 纯净 JSON）。
 
 ```json
 {"schema_version": 1, "ok": true, "data": ...}
@@ -15,6 +17,11 @@
 ### 可用子命令
 
 ```sh
+# 0. 帮助与本地环境体检（无需已初始化工作区即可执行）
+apps/m3-nsh/m3 --help
+apps/m3-nsh/m3 help storage
+apps/m3-nsh/m3 doctor
+
 # 1. 查看工作台整体状态、数据新鲜度、各公司击球状态摘要与同步记录
 apps/m3-nsh/m3 status
 
@@ -89,6 +96,12 @@ apps/m3-nsh/m3 themes list
 - `m3 research status [--ticker SYM] [--limit N]`：查询 `m3.duckdb` 中的 `research_runs` 历史记录（`--limit` 默认 `20`，范围 `1..=500`）及当前月度预算状态；未同步湖仓时返回空列表与默认预算配置。
 - `m3 budget status`：返回 `BudgetStatusReport`（`workbench/budget.json` 配额配置 + 当月 Token / USD 消耗 + 剩余额度 + 周度自动触发剩余配额）。
 - `m3 themes sync` / `m3 themes list`：`sync` 基于 `universe_snapshot` 与 `doc_chunks` 确定性聚合 SIC + 隐空间商业原型簇并原子写入 `workbench/themes.json`（保留人类编辑的 `user_notes`）；`list` 读取 `workbench/themes.json`。
+
+#### `m3 industry`、`m3 storage` 与 `m3 doctor` 子命令契约
+
+- `m3 industry list` / `m3 industry show <SLUG>`：列出或读取 `workbench/industries/` 中的行业研究档案（`IndustryProfile` JSON 与 `workbench/industries/<SLUG>.md` 行业 Primer 原文，保留 `## Human Notes`）。
+- `m3 storage status` / `m3 storage clean <CATEGORY|all>`：扫描本地 5 类存储占用（`sec_bulk_archives`、`sec_filings_cache`、`duckdb_lakehouse`、`quotes_and_cache` 与受保护的 `personal_workbench`），支持单独或 `all` 清理可重建缓存；`personal_workbench` 永拒绝删除。
+- `m3 doctor`：无需已初始化工作区即可执行，输出二进制版本/通道、配置文件、工作区计数、DuckDB 湖仓、存储占用与 `/Applications/M3.app` / `gh` / `alan` 可用性体检结果。
 
 ---
 

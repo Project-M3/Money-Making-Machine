@@ -1,0 +1,66 @@
+name: Bug Report
+description: Report a crash, incorrect financial calculation, CLI error, or UI regression
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue in **Project M3**. Please include exact version and reproduction details.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Desktop App (m3-nsh / macOS)
+        - Core Engine / Financial Math (m3-core)
+        - CLI (m3)
+        - Lakehouse / SEC Sync / Events
+        - Self-Updater
+        - Website (m3.thinksmart.systems)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: M3 Version
+      description: Output of `m3 --version` or shown in Settings
+      placeholder: "m3 0.4.2 (stable, commit f23d623)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: macOS Version & Architecture
+      placeholder: "macOS 15.x / Apple Silicon (arm64)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly, including expected vs. actual behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Run `m3 ...` or open View ...
+        2. Click / execute ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`m3 doctor` / Error Output (Optional)"
+      description: Please redact any personal file paths or secrets if desired.
+      render: json

@@ -20,10 +20,10 @@ open artifacts/M3.app
   - `beta`：每次合并到 `main`（改动应用代码/构建脚本）后由 GitHub Actions 自动构建发布 `beta` 滚动预发布（版本号 `<next>-beta.<YYYYMMDD>.<run>`）；
   - `stable`：推送 `vX.Y.Z` tag（可用 `./scripts/release.sh stable X.Y.Z --push`）触发正式版发布；
   - 若配置了 Apple Developer ID 签名与公证 Secrets（`MACOS_CERT_P12_BASE64`、`MACOS_CERT_P12_PASSWORD`、`APPLE_TEAM_ID`、`ASC_API_KEY_P8`、`ASC_API_KEY_ID`、`ASC_API_ISSUER_ID`），CI 会自动切换为严格签名 + 公证模式；未配置时自动降级为 ad-hoc 签名并如实在 `latest.json` 中标注 `signed: false, notarized: false`。
-- **桌面端交互**：启动时低频静默检查更新（`beta` TTL 1h / `stable` TTL 6h）；左侧底部更新胶囊与「设置」页可一键下载校验并重启应用，同时支持命令面板 `⌘K` 检查更新与切换通道。
-- **CLI 命令**：`m3 -V`、`m3 --version`、`m3 version`、`m3 workspace [show|set <PATH>]`、`m3 update [--check] [--channel stable|beta] [--version VER] [--force]`、`m3 update channel [stable|beta]`。
+- **桌面端交互**：启动时低频静默检查更新（`beta` TTL 1h / `stable` TTL 6h）；左侧底部更新胶囊与「设置」页可展示分阶段实时进度条（Resolving / Downloading / Verifying / Extracting / Installing），完成校验后原子替换重启，同时支持命令面板 `⌘K` 检查更新、切换通道与访问 macOS 风格存储管理（Storage Manager）。
+- **CLI 命令**：支持 `m3 --help` / `m3 help [cmd]`、交互终端自动美化与 `--pretty` / `--compact` 输出控制，覆盖 `-V`、`--version`、`version`、`doctor`、`storage [status|clean]`、`industry [list|show]`、`workspace [show|set <PATH>]`、`update [--check] [--channel stable|beta] [--version VER] [--force]`（非 `--check` 交互模式下带 `stderr` 实时进度条）及 `update channel [stable|beta]`。
 
-CLI 二进制 `m3`（由 `crates/m3-cli` 构建并内置在 `M3.app/Contents/MacOS/m3`；仓库内也可通过 `apps/m3-nsh/m3` 包装脚本或 `cargo run -p m3-cli --` 调用）提供面向 Alan 与自动化的结构化 JSON 接口（含 `m3 universe status|sync|screen|peers|similar`、`m3 events catchup|list`、`m3 inbox list|triage`、`m3 research run|status`、`m3 budget status` 与 `m3 themes list|sync`），详见 [Agent 接口](../../docs/agent-interface.md)。
+CLI 二进制 `m3`（由 `crates/m3-cli` 构建并内置在 `M3.app/Contents/MacOS/m3`；仓库内也可通过 `apps/m3-nsh/m3` 包装脚本或 `cargo run -p m3-cli --` 调用）提供面向 Alan 与自动化的结构化 JSON 接口（含 `m3 universe status|sync|screen|peers|similar`、`m3 events catchup|list`、`m3 inbox list|triage`、`m3 industry list|show`、`m3 storage status|clean`、`m3 research run|status`、`m3 budget status` 与 `m3 themes list|sync`），详见 [Agent 接口](../../docs/agent-interface.md)。
 
 ## 核心工作区视图
 

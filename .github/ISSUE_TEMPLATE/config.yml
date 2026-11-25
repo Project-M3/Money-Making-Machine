@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Project M3 Website & Interactive Demo
+    url: https://m3.thinksmart.systems
+    about: Overview, release installer, and interactive workbench preview
+  - name: Architecture & CLI Documentation
+    url: https://github.com/Project-M3/Money-Making-Machine/tree/main/docs
+    about: Read architecture specs, Munger workflow, and JSON CLI contracts before opening an issue
