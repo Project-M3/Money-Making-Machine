@@ -89,6 +89,9 @@ pub struct AppStore {
     pub sync_status: Signal<Option<SyncStatusFile>>,
     pub benchmark: Signal<Option<PriceSnapshot>>,
     pub benchmark_symbol: Signal<String>,
+    pub startup_hydrated: Signal<bool>,
+    pub onboarding_dismissed: Signal<bool>,
+    pub onboarding_applying: Signal<bool>,
 
     // ── Circle Overview / Baskets / Journal / Budget ─────────────────────────
     pub reports: Signal<Vec<MungerReport>>,
@@ -514,6 +517,9 @@ impl AppStore {
             sync_status: signal_with(None, SignalEquals::Never),
             benchmark: signal_with(None, SignalEquals::Never),
             benchmark_symbol: signal("^GSPC".to_owned()),
+            startup_hydrated: signal(false),
+            onboarding_dismissed: signal(false),
+            onboarding_applying: signal(false),
 
             reports: signal_with(Vec::new(), SignalEquals::Never),
             journal: signal_with(default_journal, SignalEquals::Never),
@@ -772,6 +778,7 @@ impl AppStore {
                     self.industry_peer_rows.set(snap.industry_peer_rows);
                 }
 
+                self.startup_hydrated.set(true);
                 self.bootstrap_background();
             },
         );
@@ -814,6 +821,7 @@ impl AppStore {
         self.reload_universe_from_lake();
         self.reload_inbox_from_lake();
         self.reload_budget_from_lake();
+        self.startup_hydrated.set(true);
     }
 
     pub fn reload_from_disk(self) {
@@ -1233,6 +1241,7 @@ impl AppStore {
                 self.paths.set(WorkspacePaths::from_root(canonical.clone()));
                 self.selected_ticker.set(String::new());
                 self.company_open.set(false);
+                self.onboarding_dismissed.set(false);
                 self.reload_all();
                 self.refresh_storage_report();
                 self.set_info_notice(format!(
@@ -1266,6 +1275,7 @@ impl AppStore {
                 self.paths.set(WorkspacePaths::from_root(canonical.clone()));
                 self.selected_ticker.set(String::new());
                 self.company_open.set(false);
+                self.onboarding_dismissed.set(false);
                 self.reload_all();
                 self.refresh_storage_report();
                 self.set_info_notice(format!(
@@ -1581,6 +1591,95 @@ impl AppStore {
                     .set(rep.assumptions.expected_growth_pct);
             }
         });
+    }
+
+    // ── Guided First-Run Onboarding ──────────────────────────────────────────
+
+    /// Returns `true` when the active workspace is fresh and onboarding has not been dismissed.
+    pub fn should_show_onboarding(self) -> bool {
+        if !self.startup_hydrated.get() {
+            return false;
+        }
+        let watchlist_empty = self.reports.with(|r| r.is_empty());
+        let dismissed = self.onboarding_dismissed.get();
+        self.universe_summary.with(|sum| {
+            crate::views::onboarding::is_fresh_workspace_for_onboarding(
+                watchlist_empty,
+                sum.as_ref(),
+                dismissed,
+            )
+        })
+    }
+
+    /// Dismisses the first-run onboarding card for the current session.
+    pub fn dismiss_onboarding(self) {
+        self.onboarding_dismissed.set(true);
+    }
+
+    /// Applies the curated Berkshire × Munger starter pack, refreshes store state,
+    /// switches to Circle Overview, and launches background SEC/price sync.
+    pub fn start_starter_pack_and_sync(self) {
+        let l = self.lang.get_untracked();
+        if self.onboarding_applying.get_untracked()
+            || self.sync_running.get_untracked()
+            || self.universe_syncing.get_untracked()
+        {
+            if self.universe_syncing.get_untracked() {
+                self.set_info_notice(
+                    l.t(
+                        "全美股 L0 正在后台同步中，请等待完成后再装载经典能力圈",
+                        "US L0 lakehouse is syncing in background; wait until it finishes",
+                    )
+                    .to_owned(),
+                );
+            }
+            return;
+        }
+        self.onboarding_applying.set(true);
+        self.set_info_notice(
+            l.t(
+                "正在装载 8 家伯克希尔 × 芒格经典标的…",
+                "Loading 8 Berkshire × Munger classic companies…",
+            )
+            .to_owned(),
+        );
+
+        let root = self.paths.get_untracked().repo_root;
+        run_blocking_result(
+            move || {
+                let paths = WorkspacePaths::from_root(root);
+                m3_core::starter::apply_starter_pack(&paths).map_err(|e| format!("{e:#}"))
+            },
+            move |res| {
+                self.onboarding_applying.set(false);
+                let l = self.lang.get_untracked();
+                match res {
+                    Ok(report) => {
+                        self.reload_from_disk();
+                        self.open_tab(WorkspaceTab::Baskets);
+                        self.set_info_notice(match l {
+                            UiLang::Zh => format!(
+                                "已装载 {} 家经典标的（共 {} 家）· 正在后台同步财报、股价与 K 线…",
+                                report.added_tickers.len(),
+                                report.watchlist_total
+                            ),
+                            UiLang::En => format!(
+                                "Loaded {} classic companies ({} total) · syncing filings, quotes & K-lines…",
+                                report.added_tickers.len(),
+                                report.watchlist_total
+                            ),
+                        });
+                        self.start_sync();
+                    }
+                    Err(err) => {
+                        self.set_error_notice(format!(
+                            "{}: {err}",
+                            l.t("装载经典能力圈失败", "Failed to load starter pack")
+                        ));
+                    }
+                }
+            },
+        );
     }
 
     // ── Circle Sync (Event-Driven Blocking) ──────────────────────────────────

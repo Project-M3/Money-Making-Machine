@@ -9,6 +9,7 @@ use crate::format::{
 use crate::platform_desktop::{copy_text_with_notice, open_external_url};
 use crate::stores::{AppStore, InboxFilter};
 use crate::theme::*;
+use crate::views::onboarding::onboarding_card;
 use m3_core::i18n::UiLang;
 use m3_core::industry::{self, IndustryStatus};
 use m3_core::lake::{UniverseDrawerDetails, UniverseRow};
@@ -280,6 +281,7 @@ fn render_inbox_filter_bar(store: AppStore) -> View {
 
 fn render_inbox_body(store: AppStore) -> View {
     let l = store.lang.get();
+    let show_onboarding = store.should_show_onboarding();
     let lake_present = store.universe_lake_present.get();
     let lake_summary = store.universe_summary.get();
     let lake_empty = !lake_present
@@ -290,13 +292,17 @@ fn render_inbox_body(store: AppStore) -> View {
     let st = store.inbox_state.get();
 
     if lake_empty && signals.is_empty() {
-        return view().flex_1().min_h(px(0.0)).flex().flex_col().child(
-            scroll().flex_1().min_h(px(0.0)).child(
-                view()
-                    .p(px(24.0))
-                    .child(render_inbox_empty_lake_state(store, l)),
-            ),
-        );
+        let mut content = view().p(px(24.0)).flex().flex_col().gap(px(16.0));
+        if show_onboarding {
+            content = content.child(onboarding_card(store));
+        }
+        content = content.child(render_inbox_empty_lake_state(store, l));
+        return view()
+            .flex_1()
+            .min_h(px(0.0))
+            .flex()
+            .flex_col()
+            .child(scroll().flex_1().min_h(px(0.0)).child(content));
     }
 
     let visible = filter_inbox_signals(&signals, st.filter);
@@ -321,7 +327,7 @@ fn render_inbox_body(store: AppStore) -> View {
         None => render_inbox_no_selection(l),
     };
 
-    view()
+    let split = view()
         .flex_1()
         .min_h(px(0.0))
         .w_full()
@@ -353,7 +359,29 @@ fn render_inbox_body(store: AppStore) -> View {
                         .min_h(px(0.0))
                         .child(view().p(px(20.0)).child(detail_inner)),
                 ),
-        )
+        );
+
+    if show_onboarding {
+        view()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(
+                view()
+                    .px(px(20.0))
+                    .pt(px(14.0))
+                    .pb(px(10.0))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .child(onboarding_card(store)),
+            )
+            .child(split)
+    } else {
+        split
+    }
 }
 
 fn render_inbox_row(

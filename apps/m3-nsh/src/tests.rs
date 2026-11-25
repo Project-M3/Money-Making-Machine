@@ -31,6 +31,7 @@ use crate::views::chart::{
     kline_price_to_y, select_kline_bars,
 };
 use crate::views::company::roic_unavailable_label;
+use crate::views::onboarding::{is_fresh_workspace_for_onboarding, starter_pack_summary_line};
 use crate::views::universe::{
     build_scatter_model, hit_test_scatter_point, is_lake_empty, scatter_point_px,
 };
@@ -1810,4 +1811,70 @@ fn update_progress_formats_stages_and_bytes_bilingually() {
     let ext = UpdateProgress::for_stage(UpdateStage::Extracting, 0, None);
     assert!(format_update_progress(&ext, UiLang::Zh).contains("M3.app"));
     assert!(format_update_progress(&ext, UiLang::En).contains("M3.app"));
+}
+
+#[test]
+fn onboarding_visibility_and_starter_helpers() {
+    let empty_summary = UniverseSummary::default();
+    let populated_summary = UniverseSummary {
+        total_companies: 6120,
+        ..UniverseSummary::default()
+    };
+
+    assert!(is_fresh_workspace_for_onboarding(true, None, false));
+    assert!(is_fresh_workspace_for_onboarding(
+        true,
+        Some(&empty_summary),
+        false
+    ));
+    assert!(!is_fresh_workspace_for_onboarding(false, None, false));
+    assert!(!is_fresh_workspace_for_onboarding(
+        true,
+        Some(&populated_summary),
+        false
+    ));
+    assert!(!is_fresh_workspace_for_onboarding(true, None, true));
+
+    for lang in [UiLang::Zh, UiLang::En] {
+        let line = starter_pack_summary_line(lang);
+        for ticker in ["MCO", "COST", "AAPL", "KO", "VRSN", "DPZ", "AAL", "INTC"] {
+            assert!(line.contains(ticker), "missing {ticker} in {line}");
+        }
+    }
+
+    let root = temp_workspace("onboarding_store");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init empty workspace");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        |store| {
+            assert!(store.startup_hydrated.get_untracked());
+            assert!(store.should_show_onboarding());
+
+            // Session dismiss hides onboarding without modifying workspace files.
+            store.dismiss_onboarding();
+            assert!(!store.should_show_onboarding());
+
+            // Resetting dismissal and populating universe_summary hides onboarding.
+            store.onboarding_dismissed.set(false);
+            assert!(store.should_show_onboarding());
+            store.universe_summary.set(Some(populated_summary.clone()));
+            assert!(!store.should_show_onboarding());
+
+            // Clearing universe_summary shows onboarding again until starter pack loads.
+            store.universe_summary.set(None);
+            assert!(store.should_show_onboarding());
+
+            let ws = store.paths.get_untracked();
+            let rep = m3_core::starter::apply_starter_pack(&ws).expect("apply starter pack");
+            assert_eq!(rep.added_tickers.len(), 8);
+            store.reload_from_disk();
+
+            assert!(!store.should_show_onboarding());
+            assert_eq!(store.reports.with_untracked(|r| r.len()), 8);
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

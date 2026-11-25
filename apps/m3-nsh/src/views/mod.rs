@@ -7,5 +7,6 @@ pub mod company;
 pub mod inbox;
 pub mod industry;
 pub mod journal;
+pub mod onboarding;
 pub mod settings;
 pub mod universe;

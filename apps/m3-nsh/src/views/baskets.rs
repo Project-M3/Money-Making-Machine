@@ -13,6 +13,7 @@ use crate::stores::{
     AppStore, BasketsViewMode, CompanyViewTab, SortCol, StatusQuickFilter, WorkspaceTab,
 };
 use crate::theme::*;
+use crate::views::onboarding::onboarding_card;
 use m3_core::i18n::UiLang;
 use m3_core::model::{Bucket, MungerReport, primary_circle_tag, secondary_circle_detail};
 use nsh_core::prelude::*;
@@ -488,6 +489,15 @@ fn render_baskets_body(store: AppStore) -> View {
         || status_filter != StatusQuickFilter::All;
 
     let mut root = view().w_full().flex().flex_col();
+
+    if store.should_show_onboarding() {
+        root = root.child(
+            view()
+                .px(px(20.0))
+                .pt(px(16.0))
+                .child(onboarding_card(store)),
+        );
+    }
 
     if !tags.is_empty() {
         root = root.child(

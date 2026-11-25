@@ -20,6 +20,7 @@ pub mod latent;
 pub mod market;
 pub mod model;
 pub mod research;
+pub mod starter;
 pub mod storage;
 pub mod store;
 pub mod universe;
