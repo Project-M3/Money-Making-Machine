@@ -12,7 +12,7 @@ Only the latest release in the active `0.4.x` line receives security fixes and s
 ## Local-First Security Posture
 
 - **No Brokerage Credentials or Execution**: Project M3 does not connect to brokerage accounts, store trading API keys, or submit orders.
-- **Verified Self-Updates**: `m3 update` downloads release archives over HTTPS (or via authenticated `gh` token when needed), verifies downloaded byte sizes and SHA-256 checksums before extraction, and atomically swaps `/Applications/M3.app`.
+- **Verified Self-Updates**: `m3 update` downloads public release archives over HTTPS, verifies downloaded byte sizes and SHA-256 checksums before extraction, and atomically swaps `/Applications/M3.app`.
 - **Protected Personal Workbench**: Storage cleanup (`Settings -> Storage` and `m3 storage clean`) explicitly refuses to delete `personal_workbench` files (`watchlist.json`, dossiers, memos, industries, decision journal, and budgets).
 
 ## Reporting a Vulnerability

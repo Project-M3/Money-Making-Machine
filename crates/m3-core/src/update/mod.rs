@@ -1,4 +1,4 @@
-//! Self-update engine, release channel resolution, and private GitHub Release downloads.
+//! Self-update engine, release channel resolution, and verified public GitHub Release downloads.
 
 pub mod channel;
 #[cfg(target_os = "macos")]
@@ -72,8 +72,6 @@ use install::{
 use passive_check::{LastCheckCache, passive_check_cache_path, write_cache_atomic};
 #[cfg(target_os = "macos")]
 use reqwest::blocking::Client;
-#[cfg(target_os = "macos")]
-use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
@@ -88,29 +86,27 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "macos", test))]
+use semver::display_tag;
 #[cfg(target_os = "macos")]
-use semver::{current_target_triple, display_tag, is_newer_version};
+use semver::{current_target_triple, is_newer_version};
 use semver::{normalize_version_str, parse_semver};
 
-/// Default GitHub owner/repo hosting M3 releases (private repository supported via `gh` token).
+/// Default GitHub owner/repo hosting public M3 releases.
 pub const DEFAULT_GITHUB_REPO: &str = "Project-M3/Money-Making-Machine";
-/// Default GitHub REST API base URL.
-pub const GITHUB_API_BASE: &str = "https://api.github.com";
+/// Default public GitHub web base URL hosting Release download endpoints.
+pub const DEFAULT_GITHUB_BASE_URL: &str = "https://github.com";
 
 #[cfg(target_os = "macos")]
 const MANIFEST_CONNECT_TIMEOUT_SECS: u64 = 10;
 #[cfg(target_os = "macos")]
 const MANIFEST_TIMEOUT_SECS: u64 = 15;
 #[cfg(target_os = "macos")]
-const GH_TOKEN_TIMEOUT_SECS: u64 = 3;
-#[cfg(target_os = "macos")]
 const ARCHIVE_CONNECT_TIMEOUT_SECS: u64 = 30;
 #[cfg(target_os = "macos")]
 const ARCHIVE_MAX_TOTAL_TIMEOUT_SECS: u64 = 600;
 #[cfg(target_os = "macos")]
 const MAX_GITHUB_JSON_BYTES: usize = 2 * 1024 * 1024;
-#[cfg(target_os = "macos")]
-const GH_CANDIDATES: [&str; 3] = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
 
 /// Return the semantic version compiled into this binary.
 pub fn current_binary_version() -> &'static str {
@@ -175,25 +171,6 @@ pub struct TargetArtifact {
     pub notarized: bool,
 }
 
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    #[serde(default)]
-    html_url: Option<String>,
-    #[serde(default)]
-    assets: Vec<GitHubReleaseAsset>,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Deserialize)]
-struct GitHubReleaseAsset {
-    name: String,
-    url: String,
-    #[serde(default)]
-    size: u64,
-}
-
 /// Options for checking or applying an update.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateOptions {
@@ -236,87 +213,30 @@ pub struct UpdateReport {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone)]
-enum DownloadSource {
-    GitHubApiAsset { api_asset_url: String },
-    DirectUrl { url: String },
-}
-
-#[cfg(target_os = "macos")]
 struct ResolvedRelease {
     manifest: ReleaseManifest,
     artifact: TargetArtifact,
     source_label: String,
-    archive_download: DownloadSource,
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn run_command_stdout_with_timeout(
-    program: &str,
-    args: &[&str],
-    timeout: std::time::Duration,
-) -> Option<String> {
-    use std::io::Read as _;
-    use std::process::{Command as StdCommand, Stdio as StdStdio};
-
-    let mut child = StdCommand::new(program)
-        .args(args)
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(StdStdio::null())
-        .stdout(StdStdio::piped())
-        .stderr(StdStdio::null())
-        .spawn()
-        .ok()?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return None;
-                }
-                let mut buf = Vec::new();
-                if let Some(mut stdout) = child.stdout.take() {
-                    let _ = stdout.read_to_end(&mut buf);
-                }
-                let text = String::from_utf8_lossy(&buf).trim().to_string();
-                return (!text.is_empty()).then_some(text);
-            }
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
+fn default_manifest_url(
+    base_url: &str,
+    repo: &str,
+    target_channel: ReleaseChannel,
+    explicit_version: Option<&str>,
+) -> Result<String> {
+    let base = base_url.trim().trim_end_matches('/');
+    let repo = repo.trim().trim_matches('/');
+    if let Some(ver) = explicit_version {
+        let norm = normalize_version_str(ver)?;
+        let tag = display_tag(&norm);
+        return Ok(format!("{base}/{repo}/releases/download/{tag}/latest.json"));
     }
-}
-
-/// Resolve a GitHub bearer token from env vars or `gh auth token` (Finder-safe absolute paths).
-#[cfg(target_os = "macos")]
-pub fn resolve_github_token() -> Option<String> {
-    for var in ["M3_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
-        if let Ok(val) = std::env::var(var) {
-            let trimmed = val.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    let timeout = Duration::from_secs(GH_TOKEN_TIMEOUT_SECS);
-    for bin in GH_CANDIDATES {
-        if let Some(token) = run_command_stdout_with_timeout(bin, &["auth", "token"], timeout) {
-            return Some(token);
-        }
-    }
-    None
+    Ok(match target_channel {
+        ReleaseChannel::Stable => format!("{base}/{repo}/releases/latest/download/latest.json"),
+        ReleaseChannel::Beta => format!("{base}/{repo}/releases/download/beta/latest.json"),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -329,18 +249,17 @@ fn github_repo() -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn github_api_base() -> String {
-    std::env::var("M3_GITHUB_API_URL")
+fn github_base_url() -> String {
+    std::env::var("M3_GITHUB_BASE_URL")
         .ok()
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| GITHUB_API_BASE.to_string())
+        .unwrap_or_else(|| DEFAULT_GITHUB_BASE_URL.to_string())
 }
 
 #[cfg(target_os = "macos")]
 struct UpdaterClients {
     manifest: Client,
-    no_redirect: Client,
     download: Client,
 }
 
@@ -353,24 +272,13 @@ fn build_clients() -> Result<UpdaterClients> {
         .timeout(Duration::from_secs(MANIFEST_TIMEOUT_SECS))
         .build()
         .context("build manifest HTTP client for M3 updater")?;
-    let no_redirect = Client::builder()
-        .user_agent(ua.clone())
-        .redirect(Policy::none())
-        .connect_timeout(Duration::from_secs(MANIFEST_CONNECT_TIMEOUT_SECS))
-        .timeout(Duration::from_secs(MANIFEST_TIMEOUT_SECS))
-        .build()
-        .context("build no-redirect HTTP client for M3 updater")?;
     let download = Client::builder()
         .user_agent(ua)
         .connect_timeout(Duration::from_secs(ARCHIVE_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(ARCHIVE_MAX_TOTAL_TIMEOUT_SECS))
         .build()
         .context("build download HTTP client for M3 updater")?;
-    Ok(UpdaterClients {
-        manifest,
-        no_redirect,
-        download,
-    })
+    Ok(UpdaterClients { manifest, download })
 }
 
 #[cfg(target_os = "macos")]
@@ -426,65 +334,8 @@ pub fn validate_manifest_metadata(
 }
 
 #[cfg(target_os = "macos")]
-fn is_github_api_url(url: &str, api_base: &str) -> bool {
-    url.starts_with(api_base) || url.starts_with(GITHUB_API_BASE)
-}
-
-#[cfg(target_os = "macos")]
-fn fetch_json_bytes_with_github_redirect(
-    standard: &Client,
-    no_redirect: &Client,
-    asset_api_url: &str,
-    token: Option<&str>,
-) -> Result<Vec<u8>> {
-    let mut req = no_redirect
-        .get(asset_api_url)
-        .header("Accept", "application/octet-stream")
-        .header("X-GitHub-Api-Version", "2022-11-28");
-    if let Some(tok) = token {
-        req = req.header("Authorization", format!("Bearer {tok}"));
-    }
-    let resp = req
-        .send()
-        .with_context(|| format!("request GitHub release asset `{asset_api_url}`"))?;
-    let status = resp.status();
-    if status.is_redirection() {
-        let loc = resp
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|v| v.to_str().ok())
-            .context("GitHub release asset redirect missing Location header")?
-            .to_string();
-        let follow = standard
-            .get(&loc)
-            .send()
-            .context("download redirected GitHub release asset")?
-            .error_for_status()
-            .context("redirected GitHub release asset returned HTTP error")?;
-        let bytes = follow
-            .bytes()
-            .context("read redirected GitHub release asset bytes")?;
-        ensure!(
-            bytes.len() <= MAX_GITHUB_JSON_BYTES,
-            "manifest asset exceeds {MAX_GITHUB_JSON_BYTES} bytes"
-        );
-        return Ok(bytes.to_vec());
-    }
-    if !status.is_success() {
-        bail!("GitHub release asset request failed with HTTP {status}");
-    }
-    let bytes = resp.bytes().context("read GitHub release asset bytes")?;
-    ensure!(
-        bytes.len() <= MAX_GITHUB_JSON_BYTES,
-        "manifest asset exceeds {MAX_GITHUB_JSON_BYTES} bytes"
-    );
-    Ok(bytes.to_vec())
-}
-
-#[cfg(target_os = "macos")]
 fn resolve_release(
-    standard: &Client,
-    no_redirect: &Client,
+    manifest_client: &Client,
     opts: &UpdateOptions,
     target_channel: ReleaseChannel,
     target_triple: &str,
@@ -501,135 +352,38 @@ fn resolve_release(
         .map(str::to_string)
         .or(env_manifest_url);
 
-    let api_base = github_api_base();
-    let token = resolve_github_token();
-
-    if let Some(manifest_url) = explicit_manifest_url {
-        validate_http_url("manifest_url", &manifest_url)?;
-        let bytes = if is_github_api_url(&manifest_url, &api_base) {
-            fetch_json_bytes_with_github_redirect(
-                standard,
-                no_redirect,
-                &manifest_url,
-                token.as_deref(),
-            )?
-        } else {
-            let resp = standard
-                .get(&manifest_url)
-                .send()
-                .with_context(|| format!("fetch release manifest `{manifest_url}`"))?
-                .error_for_status()
-                .with_context(|| format!("manifest endpoint `{manifest_url}` returned error"))?;
-            let b = resp.bytes().context("read release manifest bytes")?;
-            ensure!(
-                b.len() <= MAX_GITHUB_JSON_BYTES,
-                "release manifest exceeds {MAX_GITHUB_JSON_BYTES} bytes"
-            );
-            b.to_vec()
-        };
-        let manifest: ReleaseManifest =
-            serde_json::from_slice(&bytes).context("parse release manifest JSON")?;
-        validate_manifest_metadata(
-            &manifest,
-            opts.version.as_deref(),
-            if opts.version.is_some() {
-                None
-            } else {
-                Some(target_channel)
-            },
-        )?;
-        let artifact = manifest
-            .targets
-            .get(target_triple)
-            .with_context(|| format!("manifest has no target `{target_triple}`"))?
-            .clone();
-        validate_http_url("target download url", &artifact.url)?;
-        ensure!(
-            is_valid_sha256_hex(&artifact.sha256),
-            "invalid target sha256 `{}`",
-            artifact.sha256
-        );
-        return Ok(ResolvedRelease {
-            manifest,
-            archive_download: if is_github_api_url(&artifact.url, &api_base) {
-                DownloadSource::GitHubApiAsset {
-                    api_asset_url: artifact.url.clone(),
-                }
-            } else {
-                DownloadSource::DirectUrl {
-                    url: artifact.url.clone(),
-                }
-            },
-            artifact,
-            source_label: manifest_url,
-        });
-    }
-
     let repo = github_repo();
-    let release_endpoint = if let Some(ver) = opts.version.as_deref() {
-        let norm = normalize_version_str(ver)?;
-        let tag = display_tag(&norm);
-        format!("{api_base}/repos/{repo}/releases/tags/{tag}")
-    } else {
-        match target_channel {
-            ReleaseChannel::Stable => format!("{api_base}/repos/{repo}/releases/latest"),
-            ReleaseChannel::Beta => format!("{api_base}/repos/{repo}/releases/tags/beta"),
-        }
+    let manifest_url = match explicit_manifest_url {
+        Some(url) => url,
+        None => default_manifest_url(
+            &github_base_url(),
+            &repo,
+            target_channel,
+            opts.version.as_deref(),
+        )?,
     };
+    validate_http_url("manifest_url", &manifest_url)?;
 
-    let mut req = standard
-        .get(&release_endpoint)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28");
-    if let Some(tok) = token.as_deref() {
-        req = req.header("Authorization", format!("Bearer {tok}"));
-    }
-
-    let resp = req
+    let resp = manifest_client
+        .get(&manifest_url)
+        .header("Accept", "application/json")
         .send()
-        .with_context(|| format!("query GitHub Release `{release_endpoint}`"))?;
+        .with_context(|| format!("fetch release manifest `{manifest_url}`"))?;
     let status = resp.status();
-    if matches!(status.as_u16(), 401 | 403) {
-        bail!(
-            "GitHub API 请求受限或鉴权失败（HTTP {status}）。如遇匿名限流，请运行 `gh auth login` 或设置环境变量 `M3_GITHUB_TOKEN`。"
-        );
-    }
     if status.as_u16() == 404 {
-        if token.is_none() {
-            bail!(
-                "未找到仓库 `{repo}` 在 `{target_channel}` 通道的 Release（HTTP 404）。若使用私有镜像仓库，请先执行 `gh auth login` 或设置 `M3_GITHUB_TOKEN`。"
-            );
-        }
-        bail!(
-            "未找到仓库 `{repo}` 在 `{target_channel}` 通道的 Release（{release_endpoint} 返回 404）。"
-        );
+        bail!("未找到仓库 `{repo}` 在 `{target_channel}` 通道的发布清单（HTTP 404）。");
     }
     if !status.is_success() {
-        bail!("GitHub Release API `{release_endpoint}` 返回异常状态 HTTP {status}");
+        bail!("拉取发布清单 `{manifest_url}` 失败（HTTP {status}）");
     }
+    let bytes = resp.bytes().context("read release manifest bytes")?;
+    ensure!(
+        bytes.len() <= MAX_GITHUB_JSON_BYTES,
+        "release manifest exceeds {MAX_GITHUB_JSON_BYTES} bytes"
+    );
 
-    let release: GitHubRelease = resp
-        .json()
-        .context("parse GitHub Release API response JSON")?;
-    let manifest_asset = release
-        .assets
-        .iter()
-        .find(|a| a.name == "latest.json")
-        .with_context(|| format!("Release `{}` 缺少清单文件 `latest.json`", release.tag_name))?;
-
-    let manifest_bytes = fetch_json_bytes_with_github_redirect(
-        standard,
-        no_redirect,
-        &manifest_asset.url,
-        token.as_deref(),
-    )
-    .with_context(|| format!("fetch `latest.json` from release `{}`", release.tag_name))?;
-    let mut manifest: ReleaseManifest =
-        serde_json::from_slice(&manifest_bytes).context("parse `latest.json` from release")?;
-    if manifest.release_url.is_none() {
-        manifest.release_url = release.html_url;
-    }
-
+    let manifest: ReleaseManifest =
+        serde_json::from_slice(&bytes).context("parse release manifest JSON")?;
     validate_manifest_metadata(
         &manifest,
         opts.version.as_deref(),
@@ -645,116 +399,40 @@ fn resolve_release(
         .get(target_triple)
         .with_context(|| format!("release manifest has no target `{target_triple}`"))?
         .clone();
+    validate_http_url("target download url", &artifact.url)?;
     ensure!(
         is_valid_sha256_hex(&artifact.sha256),
         "release manifest target `{target_triple}` has invalid sha256 `{}`",
         artifact.sha256
     );
 
-    let archive_asset_name = if artifact.asset.trim().is_empty() {
-        format!("m3-{}-{target_triple}.tar.gz", manifest.version)
-    } else {
-        artifact.asset.clone()
-    };
-
-    let archive_download =
-        if let Some(gh_asset) = release.assets.iter().find(|a| a.name == archive_asset_name) {
-            DownloadSource::GitHubApiAsset {
-                api_asset_url: gh_asset.url.clone(),
-            }
-        } else if !artifact.url.trim().is_empty() {
-            validate_http_url("target download url", &artifact.url)?;
-            if is_github_api_url(&artifact.url, &api_base) {
-                DownloadSource::GitHubApiAsset {
-                    api_asset_url: artifact.url.clone(),
-                }
-            } else {
-                DownloadSource::DirectUrl {
-                    url: artifact.url.clone(),
-                }
-            }
-        } else {
-            bail!(
-                "Release `{}` 中缺少目标资产 `{archive_asset_name}`",
-                release.tag_name
-            );
-        };
-    let mut artifact = artifact;
-    if artifact.size == 0
-        && let Some(gh_asset) = release.assets.iter().find(|a| a.name == archive_asset_name)
-    {
-        artifact.size = gh_asset.size;
-    }
-
     Ok(ResolvedRelease {
         manifest,
         artifact,
-        source_label: release_endpoint,
-        archive_download,
+        source_label: manifest_url,
     })
 }
 
 #[cfg(target_os = "macos")]
-fn open_archive_stream(
-    standard: &Client,
-    no_redirect: &Client,
-    source: &DownloadSource,
-    token: Option<&str>,
-) -> Result<reqwest::blocking::Response> {
-    match source {
-        DownloadSource::DirectUrl { url } => standard
-            .get(url)
-            .send()
-            .with_context(|| format!("download release archive from `{url}`"))?
-            .error_for_status()
-            .with_context(|| format!("release archive download failed for `{url}`")),
-        DownloadSource::GitHubApiAsset { api_asset_url } => {
-            let mut req = no_redirect
-                .get(api_asset_url)
-                .header("Accept", "application/octet-stream")
-                .header("X-GitHub-Api-Version", "2022-11-28");
-            if let Some(tok) = token {
-                req = req.header("Authorization", format!("Bearer {tok}"));
-            }
-            let resp = req
-                .send()
-                .with_context(|| format!("request GitHub release archive `{api_asset_url}`"))?;
-            let status = resp.status();
-            if status.is_redirection() {
-                let loc = resp
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .and_then(|v| v.to_str().ok())
-                    .context("GitHub release archive redirect missing Location header")?
-                    .to_string();
-                return standard
-                    .get(&loc)
-                    .send()
-                    .context("download redirected GitHub release archive")?
-                    .error_for_status()
-                    .context("redirected GitHub release archive returned HTTP error");
-            }
-            if !status.is_success() {
-                bail!("GitHub release archive API returned HTTP {status}");
-            }
-            Ok(resp)
-        }
-    }
+fn open_archive_stream(download_client: &Client, url: &str) -> Result<reqwest::blocking::Response> {
+    download_client
+        .get(url)
+        .send()
+        .with_context(|| format!("download release archive from `{url}`"))?
+        .error_for_status()
+        .with_context(|| format!("release archive download failed for `{url}`"))
 }
 
 #[cfg(target_os = "macos")]
 fn download_and_verify_archive(
-    standard: &Client,
-    no_redirect: &Client,
-    source: &DownloadSource,
+    download_client: &Client,
     artifact: &TargetArtifact,
     archive_path: &Path,
-    token: Option<&str>,
     on_progress: &mut impl FnMut(UpdateProgress),
 ) -> Result<()> {
     let expected_size = artifact.size;
     let expected_sha256 = artifact.sha256.as_str();
-    let mut response = open_archive_stream(standard, no_redirect, source, token)?;
+    let mut response = open_archive_stream(download_client, &artifact.url)?;
     let file = File::create(archive_path)
         .with_context(|| format!("create staged archive `{}`", archive_path.display()))?;
     let mut writer = BufWriter::new(file);
@@ -902,13 +580,7 @@ pub fn run_update_with_progress(
 
     on_progress(UpdateProgress::for_stage(UpdateStage::Resolving, 0, None));
     let clients = build_clients()?;
-    let resolved = resolve_release(
-        &clients.manifest,
-        &clients.no_redirect,
-        opts,
-        target_channel,
-        target_triple,
-    )?;
+    let resolved = resolve_release(&clients.manifest, opts, target_channel, target_triple)?;
     let manifest_channel = ReleaseChannel::parse(&resolved.manifest.channel)?;
 
     let is_channel_switch = manifest_channel != binary_channel && opts.version.is_none();
@@ -981,17 +653,13 @@ pub fn run_update_with_progress(
         .context("target app path has no parent directory")?;
     let staging = SameFsStagingDir::create_in(app_parent)?;
     let archive_path = staging.path().join(&asset_name);
-    let token = resolve_github_token();
 
     let archive_total = (resolved.artifact.size > 0).then_some(resolved.artifact.size);
 
     download_and_verify_archive(
         &clients.download,
-        &clients.no_redirect,
-        &resolved.archive_download,
         &resolved.artifact,
         &archive_path,
-        token.as_deref(),
         &mut on_progress,
     )?;
 
@@ -1086,13 +754,7 @@ pub fn refresh_passive_cache_once(
         channel: Some(target_channel),
         ..Default::default()
     };
-    let resolved = resolve_release(
-        &clients.manifest,
-        &clients.no_redirect,
-        &opts,
-        target_channel,
-        target_triple,
-    )?;
+    let resolved = resolve_release(&clients.manifest, &opts, target_channel, target_triple)?;
     let manifest_channel = ReleaseChannel::parse(&resolved.manifest.channel)?;
     write_last_check_cache_best_effort(&resolved.manifest, manifest_channel);
 
