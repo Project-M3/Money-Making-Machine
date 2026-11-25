@@ -4,7 +4,7 @@
 
 # Project M3 — Money · Making · Machine
 
-**Local-first, event-driven Munger value investing workbench for macOS & CLI.**
+**Invest like Charlie Munger** — *Learn markets, study industries, pick compounding businesses, and evolve your value strategies into verifiable returns.*
 
 [![CI](https://github.com/Project-M3/Money-Making-Machine/actions/workflows/ci.yml/badge.svg)](https://github.com/Project-M3/Money-Making-Machine/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/Project-M3/Money-Making-Machine?label=release)](https://github.com/Project-M3/Money-Making-Machine/releases/latest)
@@ -12,7 +12,9 @@
 [![Platform: macOS Apple Silicon](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-black.svg)](https://github.com/Project-M3/Money-Making-Machine/releases)
 [![Website](https://img.shields.io/badge/website-m3.thinksmart.systems-10b981.svg)](https://m3.thinksmart.systems)
 
-Project M3 separates **deterministic financial arithmetic** from **LLM reasoning** so individual long-term investors can widen their circle of competence across US public equities without staring at market tickers all day. All financial calculations run deterministically in Rust over primary SEC EDGAR XBRL filings stored locally in DuckDB and Parquet, while optional `EmbeddedAlan` deep research acts purely as an adversarial cross-disciplinary interrogator behind strict spending guardrails—never as a stock picker or order router.
+Project M3 is a local-first desktop & CLI instrument that turns Charlie Munger's investment discipline into software: deterministic accounting over primary SEC EDGAR XBRL filings, cross-disciplinary adversarial research via `EmbeddedAlan`, and an explicit path toward autonomous Agents and guarded programmatic execution.
+
+> **Current Status (`v0.4.x`)**: Today M3 ships as a local-first research & paper-journaling workbench (`PAPER RESEARCH` — no brokerage credentials or live order execution yet). See [ROADMAP.md](./ROADMAP.md) for how `v0.5 → v1.0` adds zero-friction BYOK onboarding, `m3 mcp`, programmable value strategies, and autonomous portfolio execution behind a hardcoded Rust `RiskEngine`.
 
 ---
 
@@ -82,7 +84,7 @@ When invoked interactively in a terminal, `m3` pretty-prints JSON automatically;
 | [`crates/m3-core`](./crates/m3-core) | Zero-UI deterministic engine: SEC EDGAR sync, `rust_decimal` Charlie Calculator, DuckDB/Parquet lakehouse (`L0`/`L1`/`L2`), Industry Studio, storage manager, bilingual i18n, self-updater |
 | [`crates/m3-cli`](./crates/m3-cli) | Scriptable schema-v1 JSON CLI (`m3`) with structured help, `doctor`, `storage`, `industry`, and TTY progress bar for updates |
 | [`apps/m3-nsh`](./apps/m3-nsh) | Native macOS desktop application powered by Longbridge NSH `0.7.0` and bundled with `m3` |
-| [`website`](./website) | Public Astro landing page & interactive static workbench showcase (`m3.thinksmart.systems`) |
+| [`website`](./website) | Public Vite + TypeScript landing page & interactive static workbench showcase (`m3.thinksmart.systems`) |
 | [`docs`](./docs) | Architecture specs, Munger human-agent workflow, and CLI/file contract documentation |
 | [`scripts`](./scripts) | macOS bundle assembly, local installer (`install.sh`), release tooling, and manifest generator |
 
@@ -122,12 +124,27 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for full CI parity checks and contribut
 
 ---
 
+## Roadmap (`v0.4.x → v1.0`)
+
+| Milestone | Scope | Status |
+| :--- | :--- | :--- |
+| `v0.4.x` | Deterministic Charlie Calculator, 6,000+ US DuckDB/Parquet lakehouse, L1 Inbox, Industry Studio, NSH 0.7 macOS app, `m3` CLI | **Shipped** |
+| `v0.5` | In-app BYOK LLM config, guided onboarding + starter pack, progressive L0 bootstrap, `m3 mcp` server & Agent Skills | **Next** |
+| `v0.6` | Proactive event-driven research & falsification Agent, Feynman coaching, HK equity expansion | **Planned** |
+| `v0.7` | Programmable value strategy engine, point-in-time historical backtester, built-in `Paper Broker` | **Planned** |
+| `v0.8 – v1.0` | Hardcoded Rust `RiskEngine`, **Longbridge** + **Alpaca** adapters, autonomous portfolio sleeves under owner mandate | **Planned** |
+
+Read the full milestone architecture and non-negotiable safety invariants in [ROADMAP.md](./ROADMAP.md).
+
+---
+
 ## Documentation
 
+- [Product & Architecture Roadmap (`v0.5 → v1.0`)](./ROADMAP.md)
 - [Desktop App & Bundle Guide](./apps/m3-nsh/README.md)
 - [Agent & CLI Contract](./docs/agent-interface.md)
 - [System Architecture](./docs/architecture.md)
-- [V2 Lakehouse & Event Architecture](./docs/v2-architecture.md)
+- [V2 Lakehouse & Event Architecture (Delivered Baseline)](./docs/v2-architecture.md)
 - [Munger Human-Agent Workflow](./docs/munger-workflow.md)
 - [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Security Policy](./SECURITY.md)
 
@@ -135,7 +152,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for full CI parity checks and contribut
 
 ## Disclaimer
 
-Project M3 is a local research, accounting verification, and decision-journaling instrument (`PAPER RESEARCH`). It has **no brokerage integration, no live trading credentials, and no order execution**, and nothing produced by the software constitutes investment advice.
+Today (`v0.4.x`), Project M3 operates strictly as a local research, accounting verification, and paper-journaling instrument (`PAPER RESEARCH`) with **no brokerage integration, no trading credentials, and no order execution**. Future programmatic execution planned for `v0.8+` is strictly opt-in behind deterministic Rust risk guardrails and owner-authored mandates. Nothing produced by Project M3 constitutes investment advice.
 
 ## License
 

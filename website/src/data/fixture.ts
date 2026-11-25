@@ -1297,23 +1297,23 @@ export const PIPELINE_LAYERS: PipelineLayer[] = [
 
 export const CLI_COMMANDS: CliItem[] = [
   {
-    cmd: 'm3 universe screen --munger --json',
-    desc: 'Filter 5,000+ issuers on 5Y ROIC, strict Owner Earnings, and share shrinkage.',
+    cmd: 'm3 doctor',
+    desc: 'Inspect binary channel, DuckDB lakehouse, storage usage, and host tools.',
   },
   {
-    cmd: 'm3 universe similar MCO --top 10',
+    cmd: 'm3 universe screen --min-roic 15 --max-sbc-ocf 25',
+    desc: 'Filter 6,000+ issuers on 5Y ROIC, strict Owner Earnings, and share dilution.',
+  },
+  {
+    cmd: 'm3 universe similar MCO --ticker --limit 10',
     desc: 'Discover businesses across the market whose economics rhyme with Core holdings.',
   },
   {
-    cmd: 'm3 events catchup && m3 inbox list',
+    cmd: 'm3 events catchup && m3 inbox list --status unread',
     desc: 'Catch up calmly on missed official filings and strike-band alerts in Inbox.',
   },
   {
-    cmd: 'm3 research run MCO',
-    desc: 'Run 4-perspective adversarial deep research behind your hard monthly budget gate.',
-  },
-  {
-    cmd: 'm3 update channel beta && m3 update',
-    desc: 'Switch release tracks and apply SHA-256 verified M3.app updates cleanly.',
+    cmd: 'm3 storage status',
+    desc: 'Inspect hardlink-aware local footprint and reclaim rebuildable SEC/DuckDB caches safely.',
   },
 ];

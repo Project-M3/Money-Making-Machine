@@ -7,7 +7,7 @@ Thank you for your interest in contributing to **Project M3 (Money · Making · 
 - `crates/m3-core`: Zero-UI deterministic financial engine, SEC/Yahoo sync, DuckDB/Parquet lakehouse, Industry Studio, storage manager, i18n, and self-updater.
 - `crates/m3-cli`: Structured schema-v1 JSON CLI (`m3`).
 - `apps/m3-nsh`: Native macOS desktop workbench built with Longbridge NSH `0.7.0`.
-- `website`: Public Astro showcase site (`m3.thinksmart.systems`).
+- `website`: Public Vite + TypeScript landing page and interactive workbench showcase (`m3.thinksmart.systems`).
 - `scripts`: macOS packaging, install (`scripts/install.sh`), release, and manifest tools.
 - `docs`: Architecture specs, Munger workflow, and Agent/CLI contracts.
 
