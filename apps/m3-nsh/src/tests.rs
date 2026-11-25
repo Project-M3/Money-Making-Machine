@@ -19,7 +19,7 @@ use crate::stores::types::{
 };
 use crate::stores::{
     AppStore, BasketsViewMode, ChartTimeframe, CompanyViewTab, InboxFilter, InboxViewState,
-    PaletteAction, PaletteItem, UniversePreset, UniverseSearchMode, WorkspaceTab,
+    PaletteAction, PaletteItem, SettingsTab, UniversePreset, UniverseSearchMode, WorkspaceTab,
 };
 use crate::theme::{
     BG_ROW_ALT, BG_SELECTED_ROW, BG_VIEWPORT, CORAL_FG, EMERALD_FG, SKY_FG, VIOLET_FG,
@@ -2194,4 +2194,65 @@ fn async_bridge_tasks_survive_transient_owner_disposal() {
         *result_c_read.borrow_mut() = (events_c.get_untracked(), finished_c.get_untracked());
     });
     assert_eq!(*result_c.borrow(), (vec![10, 20], true));
+}
+
+#[test]
+fn settings_tabs_labels_default_and_switching() {
+    use m3_core::alan_connection::AlanConnectionStatus;
+
+    assert_eq!(
+        SettingsTab::all(),
+        [SettingsTab::General, SettingsTab::Ai, SettingsTab::Data]
+    );
+    assert_eq!(SettingsTab::General.label_for(UiLang::Zh), "常规");
+    assert_eq!(SettingsTab::General.label_for(UiLang::En), "General");
+    assert_eq!(SettingsTab::Ai.label_for(UiLang::Zh), "AI");
+    assert_eq!(SettingsTab::Ai.label_for(UiLang::En), "AI");
+    assert_eq!(SettingsTab::Data.label_for(UiLang::Zh), "数据");
+    assert_eq!(SettingsTab::Data.label_for(UiLang::En), "Data");
+
+    let root = temp_workspace("settings_tabs");
+    let paths = WorkspacePaths::from_root(root.clone());
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        |store| {
+            assert_eq!(store.settings_tab.get_untracked(), SettingsTab::General);
+
+            // Pre-populate cached signals so tab switching does not spawn background NSH tasks
+            // inside `run_with_reactive_runtime` (which has no Core task executor).
+            store.alan_conn_status.set(Some(AlanConnectionStatus {
+                default_profile: None,
+                profiles: Vec::new(),
+            }));
+            store.budget_report.set(Some(BudgetStatusReport {
+                config: BudgetConfig::default(),
+                usage: MonthlyBudgetUsage {
+                    month_utc: "2026-11".into(),
+                    total_runs: 0,
+                    completed_runs: 0,
+                    blocked_runs: 0,
+                    failed_runs: 0,
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    total_cost_usd: Decimal::ZERO,
+                    weekly_auto_runs: 0,
+                },
+                remaining_monthly_usd: Decimal::new(1000, 2),
+                remaining_monthly_tokens: 2_000_000,
+                auto_trigger_remaining_weekly: 3,
+            }));
+            store.storage_scanning.set(true);
+
+            store.set_settings_tab(SettingsTab::Ai);
+            assert_eq!(store.settings_tab.get_untracked(), SettingsTab::Ai);
+
+            store.set_settings_tab(SettingsTab::Data);
+            assert_eq!(store.settings_tab.get_untracked(), SettingsTab::Data);
+
+            store.set_settings_tab(SettingsTab::General);
+            assert_eq!(store.settings_tab.get_untracked(), SettingsTab::General);
+        },
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

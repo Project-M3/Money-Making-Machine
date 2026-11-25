@@ -30,6 +30,31 @@ pub enum CompanyViewTab {
     XbrlInspector,
 }
 
+/// Active category tab inside Settings (`⌘,`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsTab {
+    #[default]
+    General,
+    Ai,
+    Data,
+}
+
+impl SettingsTab {
+    pub const fn all() -> [Self; 3] {
+        [Self::General, Self::Ai, Self::Data]
+    }
+
+    pub fn label_for(self, lang: UiLang) -> &'static str {
+        match (self, lang) {
+            (Self::General, UiLang::Zh) => "常规",
+            (Self::General, UiLang::En) => "General",
+            (Self::Ai, UiLang::Zh | UiLang::En) => "AI",
+            (Self::Data, UiLang::Zh) => "数据",
+            (Self::Data, UiLang::En) => "Data",
+        }
+    }
+}
+
 /// View mode in Circle Overview (`Baskets`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BasketsViewMode {

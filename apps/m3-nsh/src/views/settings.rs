@@ -1,4 +1,4 @@
-//! Settings & Guardrails view (`⌘,`) in a 2-column Obsidian layout.
+//! Settings & Guardrails view (`⌘,`) organized into General, AI, and Data tabs.
 
 use crate::components::{
     action_button, badge_pill, concept_hint, concept_hint_static, obsidian_card, progress_bar,
@@ -9,7 +9,7 @@ use crate::platform_desktop::{
     M3_GITHUB_URL, M3_RELEASES_URL, M3_WEBSITE_URL, copy_text_with_notice, open_external_url,
     prompt_choose_workspace, restart_after_update, reveal_workspace_dir,
 };
-use crate::stores::AppStore;
+use crate::stores::{AppStore, SettingsTab};
 use crate::theme::*;
 use m3_core::alan_connection::AlanConnectionProvider;
 use m3_core::app_config;
@@ -22,7 +22,7 @@ use rust_decimal::Decimal;
 
 const ALAN_SETUP_CMD: &str = "alan connection add openrouter --profile main && alan connection set-secret main && alan connection default set main";
 
-/// Renders Preferences & Guardrails (`⌘,`) in a balanced 2-column Obsidian card grid.
+/// Renders Preferences & Guardrails (`⌘,`) organized into General, AI, and Data tabs.
 pub fn settings_view(store: AppStore) -> impl IntoElement {
     let build_commit = update::current_build_commit();
     let ver_text = if build_commit.is_empty() {
@@ -30,6 +30,7 @@ pub fn settings_view(store: AppStore) -> impl IntoElement {
     } else {
         format!("v{} ({build_commit})", update::current_binary_version())
     };
+    let ver_for_body = ver_text.clone();
 
     scroll().flex_1().min_h(px(0.0)).w_full().child(
         view()
@@ -42,71 +43,97 @@ pub fn settings_view(store: AppStore) -> impl IntoElement {
             .child(
                 view()
                     .w_full()
-                    .max_w(px(1160.0))
+                    .max_w(px(820.0))
                     .flex()
                     .flex_col()
                     .gap(px(20.0))
-                    // Page header
+                    // Page header with category tabs
                     .child(
                         view()
                             .w_full()
-                            .pb(px(12.0))
+                            .pb(px(14.0))
                             .border_b_1()
                             .border_color(rgb(BORDER_HAIRLINE))
                             .flex()
                             .flex_row()
-                            .items_end()
+                            .items_center()
                             .justify_between()
-                            .gap(px(16.0))
+                            .flex_wrap()
+                            .gap(px(12.0))
                             .child(
-                                text(move || store.lang.get().t("偏好设置", "Settings").to_owned())
-                                    .font_family(FONT_UI)
-                                    .text_size(px(TEXT_LG))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(INK_HERO)),
+                                view()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(10.0))
+                                    .child(
+                                        text(move || {
+                                            store.lang.get().t("偏好设置", "Settings").to_owned()
+                                        })
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_LG))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(INK_HERO)),
+                                    )
+                                    .child(badge_pill(
+                                        ver_text,
+                                        INK_SECONDARY,
+                                        SLATE_BG,
+                                        SLATE_BORDER,
+                                    )),
                             )
-                            .child(badge_pill(
-                                ver_text.clone(),
-                                INK_SECONDARY,
-                                SLATE_BG,
-                                SLATE_BORDER,
-                            )),
+                            .child(dynamic(move || {
+                                let l = store.lang.get();
+                                let cur = store.settings_tab.get();
+                                seg_group()
+                                    .child(seg_tab(
+                                        SettingsTab::General.label_for(l),
+                                        cur == SettingsTab::General,
+                                        None,
+                                        false,
+                                        move || store.set_settings_tab(SettingsTab::General),
+                                    ))
+                                    .child(seg_tab(
+                                        SettingsTab::Ai.label_for(l),
+                                        cur == SettingsTab::Ai,
+                                        Some((VIOLET_FG, VIOLET_BG)),
+                                        false,
+                                        move || store.set_settings_tab(SettingsTab::Ai),
+                                    ))
+                                    .child(seg_tab(
+                                        SettingsTab::Data.label_for(l),
+                                        cur == SettingsTab::Data,
+                                        Some((SKY_FG, SKY_BG)),
+                                        false,
+                                        move || store.set_settings_tab(SettingsTab::Data),
+                                    ))
+                            })),
                     )
-                    // 2-Column Card Grid
-                    .child(
-                        view()
+                    // Active tab content
+                    .child(dynamic(move || match store.settings_tab.get() {
+                        SettingsTab::General => view()
                             .w_full()
                             .flex()
-                            .flex_row()
-                            .items_start()
+                            .flex_col()
                             .gap(px(20.0))
-                            // Left Column: Language, Workspace, Software Updates
-                            .child(
-                                view()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(20.0))
-                                    .child(render_language_card(store))
-                                    .child(render_workspace_card(store))
-                                    .child(render_updates_card(store, &ver_text)),
-                            )
-                            // Right Column: AI Budget Guardrails, Alan Connection & Data Lake Maintenance
-                            .child(
-                                view()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(20.0))
-                                    .child(render_budget_card(store))
-                                    .child(render_alan_connection_card(store))
-                                    .child(render_datalake_card(store)),
-                            ),
-                    )
-                    // Full-width macOS-style Local Storage Manager
-                    .child(render_storage_card(store)),
+                            .child(render_language_card(store))
+                            .child(render_workspace_card(store))
+                            .child(render_updates_card(store, &ver_for_body)),
+                        SettingsTab::Ai => view()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap(px(20.0))
+                            .child(render_alan_connection_card(store))
+                            .child(render_budget_card(store)),
+                        SettingsTab::Data => view()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap(px(20.0))
+                            .child(render_datalake_card(store))
+                            .child(render_storage_card(store)),
+                    })),
             ),
     )
 }

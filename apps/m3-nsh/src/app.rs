@@ -985,12 +985,11 @@ fn render_topbar(store: AppStore) -> impl IntoElement {
             WorkspaceTab::Journal => l
                 .t("决策账本 · Decision Journal", "Decision Journal")
                 .to_owned(),
-            WorkspaceTab::Settings => l
-                .t(
-                    "设置 · Preferences & Guardrails",
-                    "Settings · Preferences & Guardrails",
-                )
-                .to_owned(),
+            WorkspaceTab::Settings => format!(
+                "{} · {}",
+                l.t("设置", "Settings"),
+                store.settings_tab.get().label_for(l)
+            ),
         }
     });
 

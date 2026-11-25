@@ -17,8 +17,9 @@ use crate::stores::async_bridge::{
 use crate::stores::types::{
     AgentMessageRole, AgentUiMessage, AlanReplyTarget, BasketsViewMode, ChartTimeframe,
     CompanyViewTab, DeepResearchPerspectiveUi, InboxFilter, InboxViewState, PaletteItem,
-    ParsedResearchMemo, SortCol, StatusQuickFilter, UniversePreset, UniverseSearchMode,
-    UniverseViewState, WorkspaceTab, apply_ui_row_guards, default_deep_research_perspectives,
+    ParsedResearchMemo, SettingsTab, SortCol, StatusQuickFilter, UniversePreset,
+    UniverseSearchMode, UniverseViewState, WorkspaceTab, apply_ui_row_guards,
+    default_deep_research_perspectives,
 };
 use m3_core::alan_connection::{
     self, AlanConnectionProfileSummary, AlanConnectionProvider, AlanConnectionStatus,
@@ -198,6 +199,7 @@ pub struct AppStore {
     pub industry_alan_status_hint: Signal<Option<String>>,
 
     // ── Settings & Updater ───────────────────────────────────────────────────
+    pub settings_tab: Signal<SettingsTab>,
     pub update_channel: Signal<ReleaseChannel>,
     pub update_notice: Signal<Option<PassiveUpdateNotice>>,
     pub update_checking: Signal<bool>,
@@ -634,6 +636,7 @@ impl AppStore {
             industry_alan_streaming: signal(false),
             industry_alan_status_hint: signal(None),
 
+            settings_tab: signal(SettingsTab::General),
             update_channel: signal(effective_ch),
             update_notice: signal_with(None, SignalEquals::Never),
             update_checking: signal(false),
@@ -1026,14 +1029,36 @@ impl AppStore {
             }
             WorkspaceTab::Baskets | WorkspaceTab::Journal => {}
             WorkspaceTab::Settings => {
-                if !self.storage_scanning.get_untracked() {
-                    self.refresh_storage_report();
-                }
+                let tab = self.settings_tab.get_untracked();
+                self.refresh_settings_tab_data(tab, true);
+            }
+        }
+    }
+
+    fn refresh_settings_tab_data(self, tab: SettingsTab, force_storage_rescan: bool) {
+        match tab {
+            SettingsTab::General => {}
+            SettingsTab::Ai => {
                 if self.alan_conn_status.with_untracked(|s| s.is_none()) {
                     self.refresh_alan_connection_status();
                 }
+                if self.budget_report.with_untracked(|r| r.is_none()) {
+                    self.reload_budget_from_lake();
+                }
+            }
+            SettingsTab::Data => {
+                if !self.storage_scanning.get_untracked()
+                    && (force_storage_rescan || self.storage_report.with_untracked(|r| r.is_none()))
+                {
+                    self.refresh_storage_report();
+                }
             }
         }
+    }
+
+    pub fn set_settings_tab(self, tab: SettingsTab) {
+        self.settings_tab.set(tab);
+        self.refresh_settings_tab_data(tab, false);
     }
 
     pub fn open_settings(self) {
