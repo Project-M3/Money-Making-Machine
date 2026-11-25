@@ -321,23 +321,37 @@
                 <code>~/.local/bin/m3</code>, verifies SHA-256 checksums, and sets up auto-updates.
               </p>
 
-              <div class="install-snippet-row">
-                <pre class="install-box"><code id="install-stable-cmd">curl -fsSL https://m3.thinksmart.systems/install.sh | bash</code></pre>
-                <button
-                  type="button"
-                  class="copy-btn"
-                  data-copy-text="curl -fsSL https://m3.thinksmart.systems/install.sh | bash"
-                >
-                  Copy
-                </button>
+              <div class="install-channel-bar">
+                <span class="install-channel-label">
+                  Release Channel · <span id="install-channel-hint" class="install-channel-hint">Stable release</span>
+                </span>
+                <div class="seg-group" role="group" aria-label="Install release channel">
+                  <button
+                    type="button"
+                    class="seg-tab is-active"
+                    data-install-channel="stable"
+                    aria-pressed="true"
+                  >
+                    Stable
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-tab"
+                    data-install-channel="beta"
+                    aria-pressed="false"
+                  >
+                    Beta
+                  </button>
+                </div>
               </div>
 
               <div class="install-snippet-row">
-                <pre class="install-box"><code>curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta</code></pre>
+                <pre class="install-box"><code id="install-cmd">curl -fsSL https://m3.thinksmart.systems/install.sh | bash</code></pre>
                 <button
+                  id="install-copy-btn"
                   type="button"
                   class="copy-btn"
-                  data-copy-text="curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta"
+                  data-copy-text="curl -fsSL https://m3.thinksmart.systems/install.sh | bash"
                 >
                   Copy
                 </button>

@@ -1752,6 +1752,24 @@ pre,
   color: var(--ink-secondary);
 }
 
+.install-channel-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+}
+
+.install-channel-label {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+}
+
+.install-channel-hint {
+  color: var(--ink-secondary);
+}
+
 .install-snippet-row {
   min-width: 0;
   max-width: 100%;
@@ -1771,8 +1789,10 @@ pre,
   padding: 0.75rem 0.9rem;
   font-family: var(--font-mono);
   font-size: 0.75rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
   color: var(--emerald);
-  overflow-x: auto;
 }
 
 .cli-deck {
