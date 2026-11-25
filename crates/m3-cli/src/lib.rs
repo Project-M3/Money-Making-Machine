@@ -1,4 +1,5 @@
 mod help;
+pub mod mcp;
 
 use anyhow::{Context, Result, ensure};
 use m3_core::{
@@ -72,6 +73,7 @@ fn flag_takes_value(args: &[String], flag_idx: usize) -> bool {
             | "--app-dir"
             | "--bin-dir"
             | "--manifest-url"
+            | "--workspace"
     )
 }
 
@@ -156,6 +158,10 @@ pub fn run_cli_args(args: &[String]) -> Result<i32> {
     }
     if let Some(help_code) = maybe_handle_help(&forwarded, format) {
         return Ok(help_code);
+    }
+
+    if forwarded.first().map(String::as_str) == Some("mcp") {
+        return mcp::run_cli_mcp(&forwarded[1..]);
     }
 
     if !forwarded.is_empty()
@@ -262,7 +268,7 @@ fn derive_report_status(
     )
 }
 
-fn cmd_status(paths: &WorkspacePaths) -> Result<serde_json::Value> {
+pub(crate) fn cmd_status(paths: &WorkspacePaths) -> Result<serde_json::Value> {
     let wl = store::load_watchlist(paths)?;
     let reports = store::load_or_compute_reports(paths)?;
     let journal = store::load_journal(paths)?;
@@ -334,7 +340,7 @@ fn cmd_sync(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value
     }))
 }
 
-fn cmd_report(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+pub(crate) fn cmd_report(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
     let sym = args.first().context("usage: m3 report <TICKER>")?;
     let mut report = store::recompute_ticker(paths, sym)?;
     let now = store::now_ms();
@@ -350,7 +356,7 @@ fn cmd_report(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Val
     }))
 }
 
-fn cmd_dossier(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+pub(crate) fn cmd_dossier(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
     let sym = args.first().context("usage: m3 dossier <TICKER>")?;
     let dossier = store::load_dossier(paths, &sym.to_ascii_uppercase())?
         .with_context(|| format!("未找到 {sym} 的审讯档案"))?;
@@ -508,13 +514,13 @@ fn cmd_journal(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Va
 }
 
 const MAX_PRICES_TOP: usize = 1_000;
-const MAX_SCREEN_LIMIT: usize = 5_000;
-const MAX_PEERS_LIMIT: usize = 200;
-const MAX_SIMILAR_LIMIT: usize = 200;
-const MAX_L1_LIST_LIMIT: usize = 5_000;
-const MAX_MIN_YEARS: usize = 20;
-const MIN_FILTER_METRIC: i64 = -10_000;
-const MAX_FILTER_METRIC: i64 = 100_000;
+pub(crate) const MAX_SCREEN_LIMIT: usize = 5_000;
+pub(crate) const MAX_PEERS_LIMIT: usize = 200;
+pub(crate) const MAX_SIMILAR_LIMIT: usize = 200;
+pub(crate) const MAX_L1_LIST_LIMIT: usize = 5_000;
+pub(crate) const MAX_MIN_YEARS: usize = 20;
+pub(crate) const MIN_FILTER_METRIC: i64 = -10_000;
+pub(crate) const MAX_FILTER_METRIC: i64 = 100_000;
 
 fn parse_decimal_flag(args: &[String], index: &mut usize, flag: &str) -> Result<Decimal> {
     *index += 1;
@@ -569,7 +575,10 @@ fn cmd_universe(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::V
     }
 }
 
-fn cmd_universe_status(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+pub(crate) fn cmd_universe_status(
+    paths: &WorkspacePaths,
+    args: &[String],
+) -> Result<serde_json::Value> {
     if let Some(unexpected) = args.first() {
         anyhow::bail!("unknown universe status argument: {unexpected}");
     }
@@ -665,10 +674,17 @@ fn cmd_universe_screen(paths: &WorkspacePaths, args: &[String]) -> Result<serde_
         i += 1;
     }
 
+    execute_universe_screen(paths, &filter)
+}
+
+pub(crate) fn execute_universe_screen(
+    paths: &WorkspacePaths,
+    filter: &UniverseFilter,
+) -> Result<serde_json::Value> {
     let db = LakeDb::open_read_only_if_exists(paths)?
         .context("universe lake has not been synced yet; run `m3 universe sync` first")?;
     let started = Instant::now();
-    let rows = db.screen_universe(&filter)?;
+    let rows = db.screen_universe(filter)?;
     let query_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     Ok(json!({
@@ -709,9 +725,17 @@ fn cmd_universe_peers(paths: &WorkspacePaths, args: &[String]) -> Result<serde_j
     let ticker = ticker
         .filter(|t| !t.is_empty())
         .context("usage: m3 universe peers <TICKER> [--limit N]")?;
+    execute_universe_peers(paths, &ticker, limit)
+}
+
+pub(crate) fn execute_universe_peers(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    limit: usize,
+) -> Result<serde_json::Value> {
     let db = LakeDb::open_read_only_if_exists(paths)?
         .context("universe lake has not been synced yet; run `m3 universe sync` first")?;
-    let peers = db.query_peers(&ticker, limit)?;
+    let peers = db.query_peers(ticker, limit)?;
 
     Ok(json!({
         "schema_version": 1,
@@ -758,10 +782,19 @@ fn cmd_universe_similar(paths: &WorkspacePaths, args: &[String]) -> Result<serde
     let query_or_ticker = query_or_ticker
         .filter(|q| !q.is_empty())
         .context("usage: m3 universe similar <TICKER_OR_QUERY> [--ticker] [--min-roic N] [--max-sbc-ocf N] [--exclude-financials|--include-financials] [--limit N]")?;
+    execute_universe_similar(paths, &query_or_ticker, as_ticker, &filter)
+}
+
+pub(crate) fn execute_universe_similar(
+    paths: &WorkspacePaths,
+    query_or_ticker: &str,
+    as_ticker: bool,
+    filter: &SimilarSearchFilter,
+) -> Result<serde_json::Value> {
     let db = LakeDb::open_read_only_if_exists(paths)?
         .context("universe lake has not been synced yet; run `m3 universe sync` first")?;
     let started = Instant::now();
-    let hits = db.search_similar(&query_or_ticker, as_ticker, &filter)?;
+    let hits = db.search_similar(query_or_ticker, as_ticker, filter)?;
     let query_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     Ok(json!({
@@ -923,6 +956,16 @@ fn cmd_inbox_list(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json:
         i += 1;
     }
 
+    execute_inbox_list(paths, &status_raw, status, kind, limit)
+}
+
+pub(crate) fn execute_inbox_list(
+    paths: &WorkspacePaths,
+    status_raw: &str,
+    status: Option<SignalStatus>,
+    kind: Option<SignalKind>,
+    limit: usize,
+) -> Result<serde_json::Value> {
     let (summary, signals) = match LakeDb::open_read_only_if_exists(paths)? {
         Some(db) => (
             db.l1_summary()?,
@@ -1185,7 +1228,10 @@ fn cmd_budget(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Val
     }
 }
 
-fn cmd_budget_status(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+pub(crate) fn cmd_budget_status(
+    paths: &WorkspacePaths,
+    args: &[String],
+) -> Result<serde_json::Value> {
     if let Some(unexpected) = args.first() {
         anyhow::bail!("unknown budget status argument: {unexpected}");
     }
@@ -1207,7 +1253,10 @@ fn cmd_themes(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Val
     }
 }
 
-fn cmd_themes_list(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+pub(crate) fn cmd_themes_list(
+    paths: &WorkspacePaths,
+    args: &[String],
+) -> Result<serde_json::Value> {
     if let Some(unexpected) = args.first() {
         anyhow::bail!("unknown themes list argument: {unexpected}");
     }
@@ -1537,7 +1586,7 @@ fn cmd_storage(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Va
     cmd_storage_with_updater(paths, args, updater_dir.as_deref())
 }
 
-fn cmd_storage_with_updater(
+pub(crate) fn cmd_storage_with_updater(
     paths: &WorkspacePaths,
     args: &[String],
     updater_dir: Option<&std::path::Path>,
@@ -1594,34 +1643,7 @@ fn cmd_industry(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::V
             if let Some(unexpected) = rest.first() {
                 anyhow::bail!("unknown industry list argument: {unexpected}");
             }
-            let profiles = industry::list_industries(paths)?;
-            let items = profiles
-                .iter()
-                .map(|p| {
-                    let feynman_done = p.feynman_checked.iter().filter(|&&done| done).count();
-                    let primer_path = paths.industry_primer_path(&p.slug);
-                    json!({
-                        "slug": p.slug,
-                        "title": p.title,
-                        "status": p.status,
-                        "sic_codes": p.sic_codes,
-                        "bound_tickers": p.bound_tickers,
-                        "valuation_anchor": p.valuation_anchor_label(),
-                        "feynman_done": feynman_done,
-                        "feynman_total": p.feynman_questions.len(),
-                        "has_primer": primer_path.exists(),
-                        "updated_at_ms": p.updated_at_ms,
-                    })
-                })
-                .collect::<Vec<_>>();
-            Ok(json!({
-                "schema_version": 1,
-                "ok": true,
-                "data": {
-                    "count": items.len(),
-                    "industries": items,
-                }
-            }))
+            execute_industry_list(paths)
         }
         "show" => {
             let slug = rest
@@ -1631,21 +1653,59 @@ fn cmd_industry(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::V
             if let Some(extra) = rest.get(1) {
                 anyhow::bail!("unexpected extra argument for industry show: {extra}");
             }
-            let profile = industry::load_industry(paths, slug)?;
-            let primer_path = paths.industry_primer_path(&profile.slug);
-            let primer_markdown = industry::load_industry_primer_md(paths, &profile.slug);
-            Ok(json!({
-                "schema_version": 1,
-                "ok": true,
-                "data": {
-                    "profile": profile,
-                    "primer_path": primer_path.exists().then(|| primer_path.display().to_string()),
-                    "primer_markdown": primer_markdown,
-                }
-            }))
+            execute_industry_show(paths, slug)
         }
         _ => anyhow::bail!("usage: m3 industry [list | show <SLUG>]"),
     }
+}
+
+pub(crate) fn execute_industry_list(paths: &WorkspacePaths) -> Result<serde_json::Value> {
+    let profiles = industry::list_industries(paths)?;
+    let items = profiles
+        .iter()
+        .map(|p| {
+            let feynman_done = p.feynman_checked.iter().filter(|&&done| done).count();
+            let primer_path = paths.industry_primer_path(&p.slug);
+            json!({
+                "slug": p.slug,
+                "title": p.title,
+                "status": p.status,
+                "sic_codes": p.sic_codes,
+                "bound_tickers": p.bound_tickers,
+                "valuation_anchor": p.valuation_anchor_label(),
+                "feynman_done": feynman_done,
+                "feynman_total": p.feynman_questions.len(),
+                "has_primer": primer_path.exists(),
+                "updated_at_ms": p.updated_at_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "count": items.len(),
+            "industries": items,
+        }
+    }))
+}
+
+pub(crate) fn execute_industry_show(
+    paths: &WorkspacePaths,
+    slug: &str,
+) -> Result<serde_json::Value> {
+    let profile = industry::load_industry(paths, slug)?;
+    let primer_path = paths.industry_primer_path(&profile.slug);
+    let primer_markdown = industry::load_industry_primer_md(paths, &profile.slug);
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "profile": profile,
+            "primer_path": primer_path.exists().then(|| primer_path.display().to_string()),
+            "primer_markdown": primer_markdown,
+        }
+    }))
 }
 
 fn binary_on_host(name: &str) -> Option<String> {
@@ -1684,7 +1744,7 @@ fn cmd_doctor(args: &[String]) -> Result<serde_json::Value> {
     cmd_doctor_for_workspace(resolved_paths.as_ref(), updater_dir.as_deref())
 }
 
-fn cmd_doctor_for_workspace(
+pub(crate) fn cmd_doctor_for_workspace(
     workspace: Option<&WorkspacePaths>,
     updater_dir: Option<&std::path::Path>,
 ) -> Result<serde_json::Value> {
@@ -3402,6 +3462,7 @@ mod tests {
             "themes",
             "research",
             "budget",
+            "mcp",
             "storage",
             "doctor",
             "workspace",

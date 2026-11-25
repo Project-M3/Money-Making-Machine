@@ -37,6 +37,9 @@ COMMANDS:
     research          Run or inspect L2 Alan Deep Research sessions
     budget            Inspect monthly/per-run AI research budget & usage
 
+  Agent Integration:
+    mcp               Run read-only JSON-RPC 2.0 MCP server over stdio
+
   System & Maintenance:
     storage           Inspect and clean local SEC/DuckDB/cache storage footprint
     doctor            Check binary, workspace, lakehouse, storage, and host tools
@@ -259,6 +262,29 @@ USAGE:
 
 EXAMPLES:
   m3 budget status
+"
+        }
+        "mcp" => {
+            "m3 mcp — Run read-only JSON-RPC 2.0 MCP server over stdio
+
+USAGE:
+  m3 mcp [--workspace <PATH>]
+
+OPTIONS:
+  --workspace <PATH>  Override M3 workspace root (defaults to M3_REPO_ROOT / cwd / configured root)
+
+NOTES:
+  - Reads line-delimited JSON-RPC 2.0 requests from stdin and writes responses to stdout.
+  - All diagnostics go to stderr only; stdout carries JSON-RPC frames exclusively.
+  - Exposes 14 deterministic read-only tools (m3_status, m3_doctor, m3_report, m3_dossier,
+    m3_universe_status, m3_universe_screen, m3_universe_peers, m3_universe_similar,
+    m3_inbox_list, m3_industry_list, m3_industry_show, m3_budget_status,
+    m3_themes_list, m3_storage_status).
+  - Never mutates `human_judgment` and never deletes `personal_workbench`.
+
+EXAMPLES:
+  m3 mcp
+  m3 mcp --workspace ~/Documents/m3-workbench
 "
         }
         "themes" => {
