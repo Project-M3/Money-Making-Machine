@@ -486,7 +486,7 @@ export function mountWorkbench(container: HTMLElement): void {
             <span class="mono" style="color: var(--emerald)">\$0.42 / \$10.00</span>
           </div>
           <div class="m3-dock-tray-row" style="color: var(--ink-muted)">
-            <span class="mono">v0.4.0</span>
+            <span class="mono">v0.4.1</span>
             <span class="mono">${escapeHtml(state.settingsChannel)}</span>
           </div>
         </div>
