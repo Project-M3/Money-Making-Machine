@@ -1758,3 +1758,33 @@ fn m3_engraving_palette_and_notices_work_bilingually() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn settings_storage_signals_scan_and_protect_workbench() {
+    let root = temp_workspace("settings_storage");
+    let paths = WorkspacePaths::from_root(root.clone());
+    std::fs::write(paths.watchlist_path(), br#"{"companies":[]}"#).expect("write watchlist");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        |store| {
+            let ws = store.paths.get_untracked();
+            let rep = m3_core::storage::scan_workspace_storage(&ws, None);
+            store.storage_report.set(Some(rep.clone()));
+
+            let fetched = store
+                .storage_report
+                .get_untracked()
+                .expect("storage report");
+            assert_eq!(fetched.categories.len(), 5);
+            let wb = fetched
+                .categories
+                .iter()
+                .find(|c| c.category == m3_core::storage::StorageCategory::PersonalWorkbench)
+                .expect("workbench category");
+            assert!(!wb.cleanable);
+            assert!(wb.bytes > 0);
+        },
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

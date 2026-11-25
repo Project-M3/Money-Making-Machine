@@ -1,7 +1,8 @@
 //! Theme Archetype Clusters & Append-Only Decision Journal view (`⌘5`).
 
 use crate::components::{
-    action_button, badge_pill, kbd, mono_left, mono_right, obsidian_card, v_divider,
+    action_button, badge_pill, concept_hint_static, kbd, mono_left, mono_right, obsidian_card,
+    v_divider,
 };
 use crate::format::{
     fmt_pct_clean, fmt_price, fmt_time_cn_for, format_theme_member_distance,
@@ -58,18 +59,10 @@ fn render_themes_section(store: AppStore) -> View {
                             SKY_BG,
                             SKY_BORDER,
                         ))
-                        .child(
-                            text(
-                                l.t(
-                                    "workbench/themes.json · SIC + 隐空间聚类（保留人类 user_notes）",
-                                    "workbench/themes.json · SIC + Latent Clustering (preserves user_notes)",
-                                )
-                                .to_owned(),
-                            )
-                            .font_family(FONT_UI)
-                            .text_size(px(TEXT_XS))
-                            .text_color(rgb(INK_MUTED)),
-                        )
+                        .child(concept_hint_static(l.t(
+                            "基于 SIC 与财报隐空间聚类生成的商业原型，保留人类批注。",
+                            "Business archetypes clustered from SIC and 10-K disclosures; human notes are preserved.",
+                        )))
                 }))
                 .child(dynamic(move || {
                     let l = store.lang.get();
@@ -542,18 +535,10 @@ fn render_journal_section(store: AppStore) -> View {
                         EMERALD_BG,
                         EMERALD_BORDER,
                     ))
-                    .child(
-                        text(
-                            l.t(
-                                "事前冻结决策账本 · 100% 现金基线对比 S&P 500",
-                                "Append-Only Pre-Committed Decision Journal · Cash vs S&P 500",
-                            )
-                            .to_owned(),
-                        )
-                        .font_family(FONT_UI)
-                        .text_size(px(TEXT_XS))
-                        .text_color(rgb(INK_MUTED)),
-                    ),
+                    .child(concept_hint_static(l.t(
+                        "事前冻结、只增不改的决策账本，以 100% 现金与 S&P 500 为基准。",
+                        "Append-only pre-committed decision ledger benchmarked against 100% cash and S&P 500.",
+                    ))),
             )
             .child(
                 view()
@@ -845,14 +830,11 @@ fn render_entries_card(store: AppStore, journal: &DecisionJournal, l: UiLang) ->
                 .items_center()
                 .justify_between()
                 .child(
-                    text(l.t(
-                        "决策记录（workbench/journal.json）",
-                        "Decision Entries (workbench/journal.json)",
-                    ))
-                    .font_family(FONT_UI)
-                    .text_size(px(TEXT_BASE))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(INK_HERO)),
+                    text(l.t("决策记录", "Decision Entries"))
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_BASE))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(INK_HERO)),
                 )
                 .child(
                     view()

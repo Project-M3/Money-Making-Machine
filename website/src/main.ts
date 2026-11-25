@@ -31,27 +31,19 @@ function bindInstallChannelToggle(): void {
   const buttons = document.querySelectorAll<HTMLButtonElement>('[data-install-channel]');
   const codeEl = document.getElementById('install-cmd');
   const copyBtn = document.getElementById('install-copy-btn');
-  const hintEl = document.getElementById('install-channel-hint');
   if (!buttons.length || !codeEl || !copyBtn) return;
 
-  const commands: Record<'stable' | 'beta', { cmd: string; hint: string }> = {
-    stable: {
-      cmd: 'curl -fsSL https://m3.thinksmart.systems/install.sh | bash',
-      hint: 'Stable release',
-    },
-    beta: {
-      cmd: 'curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta',
-      hint: 'Rolling beta track',
-    },
+  const commands: Record<'stable' | 'beta', string> = {
+    stable: 'curl -fsSL https://m3.thinksmart.systems/install.sh | bash',
+    beta: 'curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta',
   };
 
   buttons.forEach((btn) => {
     btn.addEventListener('click', () => {
       const ch = btn.dataset.installChannel === 'beta' ? 'beta' : 'stable';
-      const spec = commands[ch];
-      codeEl.textContent = spec.cmd;
-      copyBtn.dataset.copyText = spec.cmd;
-      if (hintEl) hintEl.textContent = spec.hint;
+      const cmd = commands[ch];
+      codeEl.textContent = cmd;
+      copyBtn.dataset.copyText = cmd;
       buttons.forEach((other) => {
         const active = other.dataset.installChannel === ch;
         other.classList.toggle('is-active', active);

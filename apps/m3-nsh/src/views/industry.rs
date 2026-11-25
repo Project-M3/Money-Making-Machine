@@ -8,7 +8,9 @@
 //!   with 10-K batch fetch, Living Industry Primer with strict `SEC 10-K` vs `Web`
 //!   source separation, and Embedded Alan 4-Lens streaming + Feynman Quiz tutor.
 
-use crate::components::{action_button, badge_pill, obsidian_card, seg_group, styled_input};
+use crate::components::{
+    action_button, badge_pill, concept_hint, obsidian_card, seg_group, styled_input,
+};
 use crate::format::{fmt_pct_clean, fmt_price};
 use crate::platform_desktop::{copy_text_with_notice, reveal_workspace_dir};
 use crate::stores::{AgentMessageRole, AppStore, INDUSTRY_VALUATION_PRESETS};
@@ -839,17 +841,15 @@ fn render_header_card(store: AppStore, profile: &IndustryProfile) -> View {
                 .child(
                     view()
                         .flex()
-                        .flex_col()
-                        .gap(px(2.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
                         .child(
                             text(move || {
                                 store
                                     .lang
                                     .get()
-                                    .t(
-                                        "人类毕业裁决（仅你本人点击可设为「能力圈内」）",
-                                        "Human Graduation Decision (Only Human Clicks Set Inside Circle)",
-                                    )
+                                    .t("能力圈裁决", "Circle Graduation")
                                     .to_owned()
                             })
                             .font_family(FONT_UI)
@@ -857,21 +857,16 @@ fn render_header_card(store: AppStore, profile: &IndustryProfile) -> View {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_SECONDARY)),
                         )
-                        .child(
-                            text(move || {
-                                store
-                                    .lang
-                                    .get()
-                                    .t(
-                                        "只有「能力圈内」的行业公司才会按下方估值锚触发击球区雷达信号",
-                                        "Only Inside-Circle industries unlock Circle-gated Strike alerts using your anchor.",
-                                    )
-                                    .to_owned()
-                            })
-                            .font_family(FONT_UI)
-                            .text_size(px(TEXT_2XS))
-                            .text_color(rgb(INK_MUTED)),
-                        ),
+                        .child(concept_hint(move || {
+                            store
+                                .lang
+                                .get()
+                                .t(
+                                    "仅人类可将行业毕业进能力圈；毕业后按估值锚解锁击球区信号。",
+                                    "Only human judgment graduates an industry into your Circle, unlocking Circle-gated Strike alerts at your multiple anchor.",
+                                )
+                                .to_owned()
+                        })),
                 )
                 .child(
                     view()
@@ -961,10 +956,7 @@ fn render_sovereignty_card(store: AppStore, profile: &IndustryProfile) -> View {
                         store
                             .lang
                             .get()
-                            .t(
-                                "人类主权区：行业估值锚、代表公司池与费曼通关清单",
-                                "Human Sovereignty: Valuation Anchor, Peer Pool & Feynman Check",
-                            )
+                            .t("人类主权区", "Human Sovereignty")
                             .to_owned()
                     })
                     .font_family(FONT_UI)
@@ -1179,10 +1171,7 @@ fn render_sovereignty_card(store: AppStore, profile: &IndustryProfile) -> View {
                         store
                             .lang
                             .get()
-                            .t(
-                                "绑定代表公司池（点击代码打开个股档案 · 点击 × 移除）：",
-                                "Bound Peer Pool (click ticker to open Dossier · × to remove):",
-                            )
+                            .t("代表公司池", "Bound Peers")
                             .to_owned()
                     })
                     .font_family(FONT_UI)
@@ -1296,20 +1285,34 @@ fn render_sovereignty_card(store: AppStore, profile: &IndustryProfile) -> View {
                         .justify_between()
                         .gap(px(8.0))
                         .child(
-                            text(move || {
-                                store
-                                    .lang
-                                    .get()
-                                    .t(
-                                        "费曼通关自检表（确认真正读懂后再毕业进能力圈）：",
-                                        "Feynman Understanding Checklist (4 Criteria before Circle Graduation):",
-                                    )
-                                    .to_owned()
-                            })
-                            .font_family(FONT_UI)
-                            .text_size(px(TEXT_XS))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(INK_SECONDARY)),
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(
+                                    text(move || {
+                                        store
+                                            .lang
+                                            .get()
+                                            .t("费曼通关自检", "Feynman Check")
+                                            .to_owned()
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_SECONDARY)),
+                                )
+                                .child(concept_hint(move || {
+                                    store
+                                        .lang
+                                        .get()
+                                        .t(
+                                            "用自己的语言讲清商业本质与死法后，再将行业毕业进能力圈。",
+                                            "Confirm you can explain the economics and failure modes simply before graduating this industry.",
+                                        )
+                                        .to_owned()
+                                })),
                         )
                         .child(badge_pill(
                             format!("{checked_count}/{total_fq}"),

@@ -1,7 +1,8 @@
 //! Settings & Guardrails view (`⌘,`) in a 2-column Obsidian layout.
 
 use crate::components::{
-    action_button, badge_pill, obsidian_card, seg_group, seg_tab, styled_input,
+    action_button, badge_pill, concept_hint, concept_hint_static, obsidian_card, seg_group,
+    seg_tab, styled_input,
 };
 use crate::format::fmt_time_cn_for;
 use crate::platform_desktop::{
@@ -13,6 +14,7 @@ use crate::theme::*;
 use m3_core::app_config;
 use m3_core::budget::BudgetConfig;
 use m3_core::i18n::UiLang;
+use m3_core::storage::{self, StorageCategory};
 use m3_core::update::{self, ReleaseChannel};
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
@@ -56,34 +58,11 @@ pub fn settings_view(store: AppStore) -> impl IntoElement {
                             .justify_between()
                             .gap(px(16.0))
                             .child(
-                                view()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(
-                                        text(move || store.lang.get().t("偏好设置", "Settings").to_owned())
-                                            .font_family(FONT_UI)
-                                            .text_size(px(TEXT_LG))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(INK_HERO)),
-                                    )
-                                    .child(
-                                        text(move || {
-                                            store
-                                                .lang
-                                                .get()
-                                                .t(
-                                                    "管理显示语言、本地工作区目录、发布通道、AI 预算护栏与 DuckDB 湖仓同步",
-                                                    "Manage language, local workspace, release channel, AI budget guardrails, and DuckDB sync",
-                                                )
-                                                .to_owned()
-                                        })
-                                        .font_family(FONT_UI)
-                                        .text_size(px(TEXT_XS))
-                                        .text_color(rgb(INK_MUTED)),
-                                    ),
+                                text(move || store.lang.get().t("偏好设置", "Settings").to_owned())
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_LG))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_HERO)),
                             )
                             .child(badge_pill(
                                 ver_text.clone(),
@@ -124,38 +103,14 @@ pub fn settings_view(store: AppStore) -> impl IntoElement {
                                     .child(render_datalake_card(store)),
                             ),
                     )
-                    // Footer hint
-                    .child(
-                        view()
-                            .w_full()
-                            .pt(px(4.0))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                text(move || {
-                                    store
-                                        .lang
-                                        .get()
-                                        .t(
-                                            "esc 返回简报收件箱 · ⌘, 打开设置 · ⌘K 命令面板",
-                                            "esc back to Inbox · ⌘, Settings · ⌘K Command Palette",
-                                        )
-                                        .to_owned()
-                                })
-                                .font_family(FONT_MONO_TERM)
-                                .text_size(px(TEXT_2XS))
-                                .text_color(rgb(INK_MUTED)),
-                            ),
-                    ),
+                    // Full-width macOS-style Local Storage Manager
+                    .child(render_storage_card(store)),
             ),
     )
 }
 
 fn render_language_card(store: AppStore) -> View {
     section_block(
-        "INTERFACE · I18N",
         move || {
             store
                 .lang
@@ -163,16 +118,8 @@ fn render_language_card(store: AppStore) -> View {
                 .t("界面与语言", "Interface & Language")
                 .to_owned()
         },
-        move || {
-            store
-                .lang
-                .get()
-                .t(
-                    "即时切换界面、菜单栏与命令面板语言，重启后保持记忆",
-                    "Switch all views, menus, and command palette live; persisted in config.json",
-                )
-                .to_owned()
-        },
+        None,
+        None,
         obsidian_card().child(
             setting_row_reactive(
                 move || {
@@ -182,19 +129,6 @@ fn render_language_card(store: AppStore) -> View {
                         .t("显示语言", "Display Language")
                         .to_owned()
                 },
-                move || {
-                    Some(
-                        store
-                            .lang
-                            .get()
-                            .t(
-                                "支持中文与 English 实时无感切换",
-                                "Switches live between 中文 and English without restarting",
-                            )
-                            .to_owned(),
-                    )
-                },
-                false,
                 false,
             )
             .child(dynamic(move || {
@@ -223,18 +157,9 @@ fn render_language_card(store: AppStore) -> View {
 
 fn render_workspace_card(store: AppStore) -> View {
     section_block(
-        "WORKSPACE · LOCAL-FIRST",
         move || store.lang.get().t("本地工作区", "Workspace").to_owned(),
-        move || {
-            store
-                .lang
-                .get()
-                .t(
-                    "全部财报缓存、能力圈分层、决策账本与 DuckDB 湖仓均本地保存",
-                    "Circle watchlist, decision journal, filings, and DuckDB lakehouse stay local",
-                )
-                .to_owned()
-        },
+        None,
+        None,
         obsidian_card()
             .child(dynamic(move || {
                 let l = store.lang.get();
@@ -245,6 +170,7 @@ fn render_workspace_card(store: AppStore) -> View {
                 setting_row_static(
                     l.t("当前工作区目录", "Active Workspace Root"),
                     Some(&workspace_path),
+                    None,
                     true,
                     true,
                 )
@@ -328,7 +254,6 @@ fn render_workspace_card(store: AppStore) -> View {
 fn render_updates_card(store: AppStore, ver_text: &str) -> View {
     let ver_owned = ver_text.to_owned();
     section_block(
-        "UPDATER · SIGNED & VERIFIED",
         move || {
             store
                 .lang
@@ -336,16 +261,8 @@ fn render_updates_card(store: AppStore, ver_text: &str) -> View {
                 .t("软件更新与通道", "Updates & Release Channel")
                 .to_owned()
         },
-        move || {
-            store
-                .lang
-                .get()
-                .t(
-                    "支持 stable 正式版与 beta 滚动预览通道，校验 SHA-256 原子替换",
-                    "Switch between stable tags and rolling beta builds with SHA-256 verification",
-                )
-                .to_owned()
-        },
+        None,
+        None,
         obsidian_card()
             .child(dynamic(move || {
                 let l = store.lang.get();
@@ -398,6 +315,7 @@ fn render_updates_card(store: AppStore, ver_text: &str) -> View {
                     setting_row_static(
                         l.t("当前版本", "Installed Version"),
                         Some(&ver_owned),
+                        None,
                         true,
                         true,
                     )
@@ -485,7 +403,6 @@ fn render_budget_card(store: AppStore) -> View {
     let weekly_quotas: [usize; 5] = [0, 1, 3, 5, 10];
 
     section_block(
-        "L2 · ALAN GUARDRAILS",
         move || {
             store
                 .lang
@@ -493,16 +410,17 @@ fn render_budget_card(store: AppStore) -> View {
                 .t("AI 深研预算与护栏", "AI Budget & Guardrails")
                 .to_owned()
         },
-        move || {
+        Some(Box::new(move || {
             store
                 .lang
                 .get()
                 .t(
-                    "写入 workbench/budget.json · 到达硬上限前禁止启动 Embedded Alan",
-                    "Saved to workbench/budget.json · Hard gate blocks Deep Research before spending",
+                    "L0/L1 全程零 LLM；到达月度或单次硬上限后禁止启动 Embedded Alan。",
+                    "L0/L1 stay Zero-LLM. Hard ceilings block Embedded Alan L2 runs before spending.",
                 )
                 .to_owned()
-        },
+        })),
+        None,
         obsidian_card()
             // Monthly Usage / Cap + Presets
             .child(dynamic(move || {
@@ -530,6 +448,7 @@ fn render_budget_card(store: AppStore) -> View {
                 setting_row_static(
                     l.t("本月已用 / 月度上限", "Monthly Usage / Cap"),
                     Some(&hint),
+                    None,
                     true,
                     true,
                 )
@@ -562,40 +481,19 @@ fn render_budget_card(store: AppStore) -> View {
                     .justify_between()
                     .gap(px(12.0))
                     .child(
-                        view()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .child(
-                                text(move || {
-                                    store
-                                        .lang
-                                        .get()
-                                        .t("自定义月度硬上限", "Custom Monthly Gate")
-                                        .to_owned()
-                                })
-                                .font_family(FONT_UI)
-                                .text_size(px(TEXT_SM))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(INK_PRIMARY)),
-                            )
-                            .child(
-                                text(move || {
-                                    store
-                                        .lang
-                                        .get()
-                                        .t(
-                                            "美元 (USD) 与 Token 双重硬上限",
-                                            "USD & Token hard ceilings",
-                                        )
-                                        .to_owned()
-                                })
-                                .font_family(FONT_UI)
-                                .text_size(px(TEXT_XS))
-                                .text_color(rgb(INK_MUTED)),
-                            ),
+                        view().flex_1().min_w(px(0.0)).child(
+                            text(move || {
+                                store
+                                    .lang
+                                    .get()
+                                    .t("自定义月度硬上限", "Custom Monthly Gate")
+                                    .to_owned()
+                            })
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_SM))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(INK_PRIMARY)),
+                        ),
                     )
                     .child(
                         view()
@@ -658,10 +556,8 @@ fn render_budget_card(store: AppStore) -> View {
                 let cfg = store.budget_config.get();
                 setting_row_static(
                     l.t("单次 Deep Research 预算上限", "Per-Run Cost Ceiling"),
-                    Some(l.t(
-                        "4 视角并行深研总上限",
-                        "USD ceiling across 4 parallel perspectives",
-                    )),
+                    None,
+                    None,
                     false,
                     true,
                 )
@@ -692,9 +588,10 @@ fn render_budget_card(store: AppStore) -> View {
                 let cfg = store.budget_config.get();
                 setting_row_static(
                     l.t("自动触发深研", "Auto-Trigger Deep Research"),
+                    None,
                     Some(l.t(
-                        "L0/L1 零 LLM；开启后仅在每周配额内自动运行 L2",
-                        "L0/L1 stay Zero-LLM; optional L2 runs stay capped weekly",
+                        "开启后仅在每周配额内于后台自动运行 L2 深研。",
+                        "When enabled, background L2 runs stay capped by your weekly quota.",
                     )),
                     false,
                     true,
@@ -729,10 +626,8 @@ fn render_budget_card(store: AppStore) -> View {
                 let cfg = store.budget_config.get();
                 setting_row_static(
                     l.t("每周自动深研配额", "Weekly Auto Quota"),
-                    Some(l.t(
-                        "限制每周后台自动派发 Deep Research 的最大次数",
-                        "Maximum background Deep Research runs per week",
-                    )),
+                    None,
+                    None,
                     false,
                     true,
                 )
@@ -767,6 +662,7 @@ fn render_budget_card(store: AppStore) -> View {
                         "Embedded Alan Connection Profile",
                     ),
                     Some(ALAN_SETUP_CMD),
+                    None,
                     true,
                     false,
                 )
@@ -786,7 +682,6 @@ fn render_budget_card(store: AppStore) -> View {
 
 fn render_datalake_card(store: AppStore) -> View {
     section_block(
-        "DUCKDB · L0 / L1",
         move || {
             store
                 .lang
@@ -794,7 +689,8 @@ fn render_datalake_card(store: AppStore) -> View {
                 .t("数据湖与日常维护", "Data Lake & Maintenance")
                 .to_owned()
         },
-        move || {
+        None,
+        Some(Box::new(move || {
             let l = store.lang.get();
             let lake_companies = store
                 .universe_summary
@@ -816,7 +712,7 @@ fn render_datalake_card(store: AppStore) -> View {
                 l.t("语义片段", "chunks"),
                 l.t("上次自选同步", "Last Circle sync"),
             )
-        },
+        })),
         obsidian_card().child(dynamic(move || {
             let l = store.lang.get();
             let syncing = store.sync_running.get();
@@ -873,24 +769,101 @@ fn render_datalake_card(store: AppStore) -> View {
     )
 }
 
-fn section_block(
-    tag: &'static str,
-    title: impl Fn() -> String + 'static,
-    subtitle: impl Fn() -> String + 'static,
-    card_body: View,
-) -> View {
-    view()
-        .w_full()
-        .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .child(
-            view()
+fn storage_category_meta(
+    category: StorageCategory,
+    l: UiLang,
+) -> (&'static str, u32, Option<&'static str>) {
+    match category {
+        StorageCategory::SecBulkArchives => (
+            l.t("SEC 批量归档", "SEC Bulk Archives"),
+            SKY_FG,
+            Some(l.t(
+                "全美股 XBRL / Submissions 压缩包；清理后不影响现有 DuckDB，下次同步重新下载。",
+                "Bulk SEC XBRL & submissions archives. Cleaning keeps existing DuckDB tables; re-downloaded on next sync.",
+            )),
+        ),
+        StorageCategory::SecFilingsCache => (
+            l.t("10-K / 8-K 原文缓存", "SEC Filings Cache"),
+            VIOLET_FG,
+            Some(l.t(
+                "本地缓存的财报正文文件，可随时按需重新拉取。",
+                "Cached raw 10-K/8-K filing files; re-fetched on demand.",
+            )),
+        ),
+        StorageCategory::DuckDbLakehouse => (
+            l.t("DuckDB 湖仓与索引", "DuckDB & Parquet"),
+            EMERALD_FG,
+            Some(l.t(
+                "全市场 L0 榜单与 L1 语义索引；清理后需重新同步全美股 L0。",
+                "Local L0/L1 DuckDB & Parquet index; rebuildable via US L0 sync.",
+            )),
+        ),
+        StorageCategory::QuotesAndCache => (
+            l.t("行情与计算缓存", "Quotes & Cache"),
+            GOLD_FG,
+            None,
+        ),
+        StorageCategory::PersonalWorkbench => (
+            l.t("个人工作台", "Personal Workbench"),
+            INK_SECONDARY,
+            Some(l.t(
+                "能力圈、决策账本、研报与行业笔记，受保护不会被清理。",
+                "Your Circle, Decision Journal, Dossiers, and Industry notes. Protected from cleanup.",
+            )),
+        ),
+    }
+}
+
+fn render_storage_card(store: AppStore) -> View {
+    section_block(
+        move || store.lang.get().t("本地存储", "Storage").to_owned(),
+        None,
+        None,
+        obsidian_card().child(dynamic(move || {
+            let l = store.lang.get();
+            let scanning = store.storage_scanning.get();
+            let cleaning = store.storage_cleaning.get();
+            let report_opt = store.storage_report.get();
+            let repo_root = store.paths.with(|p| p.repo_root.clone());
+
+            let total_txt = report_opt
+                .as_ref()
+                .map(|r| storage::format_bytes(r.total_bytes))
+                .unwrap_or_else(|| "—".to_owned());
+            let purgeable_txt = report_opt
+                .as_ref()
+                .map(|r| storage::format_bytes(r.cleanable_bytes))
+                .unwrap_or_else(|| "0 B".to_owned());
+
+            let mut segs: Vec<View> = Vec::new();
+            if let Some(ref rep) = report_opt
+                && rep.total_bytes > 0
+            {
+                for cat in &rep.categories {
+                    if cat.bytes == 0 {
+                        continue;
+                    }
+                    let (_, col, _) = storage_category_meta(cat.category, l);
+                    segs.push(
+                        view()
+                            .w(px(0.0))
+                            .flex_grow((cat.bytes as f32).max(1.0))
+                            .min_w(px(4.0))
+                            .h_full()
+                            .bg(rgb(col)),
+                    );
+                }
+            }
+
+            let top_block = view()
                 .w_full()
-                .px(px(4.0))
+                .px(px(16.0))
+                .py(px(14.0))
+                .border_b_1()
+                .border_color(rgb(BORDER_HAIRLINE))
                 .flex()
                 .flex_col()
-                .gap(px(2.0))
+                .gap(px(10.0))
                 .child(
                     view()
                         .w_full()
@@ -900,36 +873,227 @@ fn section_block(
                         .justify_between()
                         .gap(px(12.0))
                         .child(
-                            text(title)
-                                .font_family(FONT_UI)
-                                .text_size(px(TEXT_BASE))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(INK_HERO)),
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_baseline()
+                                .gap(px(10.0))
+                                .child(
+                                    text(total_txt)
+                                        .font_family(FONT_MONO_NUM)
+                                        .text_size(px(TEXT_MD))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(INK_HERO)),
+                                )
+                                .child(
+                                    text(l.t("已占用", "used").to_owned())
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_XS))
+                                        .text_color(rgb(INK_MUTED)),
+                                )
+                                .child(
+                                    text(format!(
+                                        "· {} {purgeable_txt}",
+                                        l.t("可清理", "purgeable")
+                                    ))
+                                    .font_family(FONT_MONO_TERM)
+                                    .text_size(px(TEXT_XS))
+                                    .text_color(rgb(INK_MUTED)),
+                                ),
                         )
-                        .child(
-                            text(tag)
-                                .font_family(FONT_MONO_TERM)
-                                .text_size(px(TEXT_2XS))
-                                .text_color(rgb(INK_MUTED))
-                                .number_of_lines(1),
-                        ),
+                        .child(setting_chip(
+                            if scanning {
+                                l.t("计算中…", "Scanning…")
+                            } else {
+                                l.t("重新计算", "Recalculate")
+                            },
+                            scanning,
+                            false,
+                            None,
+                            move || store.refresh_storage_report(),
+                        )),
                 )
                 .child(
-                    text(subtitle)
-                        .font_family(FONT_UI)
-                        .text_size(px(TEXT_XS))
-                        .text_color(rgb(INK_MUTED)),
-                ),
-        )
+                    view()
+                        .w_full()
+                        .h(px(10.0))
+                        .rounded_full()
+                        .bg(rgb(BG_WELL))
+                        .border_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .overflow_hidden()
+                        .flex()
+                        .flex_row()
+                        .gap(px(1.5))
+                        .children(segs),
+                );
+
+            let Some(rep) = report_opt else {
+                return view()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(top_block)
+                    .into_element();
+            };
+
+            let len = rep.categories.len();
+            let rows = rep.categories.into_iter().enumerate().map(|(idx, cat)| {
+                let (title, dot_col, tip_opt) = storage_category_meta(cat.category, l);
+                let has_divider = idx + 1 < len;
+                let reveal_target = if cat.reveal_path.exists() {
+                    cat.reveal_path.clone()
+                } else {
+                    repo_root.clone()
+                };
+                let is_cleaning_this = cleaning == Some(cat.category);
+
+                let mut label_row = view()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(view().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(dot_col)))
+                    .child(
+                        text(title.to_owned())
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_SM))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(INK_PRIMARY)),
+                    );
+                if let Some(tip) = tip_opt {
+                    label_row = label_row.child(concept_hint_static(tip));
+                }
+
+                let action_el = if cat.cleanable {
+                    let cat_kind = cat.category;
+                    if cat.bytes > 0 || is_cleaning_this {
+                        setting_chip(
+                            if is_cleaning_this {
+                                l.t("清理中…", "Cleaning…")
+                            } else {
+                                l.t("清理", "Clean")
+                            },
+                            is_cleaning_this,
+                            false,
+                            Some((CORAL_FG, CORAL_BG, CORAL_BORDER)),
+                            move || store.clean_storage_category(cat_kind),
+                        )
+                    } else {
+                        view().w(px(48.0))
+                    }
+                } else {
+                    badge_pill(
+                        l.t("受保护", "Protected").to_owned(),
+                        INK_MUTED,
+                        SLATE_BG,
+                        SLATE_BORDER,
+                    )
+                };
+
+                let mut row = view()
+                    .w_full()
+                    .px(px(16.0))
+                    .py(px(10.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.0))
+                    .child(label_row)
+                    .child(
+                        view()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.0))
+                            .child(
+                                text(format!("{} {}", cat.file_count, l.t("文件", "files")))
+                                    .font_family(FONT_MONO_TERM)
+                                    .text_size(px(TEXT_XS))
+                                    .text_color(rgb(INK_MUTED)),
+                            )
+                            .child(
+                                text(storage::format_bytes(cat.bytes))
+                                    .font_family(FONT_MONO_NUM)
+                                    .text_size(px(TEXT_SM))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(INK_PRIMARY)),
+                            )
+                            .child(setting_chip("Finder ↗", false, false, None, move || {
+                                reveal_workspace_dir(&reveal_target);
+                            }))
+                            .child(action_el),
+                    );
+                if has_divider {
+                    row = row.border_b_1().border_color(rgb(BORDER_HAIRLINE));
+                }
+                row
+            });
+
+            view()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(top_block)
+                .children(rows)
+                .into_element()
+        })),
+    )
+}
+
+fn section_block(
+    title: impl Fn() -> String + 'static,
+    concept_tip: Option<Box<dyn Fn() -> String>>,
+    live_meta: Option<Box<dyn Fn() -> String>>,
+    card_body: View,
+) -> View {
+    let mut heading_row = view()
+        .w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .child(
+            text(title)
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_BASE))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(INK_HERO)),
+        );
+    if let Some(tip_fn) = concept_tip {
+        heading_row = heading_row.child(concept_hint(tip_fn));
+    }
+
+    let mut header = view()
+        .w_full()
+        .px(px(4.0))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(heading_row);
+    if let Some(meta_fn) = live_meta {
+        header = header.child(
+            text(meta_fn)
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_XS))
+                .text_color(rgb(INK_MUTED)),
+        );
+    }
+
+    view()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(header)
         .child(card_body.w_full().flex().flex_col())
 }
 
-fn setting_row_reactive(
-    label: impl Fn() -> String + 'static,
-    hint: impl Fn() -> Option<String> + 'static,
-    mono_hint: bool,
-    has_divider: bool,
-) -> View {
+fn setting_row_reactive(label: impl Fn() -> String + 'static, has_divider: bool) -> View {
     let mut row = view()
         .w_full()
         .px(px(16.0))
@@ -943,42 +1107,41 @@ fn setting_row_reactive(
         row = row.border_b_1().border_color(rgb(BORDER_HAIRLINE));
     }
     row.child(
-        view()
-            .flex_1()
-            .min_w(px(0.0))
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(
-                text(label)
-                    .font_family(FONT_UI)
-                    .text_size(px(TEXT_SM))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(INK_PRIMARY)),
-            )
-            .child(
-                text(move || hint().unwrap_or_default())
-                    .font_family(if mono_hint { FONT_MONO_TERM } else { FONT_UI })
-                    .text_size(px(TEXT_XS))
-                    .text_color(rgb(INK_MUTED)),
-            ),
+        view().flex_1().min_w(px(0.0)).child(
+            text(label)
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_SM))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(INK_PRIMARY)),
+        ),
     )
 }
 
-fn setting_row_static(label: &str, hint: Option<&str>, mono_hint: bool, has_divider: bool) -> View {
+fn setting_row_static(
+    label: &str,
+    hint: Option<&str>,
+    concept_tip: Option<&str>,
+    mono_hint: bool,
+    has_divider: bool,
+) -> View {
+    let mut title_row = view().flex().flex_row().items_center().gap(px(6.0)).child(
+        text(label.to_owned())
+            .font_family(FONT_UI)
+            .text_size(px(TEXT_SM))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(rgb(INK_PRIMARY)),
+    );
+    if let Some(tip) = concept_tip {
+        title_row = title_row.child(concept_hint_static(tip));
+    }
+
     let mut left = view()
         .flex_1()
         .min_w(px(0.0))
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .child(
-            text(label.to_owned())
-                .font_family(FONT_UI)
-                .text_size(px(TEXT_SM))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(INK_PRIMARY)),
-        );
+        .child(title_row);
     if let Some(h) = hint {
         let mut h_txt = text(h.to_owned())
             .font_family(if mono_hint { FONT_MONO_TERM } else { FONT_UI })

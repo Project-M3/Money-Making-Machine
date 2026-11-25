@@ -1270,10 +1270,7 @@ fn render_statusline(store: AppStore) -> impl IntoElement {
             ),
             WorkspaceTab::Settings => (
                 SKY_FG,
-                l.t(
-                    "中/英双语即时切换 · 工作区目录 · 更新通道 · L2 预算护栏 · esc 返回",
-                    "Live Zh/En switch · Workspace · Updates · L2 Budget Guardrails · esc back",
-                ),
+                l.t("⌘K 命令面板 · esc 返回", "⌘K palette · esc back"),
                 "ZERO-LLM · PAPER ONLY",
             ),
         }

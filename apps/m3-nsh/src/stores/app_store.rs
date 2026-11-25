@@ -46,6 +46,7 @@ use m3_core::model::{
     SyncStatusFile, ValuationAssumptions,
 };
 use m3_core::research::{self, DeepResearchEvent, DeepResearchRequest, DeepResearchResult};
+use m3_core::storage::{self, StorageCategory, StorageReport};
 use m3_core::store::{self, WorkspacePaths};
 use m3_core::universe::{self, UniverseSyncOptions, UniverseSyncReport};
 use m3_core::update::{self, PassiveUpdateNotice, ReleaseChannel, UpdateOptions, UpdateReport};
@@ -198,6 +199,9 @@ pub struct AppStore {
     pub update_applied_version: Signal<Option<String>>,
     pub settings_monthly_budget_draft: Signal<String>,
     pub settings_monthly_tokens_draft: Signal<String>,
+    pub storage_report: Signal<Option<StorageReport>>,
+    pub storage_scanning: Signal<bool>,
+    pub storage_cleaning: Signal<Option<StorageCategory>>,
 
     // ── Internal Non-Reactive State ──────────────────────────────────────────
     alan_handle: Stored<Option<M3InterrogatorHandle>>,
@@ -612,6 +616,9 @@ impl AppStore {
             update_applied_version: signal(None),
             settings_monthly_budget_draft: signal(initial_budget.monthly_budget_usd.to_string()),
             settings_monthly_tokens_draft: signal(initial_budget.monthly_token_limit.to_string()),
+            storage_report: signal_with(None, SignalEquals::Never),
+            storage_scanning: signal(false),
+            storage_cleaning: signal(None),
 
             alan_handle: stored(None),
             agent_seq: stored(1),
@@ -960,7 +967,12 @@ impl AppStore {
                 self.reload_industries_from_disk();
                 self.reload_themes_from_disk();
             }
-            WorkspaceTab::Baskets | WorkspaceTab::Journal | WorkspaceTab::Settings => {}
+            WorkspaceTab::Baskets | WorkspaceTab::Journal => {}
+            WorkspaceTab::Settings => {
+                if !self.storage_scanning.get_untracked() {
+                    self.refresh_storage_report();
+                }
+            }
         }
     }
 
@@ -1110,6 +1122,98 @@ impl AppStore {
         self.notice.set(None);
     }
 
+    /// Scans local workspace & updater storage usage on a background thread.
+    pub fn refresh_storage_report(self) {
+        if self.storage_scanning.get_untracked() {
+            return;
+        }
+        let paths = self.paths.get_untracked();
+        let expected_root = paths.repo_root.clone();
+        let updater_dir = app_config::updater_dir().ok();
+        self.storage_scanning.set(true);
+
+        run_blocking_result(
+            move || storage::scan_workspace_storage(&paths, updater_dir.as_deref()),
+            move |report| {
+                if self.paths.get_untracked().repo_root != expected_root {
+                    return;
+                }
+                self.storage_scanning.set(false);
+                self.storage_report.set(Some(report));
+            },
+        );
+    }
+
+    /// Safely cleans a rebuildable local storage bucket and updates Settings telemetry.
+    pub fn clean_storage_category(self, category: StorageCategory) {
+        let l = self.lang.get_untracked();
+        if category == StorageCategory::PersonalWorkbench {
+            return;
+        }
+        if self.sync_running.get_untracked()
+            || self.universe_syncing.get_untracked()
+            || self.inbox_catching_up.get_untracked()
+            || self.themes_syncing.get_untracked()
+        {
+            self.set_info_notice(
+                l.t(
+                    "同步进行中，请等待同步完成后再清理",
+                    "Sync in progress — wait before cleaning",
+                )
+                .to_owned(),
+            );
+            return;
+        }
+        if self.storage_cleaning.get_untracked().is_some() {
+            return;
+        }
+
+        let paths = self.paths.get_untracked();
+        let expected_root = paths.repo_root.clone();
+        let updater_dir = app_config::updater_dir().ok();
+        self.storage_cleaning.set(Some(category));
+
+        run_blocking_result(
+            move || {
+                let freed =
+                    storage::clean_storage_category(&paths, updater_dir.as_deref(), category)
+                        .map_err(|e| format!("{e:#}"))?;
+                let report = storage::scan_workspace_storage(&paths, updater_dir.as_deref());
+                Ok::<(u64, StorageReport), String>((freed, report))
+            },
+            move |res| {
+                self.storage_cleaning.set(None);
+                let l = self.lang.get_untracked();
+                match res {
+                    Ok((freed, report)) => {
+                        if self.paths.get_untracked().repo_root == expected_root {
+                            self.storage_report.set(Some(report));
+                            if matches!(
+                                category,
+                                StorageCategory::DuckDbLakehouse | StorageCategory::QuotesAndCache
+                            ) {
+                                self.reload_all();
+                                self.reload_universe_from_lake();
+                                self.reload_inbox_from_lake();
+                            }
+                        }
+                        self.set_info_notice(format!(
+                            "{} {}",
+                            l.t("已释放", "Freed"),
+                            storage::format_bytes(freed)
+                        ));
+                    }
+                    Err(err) => {
+                        self.set_error_notice(format!(
+                            "{}: {err}",
+                            l.t("清理失败", "Cleanup failed")
+                        ));
+                    }
+                }
+            },
+        );
+    }
+
     // ── Workspace Switch & Settings ──────────────────────────────────────────
 
     pub fn switch_workspace_to(self, dir: &Path) {
@@ -1128,6 +1232,7 @@ impl AppStore {
                 self.selected_ticker.set(String::new());
                 self.company_open.set(false);
                 self.reload_all();
+                self.refresh_storage_report();
                 self.set_info_notice(format!(
                     "{}: {}",
                     l.t("已切换工作区至", "Switched workspace to"),
@@ -1160,6 +1265,7 @@ impl AppStore {
                 self.selected_ticker.set(String::new());
                 self.company_open.set(false);
                 self.reload_all();
+                self.refresh_storage_report();
                 self.set_info_notice(format!(
                     "{}: {}",
                     l.t(

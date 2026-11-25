@@ -79,6 +79,10 @@ function escapeHtml(raw: string): string {
     .replaceAll('"', '&quot;');
 }
 
+function conceptHint(tip: string): string {
+  return `<span class="concept-hint" tabindex="0" role="note" aria-label="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}">?</span>`;
+}
+
 function toneClass(tone: CompanyRecord['statusTone'] | InboxEvent['severity']): string {
   switch (tone) {
     case 'emerald':
@@ -795,7 +799,7 @@ export function mountWorkbench(container: HTMLElement): void {
             )
             .join('')}
         </div>
-        <div class="view-summary">Core / Watch / Too Hard · Click any company to open Research Desk</div>
+        <div class="view-summary">Core / Watch / Too Hard</div>
       </div>
 
       <div class="baskets-scroll">
@@ -1038,7 +1042,10 @@ export function mountWorkbench(container: HTMLElement): void {
           `,
           ).join('')}
         </div>
-        <div class="view-summary">Alan 4-Lens Study · 10-K + Web · Feynman Graduation</div>
+        <div class="view-summary" style="display: inline-flex; align-items: center; gap: 0.4rem;">
+          <span>Industry Research</span>
+          ${conceptHint('Graduate an industry to Inside Circle after Feynman verification to unlock Strike Zone signals.')}
+        </div>
       </div>
 
       <div class="pane-right" style="padding: 1rem 1.15rem; gap: 0.85rem; overflow-y: auto; flex: 1;">
@@ -1161,8 +1168,9 @@ export function mountWorkbench(container: HTMLElement): void {
   function renderJournalView(): string {
     return `
       <div class="view-toolbar">
-        <div class="view-summary">
-          Append-Only Pre-Committed Decision Journal (vs 100% Paper Cash &amp; S&amp;P 500)
+        <div class="view-summary" style="display: inline-flex; align-items: center; gap: 0.4rem;">
+          <span>Decision Journal</span>
+          ${conceptHint('Append-only pre-committed ledger benchmarked against 100% Paper Cash & S&P 500.')}
         </div>
         <div class="view-summary tabular">${JOURNAL_ENTRIES.length} entries</div>
       </div>
@@ -1195,19 +1203,17 @@ export function mountWorkbench(container: HTMLElement): void {
 
   function renderSettingsView(): string {
     const zh = state.settingsLang === 'zh';
+    const budgetTip = zh
+      ? 'L0/L1 全程零 LLM；仅在手动启动 Embedded Alan 深研或行业研究时计费，到达月度上限自动拦截。'
+      : 'L0/L1 spend 0 LLM tokens. Hard ceilings block Embedded Alan L2 runs before spending.';
     return `
       <div class="view-toolbar">
-        <div class="view-summary">${zh ? '应用偏好、更新通道与安全护栏' : 'Interface Preferences, Release Channel & Guardrails'}</div>
-        <div class="view-summary mono">workbench/app_config.json + budget.json</div>
+        <div class="view-summary">${zh ? '偏好设置' : 'Settings'}</div>
       </div>
-      <div class="pane-right" style="padding: 1.25rem; gap: 0.9rem; overflow-y: auto; flex: 1;">
+      <div class="pane-right" style="padding: 1.25rem; gap: 0.75rem; overflow-y: auto; flex: 1;">
         <div class="evidence-box">
-          <div class="evidence-top">
-            <strong style="color: var(--ink-hero); font-size: 0.88rem;">${zh ? '界面与语言' : 'Interface & Language'}</strong>
-            <span class="mono" style="font-size: 0.68rem; color: var(--ink-muted);">INTERFACE · I18N</span>
-          </div>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
-            <span style="font-size: 0.8rem; color: var(--ink-secondary);">${zh ? '实时切换桌面端、菜单栏与命令面板语言' : 'Instant Zh/En switch across workbench, macOS menus & palette'}</span>
+            <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? '显示语言' : 'Display Language'}</strong>
             <div class="seg-group">
               <button type="button" class="seg-tab ${state.settingsLang === 'zh' ? 'is-active' : ''}" data-set-lang="zh">中文</button>
               <button type="button" class="seg-tab ${state.settingsLang === 'en' ? 'is-active' : ''}" data-set-lang="en">English</button>
@@ -1216,12 +1222,8 @@ export function mountWorkbench(container: HTMLElement): void {
         </div>
 
         <div class="evidence-box">
-          <div class="evidence-top">
-            <strong style="color: var(--ink-hero); font-size: 0.88rem;">${zh ? '自动更新通道' : 'Software Updates'}</strong>
-            <span class="mono" style="font-size: 0.68rem; color: var(--ink-muted);">GITHUB RELEASES · SHA-256</span>
-          </div>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
-            <span style="font-size: 0.8rem; color: var(--ink-secondary);">${zh ? '选择稳定版 (stable) 或测试版 (beta) 更新通道' : 'Choose signed stable or rolling beta release track'}</span>
+            <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? '更新通道' : 'Release Channel'}</strong>
             <div class="seg-group">
               <button type="button" class="seg-tab ${state.settingsChannel === 'stable' ? 'is-active' : ''}" data-set-channel="stable">stable</button>
               <button type="button" class="seg-tab ${state.settingsChannel === 'beta' ? 'is-active' : ''}" data-set-channel="beta">beta</button>
@@ -1229,12 +1231,35 @@ export function mountWorkbench(container: HTMLElement): void {
           </div>
         </div>
 
-        <div class="sovereignty-box">
-          <div class="sovereignty-header">
-            <span>${zh ? 'L2 AI 研究预算护栏' : 'L2 AI Research Budget Ceiling'}</span>
-            <span>\$10.00 / MO HARD CAP</span>
+        <div class="evidence-box">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
+            <span style="display: inline-flex; align-items: center; gap: 0.45rem;">
+              <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? 'L2 AI 预算护栏' : 'L2 AI Budget'}</strong>
+              ${conceptHint(budgetTip)}
+            </span>
+            <span class="mono" style="font-size: 0.72rem; color: var(--emerald);">\$10.00 / MO HARD CAP</span>
           </div>
-          <p class="sovereignty-body">${zh ? 'L0/L1 全市场筛选与 10-K 原文同步完全 0 Token；仅在手动启动 Alan 深研与行业研究时计费，超限自动硬拦截。' : 'L0/L1 full-US screening and 10-K retrieval spend 0 LLM tokens. Embedded Alan deep & industry research stay hard-capped at your monthly ceiling.'}</p>
+        </div>
+
+        <div class="evidence-box">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.6rem;">
+            <strong style="color: var(--ink-hero); font-size: 0.86rem;">${zh ? '本地存储' : 'Storage'}</strong>
+            <span class="mono" style="font-size: 0.75rem; color: var(--ink-hero);">3.52 GB <span style="color: var(--ink-muted);">${zh ? '已占用' : 'used'}</span></span>
+          </div>
+          <div class="storage-bar" role="img" aria-label="Storage breakdown">
+            <span class="storage-seg" style="flex: 2810; background: var(--sky);"></span>
+            <span class="storage-seg" style="flex: 658; background: var(--violet);"></span>
+            <span class="storage-seg" style="flex: 68; background: var(--emerald);"></span>
+            <span class="storage-seg" style="flex: 29; background: var(--gold);"></span>
+            <span class="storage-seg" style="flex: 6; background: var(--ink-secondary);"></span>
+          </div>
+          <div class="storage-legend" style="margin-top: 0.6rem;">
+            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--sky)"></span>SEC Bulk 2.81 GB</span>
+            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--violet)"></span>10-K Filings 658 MB</span>
+            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--emerald)"></span>DuckDB 68 MB</span>
+            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--gold)"></span>Quotes 29 MB</span>
+            <span class="storage-legend-item"><span class="mini-dot" style="background: var(--ink-secondary)"></span>Workbench 44 KB</span>
+          </div>
         </div>
       </div>
     `.replaceAll('\\$', '$');

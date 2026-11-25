@@ -1807,8 +1807,101 @@ pre,
   color: var(--ink-muted);
 }
 
-.install-channel-hint {
+.concept-hint {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-well);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+}
+
+.concept-hint:hover,
+.concept-hint:focus-visible {
+  color: var(--ink-primary);
+  border-color: var(--ink-secondary);
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.concept-hint::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 7px);
+  transform: translateX(-50%) translateY(3px);
+  width: max-content;
+  max-width: 260px;
+  padding: 0.45rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  background: #14141d;
+  color: var(--ink-primary);
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.52);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 140ms ease, transform 140ms ease;
+  z-index: 40;
+}
+
+.concept-hint:hover::after,
+.concept-hint:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .concept-hint::after {
+    transition: none;
+  }
+}
+
+.storage-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg-well);
+  border: 1px solid var(--line-subtle);
+  overflow: hidden;
+  display: flex;
+  gap: 2px;
+}
+
+.storage-seg {
+  height: 100%;
+  min-width: 4px;
+}
+
+.storage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.1rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
   color: var(--ink-secondary);
+}
+
+.storage-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .install-snippet-row {

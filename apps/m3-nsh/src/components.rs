@@ -133,6 +133,55 @@ pub fn badge_pill(label: impl IntoReactive<SharedString>, fg: u32, bg: u32, bord
         )
 }
 
+/// Subtle circular `?` concept-explanation badge with native NSH hover tooltip.
+///
+/// Reserve strictly for domain concepts rather than self-explanatory controls.
+pub fn concept_hint(explanation: impl Fn() -> String + 'static) -> View {
+    let tip = view()
+        .max_w(px(280.0))
+        .px(px(10.0))
+        .py(px(7.0))
+        .rounded_md()
+        .bg(rgb(0x181822))
+        .border_1()
+        .border_color(rgb(BORDER_PILL))
+        .child(
+            text(explanation)
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_XS))
+                .line_height(px(16.0))
+                .text_color(rgb(INK_PRIMARY)),
+        );
+
+    view()
+        .w(px(15.0))
+        .h(px(15.0))
+        .flex_shrink_0()
+        .rounded_full()
+        .bg(rgb(BG_WELL))
+        .border_1()
+        .border_color(rgb(BORDER_PILL))
+        .hover(|s| s.bg(rgb(BG_HOVER)))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .tooltip(tip.into_element())
+        .child(
+            text("?")
+                .font_family(FONT_MONO_TERM)
+                .text_size(px(10.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(INK_MUTED)),
+        )
+}
+
+/// Static-string variant of [`concept_hint`] for use inside `dynamic(...)` closures.
+pub fn concept_hint_static(explanation: &str) -> View {
+    let owned = explanation.to_owned();
+    concept_hint(move || owned.clone())
+}
+
 /// Compact clickable action button in Obsidian style.
 pub fn action_button<M>(
     label: impl IntoReactive<SharedString>,

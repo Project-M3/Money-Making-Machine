@@ -1478,23 +1478,6 @@ fn render_universe_table_card(store: AppStore) -> View {
                             .text_size(px(TEXT_XS))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(INK_HERO)),
-                        )
-                        .child(
-                            text(move || {
-                                store
-                                    .lang
-                                    .get()
-                                    .t(
-                                        "点击列头排序 · 点击行右侧下钻 5Y 财报",
-                                        "Click headers to sort · Select row for 5Y financials",
-                                    )
-                                    .to_owned()
-                            })
-                            .font_family(FONT_MONO_TERM)
-                            .text_size(px(TEXT_2XS))
-                            .text_color(rgb(INK_MUTED))
-                            .truncate()
-                            .number_of_lines(1),
                         ),
                 )
                 .child(

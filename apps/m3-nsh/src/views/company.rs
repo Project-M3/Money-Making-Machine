@@ -3,9 +3,10 @@
 use super::agent::{agent_view, cross_company_context_strip, living_research_memo_card};
 use super::chart::chart_placeholder;
 use crate::components::{
-    action_button, badge_pill, card_title, inspector_kv, kv_line, mono_right, obsidian_card,
-    prop_section, prose_block, ratio_bar, render_warning_panel_for, roic_sparkline_for,
-    section_header, seg_group, seg_tab, stepper_inline, styled_input, v_divider,
+    action_button, badge_pill, card_title, concept_hint_static, inspector_kv, kv_line, mono_right,
+    obsidian_card, prop_section, prose_block, ratio_bar, render_warning_panel_for,
+    roic_sparkline_for, section_header, seg_group, seg_tab, stepper_inline, styled_input,
+    v_divider,
 };
 use crate::format::{
     civil_ym_from_ms, currency_prefix, fmt_money_compact, fmt_money_compact_opt, fmt_pct_clean,
@@ -1420,14 +1421,22 @@ fn render_multi_year_table(rep: &MungerReport, l: UiLang) -> View {
                 .items_center()
                 .justify_between()
                 .child(
-                    text(l.t(
-                        "多年确定性财务底表（Rust 解析自 SEC EDGAR XBRL）",
-                        "Multi-Year Deterministic Ledger (Rust SEC EDGAR XBRL)",
-                    ))
-                    .font_family(FONT_UI)
-                    .text_size(px(TEXT_SM))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(INK_HERO)),
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            text(l.t("多年财务底表", "Multi-Year Ledger"))
+                                .font_family(FONT_UI)
+                                .text_size(px(TEXT_SM))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(INK_HERO)),
+                        )
+                        .child(concept_hint_static(l.t(
+                            "直接从 SEC EDGAR XBRL 一手解析的确定性口径，绝不由 LLM 补全。",
+                            "Parsed deterministically from primary SEC EDGAR XBRL filings; never LLM-estimated.",
+                        ))),
                 )
                 .child(
                     text(format!(
