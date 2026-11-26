@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-26
+
+### Added
+- Non-destructive "Remove from Circle" (`remove_company_from_watchlist` / `remove_company_from_circle`) across Company Desk, context menu, Circle Overview row actions, and Universe Radar drawer (preserving human-authored dossiers, memos, and journal entries).
+
+### Changed
+- Standardized Circle tier order to `WATCH → IN → OUT → TOO HARD` across core `Bucket::display_order()`, sidebar, Circle Overview, Company Desk, menus, and website simulator.
+- Hydrated primary Inbox and Circle state before frame 1 and added `startup_hydrated` empty-state guards to eliminate startup empty-screen flashes.
+
+### Performance
+- Eliminated UI-thread freezes when opening or switching Company Research Desk by moving DuckDB context queries (`research_runs`, `peers`, `search_similar`, budget) off-thread with request-sequence guards.
+- Accelerated `LakeDb::search_similar` (~4x faster on local lakehouses via zero-allocation BM25 scanning, streaming JSON cosine similarity, and deferred top-K snippet extraction).
+
 ## [0.5.0] - 2026-11-26
 
 ### Added
@@ -65,7 +78,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial **Munger Focus Value Research & Decision Workbench** (`v1`), deterministic SEC EDGAR XBRL & Yahoo Finance Charlie Calculator, built-in **Alan** interrogator with `M3ToolPolicyHook`, and `m3` JSON CLI.
 
-[Unreleased]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.5.0...main
+[Unreleased]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.5.1...main
+[0.5.1]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.0...v0.4.1
