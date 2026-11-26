@@ -59,6 +59,7 @@ fn render_settings_tab_body(store: AppStore, ver_for_body: String) -> View {
             .gap(px(20.0))
             .child(render_language_card(store))
             .child(render_workspace_card(store))
+            .child(render_onboarding_guide_card(store))
             .child(render_updates_card(store, &ver_for_body)),
         SettingsTab::Ai => view()
             .w_full()
@@ -305,7 +306,7 @@ fn render_language_card(store: AppStore) -> View {
     )
 }
 
-fn render_workspace_card(store: AppStore) -> View {
+pub(crate) fn render_workspace_card(store: AppStore) -> View {
     section_block(
         move || store.lang.get().t("本地工作区", "Workspace").to_owned(),
         None,
@@ -1055,7 +1056,41 @@ fn alan_provider_accent(provider: AlanConnectionProvider) -> (u32, u32) {
     }
 }
 
-fn render_alan_connection_card(store: AppStore) -> View {
+fn render_onboarding_guide_card(store: AppStore) -> View {
+    section_block(
+        move || {
+            store
+                .lang
+                .get()
+                .t("新手引导与核心概念", "Welcome & Setup Guide")
+                .to_owned()
+        },
+        None,
+        None,
+        obsidian_card().child(dynamic(move || {
+            let l = store.lang.get();
+            setting_row_static(
+                l.t("首次使用引导向导", "First-Run Setup & Concepts Guide"),
+                Some(l.t(
+                    "重新打开核心概念介绍、语言/工作区向导、Alan 模型连接及精选经典能力圈导入。",
+                    "Reopen the walkthrough for core concepts, workspace setup, Alan connection, and starter classics.",
+                )),
+                None,
+                false,
+                false,
+            )
+            .child(setting_chip(
+                l.t("打开引导向导", "Open Welcome Guide"),
+                true,
+                false,
+                None,
+                move || store.open_landing_onboarding(),
+            ))
+        })),
+    )
+}
+
+pub(crate) fn render_alan_connection_card(store: AppStore) -> View {
     section_block(
         move || {
             store
@@ -1847,7 +1882,7 @@ fn render_datalake_card(store: AppStore) -> View {
                     if syncing {
                         l.t("能力圈同步中…", "Syncing Circle…")
                     } else {
-                        l.t("同步能力圈财报与股价 (⌘R)", "Sync Circle Financials (⌘R)")
+                        l.t("同步能力圈财报与股价", "Sync Circle Financials")
                     },
                     syncing,
                     false,

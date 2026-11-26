@@ -787,8 +787,18 @@ fn render_industry_empty_guide(store: AppStore) -> View {
                 .flex_row()
                 .items_center()
                 .gap(px(8.0))
-                .child(badge_pill("INDUSTRY STUDIO", VIOLET_FG, VIOLET_BG, VIOLET_BORDER))
-                .child(badge_pill("HUMAN SOVEREIGNTY", GOLD_FG, GOLD_BG, GOLD_BORDER)),
+                .child(badge_pill(
+                    move || store.lang.get().t("行业研究", "INDUSTRY STUDIO").to_owned(),
+                    VIOLET_FG,
+                    VIOLET_BG,
+                    VIOLET_BORDER,
+                ))
+                .child(badge_pill(
+                    move || store.lang.get().t("人类主权", "HUMAN SOVEREIGNTY").to_owned(),
+                    GOLD_FG,
+                    GOLD_BG,
+                    GOLD_BORDER,
+                )),
         )
         .child(
             text(move || {
@@ -812,8 +822,8 @@ fn render_industry_empty_guide(store: AppStore) -> View {
                     .lang
                     .get()
                     .t(
-                        "未研究过的行业不应盲目给出机械击球价。你可以通过三种方式启动行业研究：(1) 在左侧输入自由主题；(2) 输入任意公司代码快速按 SIC 建组（或在收件箱/雷达中点击「研究所在行业」）；(3) 从左下角的 SIC / 主题聚类一键发起。\n\nAlan 会自动结合代表公司 SEC 10-K 原文、DuckDB 5 年财务矩阵与公开网页资料完成 4 视角研究并生成费曼自测题。唯有当你通过费曼自检、手动设好估值锚并亲手点击「毕业进能力圈」后，该行业标的才会被允许触发击球区雷达信号。",
-                        "Unknown industries never receive blind mechanical Strike alerts. Start an Industry Study in 3 ways: (1) enter a free-form topic on the left, (2) bind a company ticker by SIC (or click 'Research Industry' in Inbox/Radar), or (3) promote a SIC/Theme cluster below.\n\nAlan combines representative SEC 10-Ks, the Zero-LLM DuckDB 5Y Peer Matrix, and bounded public web search with strict source separation. Only after you pass the Feynman check, set your human valuation anchor, and graduate an industry to Inside Circle will its companies qualify for Strike signals.",
+                        "未研究过的行业不应盲目给出机械击球价。你可以通过三种方式启动行业研究：(1) 在左侧输入自由主题；(2) 输入任意公司代码快速按 SIC 建组（或在收件箱/雷达中点击「发起 / 查看行业研究」）；(3) 从左下角的商业原型聚类一键发起。\n\nAlan 会自动结合代表公司 SEC 10-K 原文、本地 5 年财务矩阵与公开网页资料完成 4 视角研究并生成费曼自测题。唯有当你通过费曼自检、手动设好估值锚并亲手点击「毕业进能力圈」，且具体标的纳入 IN 核心池后，才会触发正式击球区提醒。",
+                        "Unknown industries never receive blind mechanical Strike alerts. Start an Industry Study in 3 ways: (1) enter a free-form topic on the left, (2) bind a company ticker by SIC (or click 'Study Industry' in Inbox/Radar), or (3) promote an archetype cluster below.\n\nAlan combines representative SEC 10-Ks, the local 5Y Peer Matrix, and bounded public web search with strict source separation. Formal Strike Zone alerts trigger only after you graduate the industry, pass Feynman checks, and promote a company into IN (Core Circle).",
                     )
                     .to_owned()
             })
@@ -1066,7 +1076,93 @@ fn render_header_card(store: AppStore, profile: &IndustryProfile) -> View {
                                     .text_color(rgb(if active { fg } else { INK_SECONDARY }))
                                     .number_of_lines(1),
                                 )
-                        })),
+                        }))
+                        .child({
+                            let slug_confirm = slug.clone();
+                            let slug_delete = slug.clone();
+                            view().ml(px(6.0)).child(dynamic(move || {
+                                let l = store.lang.get();
+                                let confirming = store
+                                    .industry_delete_confirm_slug
+                                    .get()
+                                    .as_deref()
+                                    == Some(slug_confirm.as_str());
+                                if confirming {
+                                    let del_slug = slug_delete.clone();
+                                    view()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(
+                                            view()
+                                                .px(px(10.0))
+                                                .py(px(5.0))
+                                                .rounded_sm()
+                                                .cursor_pointer()
+                                                .bg(rgba(CORAL_BG))
+                                                .border_1()
+                                                .border_color(rgba(CORAL_BORDER))
+                                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                                .on_press(move || store.delete_industry(&del_slug))
+                                                .child(
+                                                    text(l.t("确认删除", "Confirm Delete"))
+                                                        .font_family(FONT_UI)
+                                                        .text_size(px(TEXT_XS))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(rgb(CORAL_FG))
+                                                        .number_of_lines(1),
+                                                ),
+                                        )
+                                        .child(
+                                            view()
+                                                .px(px(8.0))
+                                                .py(px(5.0))
+                                                .rounded_sm()
+                                                .cursor_pointer()
+                                                .bg(rgb(BG_WELL))
+                                                .border_1()
+                                                .border_color(rgb(BORDER_SUBTLE))
+                                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                                .on_press(move || {
+                                                    store.industry_delete_confirm_slug.set(None)
+                                                })
+                                                .child(
+                                                    text(l.t("取消", "Cancel"))
+                                                        .font_family(FONT_UI)
+                                                        .text_size(px(TEXT_XS))
+                                                        .text_color(rgb(INK_SECONDARY))
+                                                        .number_of_lines(1),
+                                                ),
+                                        )
+                                        .into_element()
+                                } else {
+                                    let arm_slug = slug_confirm.clone();
+                                    view()
+                                        .px(px(10.0))
+                                        .py(px(5.0))
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .bg(rgb(BG_WELL))
+                                        .border_1()
+                                        .border_color(rgb(BORDER_SUBTLE))
+                                        .hover(|s| s.bg(rgba(CORAL_BG)))
+                                        .on_press(move || {
+                                            store
+                                                .industry_delete_confirm_slug
+                                                .set(Some(arm_slug.clone()));
+                                        })
+                                        .child(
+                                            text(l.t("删除研究", "Delete"))
+                                                .font_family(FONT_UI)
+                                                .text_size(px(TEXT_XS))
+                                                .text_color(rgb(INK_MUTED))
+                                                .number_of_lines(1),
+                                        )
+                                        .into_element()
+                                }
+                            }))
+                        }),
                 ),
         )
 }
@@ -1583,7 +1679,7 @@ fn render_sovereignty_card(store: AppStore, profile: &IndustryProfile) -> View {
                                     .lang
                                     .get()
                                     .t(
-                                        "人类行业研判笔记（## Human Notes · Alan 永不覆盖）：",
+                                        "人类行业研判笔记（Alan 永不覆盖）：",
                                         "Human Industry Notes (## Human Notes · Protected from Alan):",
                                     )
                                     .to_owned()
@@ -2091,7 +2187,7 @@ fn render_primer_card(store: AppStore, profile: &IndustryProfile) -> View {
                                 store
                                     .lang
                                     .get()
-                                    .t("行业活手册 · Living Industry Primer", "Living Industry Primer")
+                                    .t("行业活手册", "Living Industry Primer")
                                     .to_owned()
                             })
                             .font_family(FONT_UI)

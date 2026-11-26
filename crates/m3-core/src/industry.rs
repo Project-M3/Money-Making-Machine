@@ -170,6 +170,31 @@ pub fn save_industry(paths: &WorkspacePaths, profile: &IndustryProfile) -> Resul
     store::write_json_atomic(&path, &normalized)
 }
 
+/// Removes an industry profile JSON and its companion Living Primer Markdown file.
+/// Returns `Ok(true)` if at least one file existed and was removed.
+pub fn delete_industry(paths: &WorkspacePaths, slug: &str) -> Result<bool> {
+    let trimmed = slug.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+    {
+        anyhow::bail!("无效的行业标识: {slug}");
+    }
+    let mut removed = false;
+    for path in [
+        paths.industry_profile_path(trimmed),
+        paths.industry_primer_path(trimmed),
+    ] {
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("删除行业文件失败 {}", path.display()))?;
+            removed = true;
+        }
+    }
+    Ok(removed)
+}
+
 pub fn load_industry_primer_md(paths: &WorkspacePaths, slug: &str) -> Option<String> {
     let path = paths.industry_primer_path(slug);
     fs::read_to_string(path).ok()
@@ -847,6 +872,15 @@ mod tests {
             vec!["CDNS".to_owned(), "SNPS".to_owned()]
         );
         assert_eq!(promoted.human_notes, "Human theme note");
+
+        write_industry_primer_preserving_human_notes(&paths, &ind.slug, "# Primer", None).unwrap();
+        assert!(paths.industry_profile_path(&ind.slug).exists());
+        assert!(paths.industry_primer_path(&ind.slug).exists());
+        assert!(delete_industry(&paths, &ind.slug).unwrap());
+        assert!(!paths.industry_profile_path(&ind.slug).exists());
+        assert!(!paths.industry_primer_path(&ind.slug).exists());
+        assert!(!delete_industry(&paths, &ind.slug).unwrap());
+        assert!(delete_industry(&paths, "../escape").is_err());
 
         let _ = Bucket::Core;
         let _ = fs::remove_dir_all(&paths.repo_root);

@@ -26,7 +26,7 @@ use nsh_core::FontVariant;
 use nsh_core::canvas::{CanvasTextAlign, CanvasTextBaseline};
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 
 const TABLE_ROW_HEIGHT: f32 = 44.0;
@@ -47,6 +47,7 @@ const COL_WARN_W: f32 = 38.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StrikeBadgeKind {
     CircleStrike,
+    WatchDiscount,
     NonCircleDiscount,
 }
 
@@ -190,7 +191,7 @@ fn render_universe_summary_strip(store: AppStore) -> View {
                 ))
                 .child(v_divider())
                 .child(summary_stat(
-                    move || store.lang.get().t("击球区", "Strike Zone").to_owned(),
+                    move || store.lang.get().t("≤18x 折价", "≤18x Ref").to_owned(),
                     move || {
                         store.universe_summary.with(|s| {
                             format!("{}", s.as_ref().map(|x| x.strike_zone_count).unwrap_or(0))
@@ -200,7 +201,7 @@ fn render_universe_summary_strip(store: AppStore) -> View {
                         let n = store
                             .universe_summary
                             .with(|s| s.as_ref().map(|x| x.strike_zone_count).unwrap_or(0));
-                        if n > 0 { EMERALD_FG } else { INK_MUTED }
+                        if n > 0 { GOLD_FG } else { INK_MUTED }
                     },
                 ))
                 .child(v_divider())
@@ -739,6 +740,7 @@ fn percentile_sorted(sorted: &[f64], frac: f64) -> Option<f64> {
 pub fn build_scatter_model(
     rows: &[UniverseRow],
     strike_zone_ciks: &HashSet<String>,
+    live_buckets: &HashMap<String, Bucket>,
     selected_cik: Option<&str>,
 ) -> Option<ScatterPlotModel> {
     struct RawPt<'a> {
@@ -789,6 +791,7 @@ pub fn build_scatter_model(
     let mut clipped_count = 0usize;
     let mut strike_count = 0usize;
     let mut watch_count = 0usize;
+    let mut discount_count = 0usize;
     let mut points: Vec<ScatterPoint> = raw
         .into_iter()
         .map(|p| {
@@ -796,16 +799,34 @@ pub fn build_scatter_model(
             if clipped {
                 clipped_count += 1;
             }
-            let in_strike_zone = p.row.in_price_pool
+            let eff_bucket = live_buckets
+                .get(&p.row.ticker.to_ascii_uppercase())
+                .copied()
+                .or_else(|| {
+                    p.row
+                        .in_watchlist
+                        .then_some(p.row.bucket_opt.unwrap_or(Bucket::Watch))
+                });
+            let in_circle = matches!(eff_bucket, Some(Bucket::Core | Bucket::Watch));
+            let is_fresh_below = p.row.in_price_pool
                 && strike_zone_ciks.contains(&p.row.cik)
                 && p.row
                     .distance_to_strike_pct
                     .is_some_and(|d| d <= Decimal::ZERO);
+            let in_strike_zone = eff_bucket == Some(Bucket::Core) && is_fresh_below;
+            let in_watch_discount = eff_bucket == Some(Bucket::Watch)
+                && p.row
+                    .distance_to_strike_pct
+                    .is_some_and(|d| d <= Decimal::ZERO);
+            let in_ref_discount = eff_bucket.is_none() && is_fresh_below;
             if in_strike_zone {
                 strike_count += 1;
             }
-            if p.row.in_watchlist {
+            if in_circle {
                 watch_count += 1;
+            }
+            if in_watch_discount || in_ref_discount {
+                discount_count += 1;
             }
             let is_selected = selected_cik.is_some_and(|sel| p.row.cik == sel);
             ScatterPoint {
@@ -816,20 +837,24 @@ pub fn build_scatter_model(
                 x_norm: norm_x(p.roic),
                 y_norm: norm_y(p.fcf),
                 in_strike_zone,
-                in_watchlist: p.row.in_watchlist,
+                in_watch_discount,
+                in_ref_discount,
+                in_watchlist: in_circle,
                 is_selected,
                 clipped,
             }
         })
         .collect();
 
-    // Paint screened dots first, Circle/watchlist above, Strike Zone above, and selected on top.
+    // Paint screened dots first, <=18x ref discounts, Circle/watchlist, Core Strike, and selected on top.
     points.sort_by_key(|p| {
         if p.is_selected {
-            3u8
+            4u8
         } else if p.in_strike_zone {
-            2
+            3
         } else if p.in_watchlist {
+            2
+        } else if p.in_ref_discount {
             1
         } else {
             0
@@ -852,6 +877,7 @@ pub fn build_scatter_model(
         clipped_count,
         strike_count,
         watch_count,
+        discount_count,
     })
 }
 
@@ -903,10 +929,15 @@ pub fn hit_test_scatter_point(
 pub fn roic_scatter_slot(store: AppStore) -> View {
     let scatter_data = computed(move || {
         let sel = store.universe_selected_cik.get();
+        let live_buckets: HashMap<String, Bucket> = store.reports.with(|reps| {
+            reps.iter()
+                .map(|r| (r.ticker.to_ascii_uppercase(), r.bucket))
+                .collect()
+        });
         store.universe_rows.with(|rows| {
             store
                 .universe_strike_zone_ciks
-                .with(|ciks| build_scatter_model(rows, ciks, sel.as_deref()))
+                .with(|ciks| build_scatter_model(rows, ciks, &live_buckets, sel.as_deref()))
         })
     });
     let has_data = computed(move || scatter_data.with(|d| d.is_some()));
@@ -965,16 +996,18 @@ pub fn roic_scatter_slot(store: AppStore) -> View {
                                         };
                                         match l {
                                             UiLang::Zh => format!(
-                                                "{} 家含报价 · {} 击球 · {} 能力圈{clip}",
+                                                "{} 家含报价 · {} 核心击球 · {} 能力圈 · {} 折价{clip}",
                                                 m.points.len(),
                                                 m.strike_count,
-                                                m.watch_count
+                                                m.watch_count,
+                                                m.discount_count
                                             ),
                                             UiLang::En => format!(
-                                                "{} priced · {} strike · {} circle{clip}",
+                                                "{} priced · {} strike · {} circle · {} ≤18x{clip}",
                                                 m.points.len(),
                                                 m.strike_count,
-                                                m.watch_count
+                                                m.watch_count,
+                                                m.discount_count
                                             ),
                                         }
                                     }
@@ -1034,12 +1067,15 @@ pub fn roic_scatter_slot(store: AppStore) -> View {
                             },
                         ))
                         .child(scatter_legend_dot(EMERALD_FG, move || {
-                            store.lang.get().t("击球区", "Strike Zone").to_owned()
+                            store.lang.get().t("核心击球", "Strike").to_owned()
                         }))
                         .child(scatter_legend_dot(SKY_FG, move || {
                             store.lang.get().t("能力圈", "Circle").to_owned()
                         }))
                         .child(scatter_legend_dot(GOLD_FG, move || {
+                            store.lang.get().t("≤18x 折价", "≤18x Ref").to_owned()
+                        }))
+                        .child(scatter_legend_dot(SLATE_FG, move || {
                             store.lang.get().t("筛选池", "Screened").to_owned()
                         })),
                 ),
@@ -1301,8 +1337,10 @@ fn paint_scatter_canvas(
             EMERALD_FG
         } else if pt.in_watchlist {
             SKY_FG
-        } else {
+        } else if pt.in_ref_discount {
             GOLD_FG
+        } else {
+            SLATE_FG
         };
         let is_hovered = hovered_idx == Some(idx);
 
@@ -1347,8 +1385,12 @@ fn paint_scatter_canvas(
         let (cx_p, cy_p) = scatter_point_px(pt.x_norm, pt.y_norm, w, h);
         let tier_tag = if pt.in_strike_zone {
             lang.t("击球区", "Strike")
+        } else if pt.in_watch_discount {
+            lang.t("观察池折价", "Watch Disc.")
         } else if pt.in_watchlist {
             lang.t("能力圈", "Circle")
+        } else if pt.in_ref_discount {
+            lang.t("≤18x 折价", "≤18x Ref")
         } else {
             lang.t("点击选中", "Click")
         };
@@ -1370,6 +1412,8 @@ fn paint_scatter_canvas(
         };
         let tip_col = if pt.in_strike_zone {
             EMERALD_FG
+        } else if pt.in_watch_discount || pt.in_ref_discount {
+            GOLD_FG
         } else if pt.in_watchlist {
             SKY_FG
         } else {
@@ -1578,15 +1622,15 @@ fn render_universe_table_header(store: AppStore) -> View {
             Some(UniverseSortBy::LatestPrice),
         ),
         (
-            "击球价",
-            "Strike",
+            "参考/击球",
+            "Ref / Strike",
             COL_STRIKE_W,
             true,
             Some(UniverseSortBy::StrikePrice),
         ),
         (
-            "距击球",
-            "Strike %",
+            "距参考",
+            "vs Ref",
             COL_GAP_W,
             true,
             Some(UniverseSortBy::DistanceToStrike),
@@ -1797,12 +1841,16 @@ fn render_universe_virtual_row(store: AppStore, pos: Position) -> View {
                                     .border_1()
                                     .bg(move || match row_strike_badge_at(store, pos.index()) {
                                         Some(StrikeBadgeKind::CircleStrike) => rgba(EMERALD_BG),
+                                        Some(StrikeBadgeKind::WatchDiscount) => rgba(GOLD_BG),
                                         _ => rgba(SLATE_BG),
                                     })
                                     .border_color(move || {
                                         match row_strike_badge_at(store, pos.index()) {
                                             Some(StrikeBadgeKind::CircleStrike) => {
                                                 rgba(EMERALD_BORDER)
+                                            }
+                                            Some(StrikeBadgeKind::WatchDiscount) => {
+                                                rgba(GOLD_BORDER)
                                             }
                                             _ => rgba(SLATE_BORDER),
                                         }
@@ -1812,7 +1860,10 @@ fn render_universe_virtual_row(store: AppStore, pos: Position) -> View {
                                             let l = store.lang.get();
                                             match row_strike_badge_at(store, pos.index()) {
                                                 Some(StrikeBadgeKind::CircleStrike) => {
-                                                    l.t("击球区", "STRIKE").to_owned()
+                                                    l.t("击球区", "Strike").to_owned()
+                                                }
+                                                Some(StrikeBadgeKind::WatchDiscount) => {
+                                                    l.t("观察池折价", "Watch Disc.").to_owned()
                                                 }
                                                 Some(StrikeBadgeKind::NonCircleDiscount) => {
                                                     l.t("≤18x 折价", "≤18x Ref").to_owned()
@@ -1826,6 +1877,7 @@ fn render_universe_virtual_row(store: AppStore, pos: Position) -> View {
                                         .text_color(move || {
                                             rgb(match row_strike_badge_at(store, pos.index()) {
                                                 Some(StrikeBadgeKind::CircleStrike) => EMERALD_FG,
+                                                Some(StrikeBadgeKind::WatchDiscount) => GOLD_FG,
                                                 _ => SLATE_FG,
                                             })
                                         })
@@ -2045,7 +2097,10 @@ fn render_universe_virtual_row(store: AppStore, pos: Position) -> View {
                 store.universe_rows.with(|r| {
                     store.universe_strike_zone_ciks.with(|ciks| {
                         r.get(idx)
-                            .map(|row| universe_distance_color(row, ciks))
+                            .map(|row| {
+                                let live_bkt = live_watchlist_bucket(store, row);
+                                universe_distance_color(row, live_bkt, ciks)
+                            })
                             .unwrap_or(INK_MUTED)
                     })
                 })
@@ -2124,13 +2179,17 @@ fn row_strike_badge_at(store: AppStore, idx: usize) -> Option<StrikeBadgeKind> {
         if dist > Decimal::ZERO {
             return None;
         }
-        let in_circle_strike = store
-            .universe_strike_zone_ciks
-            .with(|ciks| row.in_price_pool && ciks.contains(&row.cik));
-        if in_circle_strike {
-            Some(StrikeBadgeKind::CircleStrike)
-        } else {
-            Some(StrikeBadgeKind::NonCircleDiscount)
+        let live_bkt = live_watchlist_bucket(store, row);
+        match live_bkt {
+            Some(Bucket::Core) => {
+                let in_circle_strike = store
+                    .universe_strike_zone_ciks
+                    .with(|ciks| row.in_price_pool && ciks.contains(&row.cik));
+                in_circle_strike.then_some(StrikeBadgeKind::CircleStrike)
+            }
+            Some(Bucket::Watch) => Some(StrikeBadgeKind::WatchDiscount),
+            Some(Bucket::Out | Bucket::TooHard) => None,
+            None => Some(StrikeBadgeKind::NonCircleDiscount),
         }
     })
 }
@@ -2149,15 +2208,27 @@ fn live_watchlist_bucket(store: AppStore, row: &UniverseRow) -> Option<Bucket> {
         })
 }
 
-fn universe_distance_color(row: &UniverseRow, strike_zone_ciks: &HashSet<String>) -> u32 {
+fn universe_distance_color(
+    row: &UniverseRow,
+    live_bkt: Option<Bucket>,
+    strike_zone_ciks: &HashSet<String>,
+) -> u32 {
     match row.distance_to_strike_pct {
         Some(d)
-            if d <= Decimal::ZERO && row.in_price_pool && strike_zone_ciks.contains(&row.cik) =>
+            if d <= Decimal::ZERO
+                && live_bkt == Some(Bucket::Core)
+                && row.in_price_pool
+                && strike_zone_ciks.contains(&row.cik) =>
         {
             EMERALD_FG
         }
+        Some(d) if d <= Decimal::ZERO && live_bkt == Some(Bucket::Watch) => GOLD_FG,
         Some(d) if d <= Decimal::ZERO => INK_SECONDARY,
-        Some(d) if d <= Decimal::from(15) => GOLD_FG,
+        Some(d)
+            if d <= Decimal::from(15) && matches!(live_bkt, Some(Bucket::Core | Bucket::Watch)) =>
+        {
+            GOLD_FG
+        }
         Some(_) => INK_SECONDARY,
         None => INK_MUTED,
     }
@@ -2253,67 +2324,92 @@ fn render_universe_drawer_content(
     let (sbc_txt, _) = fmt_pct_clean(row.sbc_to_ocf_pct, false);
     let (dist_txt, _) = fmt_pct_clean(row.distance_to_strike_pct, true);
 
-    let in_circle_strike = row.in_price_pool
-        && strike_ciks.contains(&row.cik)
-        && row
-            .distance_to_strike_pct
-            .is_some_and(|d| d <= Decimal::ZERO);
     let below_18x_ref = row
         .distance_to_strike_pct
         .is_some_and(|d| d <= Decimal::ZERO);
+    let in_core_strike = live_bkt == Some(Bucket::Core)
+        && row.in_price_pool
+        && strike_ciks.contains(&row.cik)
+        && below_18x_ref;
 
-    let (elig_title, elig_detail, elig_fg, elig_bg, elig_br) = if in_circle_strike {
+    let (elig_title, elig_detail, elig_fg, elig_bg, elig_br) = if in_core_strike {
         (
-            l.t("击球区达标 · Strike Zone", "Strike Zone Eligible"),
+            l.t("击球区达标", "Strike Zone Eligible"),
             l.t(
-                "已纳入能力圈且最新报价低于/等于击球价（7 日报价校验通过）。",
-                "Inside Circle & latest quote at or below Strike Price (7-day quote check passed).",
+                "已纳入 IN 核心能力圈，且最新报价低于或等于击球价（7 日报价校验通过）。",
+                "In your IN Core Circle and latest quote is at or below Strike Price (7-day quote check passed).",
             ),
             EMERALD_FG,
             EMERALD_BG,
             EMERALD_BORDER,
         )
-    } else if below_18x_ref && live_bkt.is_none() {
+    } else if live_bkt == Some(Bucket::Watch) && below_18x_ref {
         (
-            l.t("非能力圈折价 · 门控未放行", "Non-Circle Discount · Gated"),
+            l.t("观察池折价 · 尚未进入核心击球", "Watchlist Discount · Not in Core"),
             l.t(
-                "当前价格低于 18x 统一参考价，但尚未加入能力圈或行业未毕业，不触发击球区信号。",
-                "Below 18x uniform ref price, but outside your Circle — Strike Zone requires Circle membership.",
+                "当前报价已低于参考击球价，但标的仍处于 WATCH 待审讯池。完成研究并晋升为 IN 核心池后，才会触发正式击球区信号。",
+                "Price is at or below Strike, but still in WATCH. Promote to IN (Core Circle) to trigger formal Strike Zone signals.",
             ),
             GOLD_FG,
             GOLD_BG,
             GOLD_BORDER,
         )
-    } else if let Some(bkt) = live_bkt {
+    } else if live_bkt.is_none() && below_18x_ref {
+        (
+            l.t("低于 18x 参考价 · 尚未入能力圈", "Below 18x Ref · Outside Circle"),
+            l.t(
+                "当前价格低于全市场 18x 统一参考价，但尚未加入你的能力圈，不触发击球区信号。可先加入 WATCH 观察研究。",
+                "Below the uniform 18x reference price, but outside your Circle. Add to WATCH first; formal Strike Zone signals require IN (Core Circle) membership.",
+            ),
+            GOLD_FG,
+            GOLD_BG,
+            GOLD_BORDER,
+        )
+    } else if live_bkt == Some(Bucket::Core) {
         (
             l.t(
-                "已纳入能力圈 · 等待击球价",
-                "In Circle · Waiting for Strike",
+                "已在 IN 核心池 · 等待击球价",
+                "In Core Circle · Waiting for Strike",
             ),
-            match bkt {
-                Bucket::Core => l.t(
-                    "已处于 CORE 核心池，当前尚未进入击球折扣区间。",
-                    "In CORE tier; waiting for price to reach Strike Zone.",
-                ),
-                Bucket::Watch => l.t(
-                    "处于 WATCH 观察池，持续跟踪基本面与估值锚。",
-                    "In WATCH tier; tracking fundamentals & valuation anchor.",
-                ),
-                Bucket::Out | Bucket::TooHard => l.t(
-                    "已标记为能力圈外或 Too Hard。",
-                    "Marked Outside Circle or Too Hard.",
-                ),
-            },
+            l.t(
+                "已纳入 IN 核心能力圈，当前尚未进入击球折扣区间。",
+                "In your IN Core Circle; waiting for price to reach your Strike Price.",
+            ),
             SKY_FG,
             SKY_BG,
             SKY_BORDER,
         )
+    } else if live_bkt == Some(Bucket::Watch) {
+        (
+            l.t("已在 WATCH 观察池 · 持续跟踪", "In WATCH · Tracking"),
+            l.t(
+                "处于 WATCH 待审讯池，持续跟踪基本面与估值锚；确认进入能力圈后可晋升为 IN。",
+                "In WATCH tier; tracking fundamentals and valuation anchor before promoting to IN.",
+            ),
+            SKY_FG,
+            SKY_BG,
+            SKY_BORDER,
+        )
+    } else if matches!(live_bkt, Some(Bucket::Out | Bucket::TooHard)) {
+        (
+            l.t("已归档 · 不触发击球信号", "Archived · Signals Suppressed"),
+            l.t(
+                "已标记为能力圈外（OUT）或暂不碰（TOO HARD），不触发击球区信号。",
+                "Marked OUT or TOO HARD; Strike Zone signals are suppressed.",
+            ),
+            SLATE_FG,
+            SLATE_BG,
+            SLATE_BORDER,
+        )
     } else {
         (
-            l.t("未入池 · 18x 统一参考口径", "Not in Circle · 18x Ref Basis"),
             l.t(
-                "可先加入 WATCH 观察池，或进入 Industry Studio 完成行业研究毕业。",
-                "Add to WATCH or graduate its industry in Industry Studio to unlock Circle Strike alerts.",
+                "未入能力圈 · 18x 统一参考口径",
+                "Outside Circle · 18x Ref Basis",
+            ),
+            l.t(
+                "可先加入 WATCH 观察池，或进入行业研究完成系统梳理。",
+                "Add to WATCH or research its industry in Industry Studio.",
             ),
             SLATE_FG,
             SLATE_BG,
@@ -2445,7 +2541,7 @@ fn render_universe_drawer_content(
                             .gap(px(6.0))
                             .child(
                                 drawer_button(
-                                    l.t("打开研报 Dossier →", "Open Dossier →"),
+                                    l.t("打开研报 →", "Open Dossier →"),
                                     CTA_INK,
                                     CTA_BG,
                                     CTA_BG,
@@ -2459,7 +2555,7 @@ fn render_universe_drawer_content(
                                 .flex_1(),
                             )
                             .child(drawer_button(
-                                l.t("Deep Research", "Deep Research"),
+                                l.t("深度研究", "Deep Research"),
                                 VIOLET_FG,
                                 VIOLET_BG,
                                 VIOLET_BORDER,
@@ -2467,7 +2563,7 @@ fn render_universe_drawer_content(
                             )),
                     )
                     .child(drawer_button(
-                        l.t("移出能力圈 · Remove from Circle", "Remove from Circle"),
+                        l.t("移出能力圈", "Remove from Circle"),
                         SLATE_FG,
                         SLATE_BG,
                         SLATE_BORDER,
@@ -2483,10 +2579,7 @@ fn render_universe_drawer_content(
                         move || store.add_universe_company_to_watch(&row_watch),
                     ))
                     .child(drawer_button(
-                        l.t(
-                            "入池并派 Alan 深研 · Deep Research",
-                            "Add & Dispatch Deep Research",
-                        ),
+                        l.t("入池并派 Alan 深研", "Add & Dispatch Deep Research"),
                         VIOLET_FG,
                         VIOLET_BG,
                         VIOLET_BORDER,
@@ -2495,10 +2588,7 @@ fn render_universe_drawer_content(
             }
             actions
                 .child(drawer_button(
-                    l.t(
-                        "研究所在行业 · Industry Studio (⌘3)",
-                        "Research Industry · Industry Studio (⌘3)",
-                    ),
+                    l.t("发起 / 查看行业研究", "Study Industry"),
                     SKY_FG,
                     SKY_BG,
                     SKY_BORDER,
@@ -2512,7 +2602,7 @@ fn render_universe_drawer_content(
                     },
                 ))
                 .child(drawer_button(
-                    l.t("找相似公司 · Find Similar", "Find Similar · Lookalike"),
+                    l.t("找相似公司", "Find Similar"),
                     VIOLET_FG,
                     VIOLET_BG,
                     VIOLET_BORDER,
@@ -2521,7 +2611,7 @@ fn render_universe_drawer_content(
         })
         // 5Y Deterministic Snapshot
         .child(
-            prop_section("5Y DETERMINISTIC SNAPSHOT")
+            prop_section(l.t("5 年确定性快照", "5Y DETERMINISTIC SNAPSHOT"))
                 .child(kv_line(
                     if live_bkt.is_some() {
                         l.t("现价 / 击球价", "Price / Strike")
@@ -2542,7 +2632,7 @@ fn render_universe_drawer_content(
                         l.t("距参考价", "Dist. to Ref")
                     },
                     dist_txt,
-                    universe_distance_color(row, strike_ciks),
+                    universe_distance_color(row, live_bkt, strike_ciks),
                 ))
                 .child(kv_line(
                     l.t("严苛 FCF 收益率", "Strict FCF Yield"),
@@ -2653,7 +2743,7 @@ fn drawer_button(
 }
 
 fn render_universe_annuals_table(annuals: &[LakeAnnualRow], target_cik: &str, l: UiLang) -> View {
-    let sec = prop_section(l.t("ANNUAL METRICS · 5Y 底表", "ANNUAL METRICS · 5Y Ledger"));
+    let sec = prop_section(l.t("5 年财报底表", "ANNUAL METRICS · 5Y Ledger"));
     let recent: Vec<&LakeAnnualRow> = annuals
         .iter()
         .filter(|a| a.cik == target_cik)
@@ -2859,7 +2949,11 @@ fn render_universe_drawer_peers(
         .map(|p| format!("P{p:.0}"))
         .unwrap_or_else(|| "—".to_owned());
 
-    let mut sec = prop_section(&format!("SIC PEERS · N={}", peers.peer_count)).child(kv_line(
+    let mut sec = prop_section(&match l {
+        UiLang::Zh => format!("同业对照 · {} 家", peers.peer_count),
+        UiLang::En => format!("SIC PEERS · N={}", peers.peer_count),
+    })
+    .child(kv_line(
         l.t(
             "同业 ROIC / 毛利 / FCF 分位",
             "Peer ROIC / Margin / FCF Pct",
@@ -2996,7 +3090,7 @@ fn render_universe_drawer_provenance(store: AppStore, row: &UniverseRow, l: UiLa
         );
     }
 
-    prop_section(l.t("PROVENANCE · XBRL 溯源", "PROVENANCE · XBRL Trace"))
+    prop_section(l.t("XBRL 财报溯源", "PROVENANCE · XBRL Trace"))
         .child(kv_line("CIK", row.cik.clone(), INK_SECONDARY))
         .child(kv_line(
             l.t("最近财报", "Latest Filing"),
@@ -3066,7 +3160,12 @@ fn render_universe_empty_state(store: AppStore) -> View {
                             .text_color(rgb(INK_HERO)),
                         ),
                 )
-                .child(badge_pill("MILESTONE A · ZERO-LLM L0", SKY_FG, SKY_BG, SKY_BORDER)),
+                .child(badge_pill(
+                    store.lang.get().t("本地零模型 L0", "ZERO-LLM L0"),
+                    SKY_FG,
+                    SKY_BG,
+                    SKY_BORDER,
+                )),
         )
         .child(
             text(move || {
@@ -3272,17 +3371,14 @@ fn render_universe_similar_prompt(store: AppStore) -> View {
         .flex_col()
         .gap(px(10.0))
         .child(section_header(
-            l.t(
-                "混合语义相似搜索 · Lookalike Discovery",
-                "Hybrid Semantic Search · Lookalike Discovery",
-            ),
-            "L1 SQL HARD FILTER × LATENT COSINE × BM25".to_owned(),
+            l.t("混合语义相似搜索", "Hybrid Semantic Search · Lookalike Discovery"),
+            l.t("本地硬过滤 × 语义相似度 × BM25", "L1 SQL HARD FILTER × LATENT COSINE × BM25").to_owned(),
         ))
         .child(
             text(
                 l.t(
-                    "在右上角搜索框输入商业模式关键词（例如 \"recurring industrial CAD subscription\"）或直接输入美股 Ticker（如 ADSK），也可在右侧详情抽屉点击「找相似公司 · Lookalike」。前置叠加当前左侧芒格财务硬过滤条件（剔除金融 / 报价池 / ROIC / SBC），零大模型 Token 异步毫秒级返回可溯源相似标的。",
-                    "Enter business keywords (e.g., \"recurring industrial CAD subscription\") or a US ticker (e.g., ADSK) above, or click \"Find Similar · Lookalike\" in the drawer. Applies active financial hard filters and returns traceable lookalikes asynchronously with 0 LLM tokens.",
+                    "在右上角搜索框输入商业模式关键词（例如 \"recurring industrial CAD subscription\"）或直接输入美股 Ticker（如 ADSK），也可在右侧详情抽屉点击「找相似公司」。前置叠加当前左侧芒格财务硬过滤条件（剔除金融 / 报价池 / ROIC / SBC），零大模型 Token 异步毫秒级返回可溯源相似标的。",
+                    "Enter business keywords (e.g., \"recurring industrial CAD subscription\") or a US ticker (e.g., ADSK) above, or click \"Find Similar\" in the drawer. Applies active financial hard filters and returns traceable lookalikes asynchronously with 0 LLM tokens.",
                 )
                 .to_owned(),
             )
@@ -3406,7 +3502,7 @@ fn render_universe_similar_results(store: AppStore, hits: &[SimilarCompanyHit]) 
         .gap(px(10.0))
         .child(obsidian_card().p(px(14.0)).child(section_header(
             &match l {
-                UiLang::Zh => format!("Lookalike 相似公司 · {q}"),
+                UiLang::Zh => format!("相似公司 · {q}"),
                 UiLang::En => format!("Lookalike Companies · {q}"),
             },
             subtitle,
@@ -3470,7 +3566,7 @@ fn render_universe_similar_card(
 
     let action_btn = if live_bkt.is_some() {
         action_button(
-            l.t("打开 Dossier →", "Open Dossier →").to_owned(),
+            l.t("打开研报 →", "Open Dossier →").to_owned(),
             false,
             move || store.open_company(&ticker_dossier, CompanyViewTab::FinancialsMemo),
         )

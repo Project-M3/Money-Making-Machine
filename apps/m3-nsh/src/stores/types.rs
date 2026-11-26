@@ -68,6 +68,29 @@ pub enum BasketsViewMode {
     Board,
 }
 
+/// Active sub-tab inside Decision Journal (`⌘5`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JournalViewTab {
+    #[default]
+    Ledger,
+    Themes,
+}
+
+impl JournalViewTab {
+    pub const fn all() -> [Self; 2] {
+        [Self::Ledger, Self::Themes]
+    }
+
+    pub fn label_for(self, lang: UiLang) -> &'static str {
+        match (self, lang) {
+            (Self::Ledger, UiLang::Zh) => "决策账本",
+            (Self::Ledger, UiLang::En) => "Decision Ledger",
+            (Self::Themes, UiLang::Zh) => "商业原型图谱",
+            (Self::Themes, UiLang::En) => "Archetype Themes",
+        }
+    }
+}
+
 /// Price chart timeframe selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChartTimeframe {
@@ -160,8 +183,68 @@ pub enum PaletteAction {
     SwitchUpdateChannel(ReleaseChannel),
     RestartApp,
     OpenSettings,
+    OpenLandingOnboarding,
     SetLanguage(UiLang),
     ShowM3Engraving,
+}
+
+/// Interactive step inside the First-Run Landing & Setup Wizard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnboardingStep {
+    #[default]
+    WelcomeConcepts,
+    LanguageWorkspace,
+    ConnectAlan,
+    StarterData,
+}
+
+impl OnboardingStep {
+    pub const ALL: [Self; 4] = [
+        Self::WelcomeConcepts,
+        Self::LanguageWorkspace,
+        Self::ConnectAlan,
+        Self::StarterData,
+    ];
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::WelcomeConcepts => 0,
+            Self::LanguageWorkspace => 1,
+            Self::ConnectAlan => 2,
+            Self::StarterData => 3,
+        }
+    }
+
+    pub const fn from_index(idx: usize) -> Option<Self> {
+        match idx {
+            0 => Some(Self::WelcomeConcepts),
+            1 => Some(Self::LanguageWorkspace),
+            2 => Some(Self::ConnectAlan),
+            3 => Some(Self::StarterData),
+            _ => None,
+        }
+    }
+
+    pub const fn next(self) -> Option<Self> {
+        Self::from_index(self.index() + 1)
+    }
+
+    pub const fn prev(self) -> Option<Self> {
+        if let Some(i) = self.index().checked_sub(1) {
+            Self::from_index(i)
+        } else {
+            None
+        }
+    }
+
+    pub fn label_for(self, lang: UiLang) -> &'static str {
+        match self {
+            Self::WelcomeConcepts => lang.t("理念与概念", "Concepts"),
+            Self::LanguageWorkspace => lang.t("语言与工作区", "Workspace"),
+            Self::ConnectAlan => lang.t("连接 Alan", "Connect Alan"),
+            Self::StarterData => lang.t("准备数据", "Starter Data"),
+        }
+    }
 }
 
 /// Single entry shown in the `⌘K` Command Palette.
@@ -178,8 +261,8 @@ pub struct PaletteItem {
 /// Subview mode inside the Briefing Inbox (`⌘1`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InboxViewMode {
-    #[default]
     Briefing,
+    #[default]
     Stream,
 }
 
@@ -252,7 +335,7 @@ impl UniverseSearchMode {
     pub fn label_for(self, lang: UiLang) -> &'static str {
         match self {
             Self::Keyword => lang.t("关键词", "Keyword"),
-            Self::Similar => lang.t("相似 Lookalike", "Lookalike"),
+            Self::Similar => lang.t("相似公司", "Lookalike"),
         }
     }
 }
@@ -273,7 +356,7 @@ impl UniversePreset {
             Self::AllQuality => lang.t("全部质量池", "All Quality"),
             Self::HighRoicCompounders => lang.t("高 ROIC 复利 (>=20%)", "High ROIC (>=20%)"),
             Self::LowSbcCashCows => lang.t("低 SBC 现金牛", "Low-SBC Cash Cows"),
-            Self::StrikeZone => lang.t("击球区", "Strike Zone"),
+            Self::StrikeZone => lang.t("≤18x 折价", "≤18x Discount"),
         }
     }
 
@@ -518,6 +601,8 @@ pub struct ScatterPoint {
     pub x_norm: f32,
     pub y_norm: f32,
     pub in_strike_zone: bool,
+    pub in_watch_discount: bool,
+    pub in_ref_discount: bool,
     pub in_watchlist: bool,
     pub is_selected: bool,
     pub clipped: bool,
@@ -536,6 +621,7 @@ pub struct ScatterPlotModel {
     pub clipped_count: usize,
     pub strike_count: usize,
     pub watch_count: usize,
+    pub discount_count: usize,
 }
 
 /// Chat role in Alan / Industry Tutor panels.

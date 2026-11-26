@@ -1265,7 +1265,7 @@ pub fn build_deterministic_briefing(
                     strike_price: val.strike_price,
                     distance_to_strike_pct: Some(dist),
                     status: rep.status,
-                    in_strike_zone: dist <= Decimal::ZERO,
+                    in_strike_zone: rep.bucket == Bucket::Core && dist <= Decimal::ZERO,
                 });
             }
         }
@@ -2314,6 +2314,7 @@ mod tests {
         .unwrap();
         assert!(!active_briefing.is_quiet);
         assert_eq!(active_briefing.strike_radar.len(), 1);
+        assert!(active_briefing.strike_radar[0].in_strike_zone);
         assert_eq!(active_briefing.filing_deltas.len(), 1);
         assert_eq!(active_briefing.watchdog_hits.len(), 1);
         assert!(active_briefing.executive_summary.is_some());
@@ -2337,5 +2338,25 @@ mod tests {
         assert!(!quota_limited.is_quiet);
         assert!(quota_limited.executive_summary.is_none());
         assert_eq!(quota_limited.summary_tokens_used, 0);
+
+        // Moving COST to WATCH at the same discount keeps it in strike_radar as a Watchlist
+        // Discount, while `in_strike_zone` MUST become false (only IN / Bucket::Core qualifies).
+        seed_watchlist_and_journal(
+            &ws.paths,
+            vec![sample_company("COST", Bucket::Watch, "0000909832")],
+        );
+        let watch_briefing = generate_and_save_briefing_with_llm(
+            &ws.paths,
+            &lake,
+            BriefingPeriod::Daily,
+            UiLang::En,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(watch_briefing.strike_radar.len(), 1);
+        assert_eq!(watch_briefing.strike_radar[0].bucket, Bucket::Watch);
+        assert!(!watch_briefing.strike_radar[0].in_strike_zone);
     }
 }

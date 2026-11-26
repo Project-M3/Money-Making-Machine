@@ -84,7 +84,9 @@ pub fn filter_reports_for_basket<'a>(
         .filter(|r| circle_filter.is_none_or(|t| primary_circle_tag(&r.circle) == t))
         .filter(|r| match status_filter {
             StatusQuickFilter::All => true,
-            StatusQuickFilter::StrikeOnly => r.status == StrikeZoneStatus::InStrikeZone,
+            StatusQuickFilter::StrikeOnly => {
+                r.bucket == Bucket::Core && r.status == StrikeZoneStatus::InStrikeZone
+            }
             StatusQuickFilter::WarnedOnly => {
                 r.status == StrikeZoneStatus::WarningBlocked
                     || r.warnings

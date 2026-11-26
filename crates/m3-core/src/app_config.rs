@@ -134,6 +134,8 @@ pub struct AppConfig {
     pub workspace_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<UiLang>,
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 impl Default for AppConfig {
@@ -142,6 +144,7 @@ impl Default for AppConfig {
             schema_version: 1,
             workspace_root: None,
             language: None,
+            onboarding_completed: false,
         }
     }
 }
@@ -427,6 +430,34 @@ pub fn write_ui_language(lang: UiLang) -> Result<()> {
     write_ui_language_with_paths(&paths, lang)
 }
 
+/// Read whether the first-run Landing onboarding wizard was completed/skipped under `paths`.
+pub fn read_onboarding_completed_with_paths(paths: &M3Paths) -> bool {
+    read_app_config_with_paths(paths)
+        .ok()
+        .flatten()
+        .is_some_and(|c| c.onboarding_completed)
+}
+
+/// Read whether the first-run Landing onboarding wizard was completed/skipped.
+pub fn read_onboarding_completed() -> bool {
+    M3Paths::resolve()
+        .ok()
+        .is_some_and(|paths| read_onboarding_completed_with_paths(&paths))
+}
+
+/// Persist first-run Landing onboarding completion flag under `paths`.
+pub fn write_onboarding_completed_with_paths(paths: &M3Paths, completed: bool) -> Result<()> {
+    update_app_config_with_paths(paths, |cfg| {
+        cfg.onboarding_completed = completed;
+    })
+}
+
+/// Persist first-run Landing onboarding completion flag to `config.json`.
+pub fn write_onboarding_completed(completed: bool) -> Result<()> {
+    let paths = M3Paths::resolve()?;
+    write_onboarding_completed_with_paths(&paths, completed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,20 +479,30 @@ mod tests {
             schema_version: 1,
             workspace_root: Some(ws.display().to_string()),
             language: Some(UiLang::En),
+            onboarding_completed: true,
         };
         store::write_json_atomic(&cfg_file, &cfg).unwrap();
         let loaded: AppConfig = store::read_json(&cfg_file).unwrap();
         assert_eq!(loaded.language, Some(UiLang::En));
+        assert!(loaded.onboarding_completed);
         assert_eq!(
             loaded.workspace_root.as_deref(),
             cfg.workspace_root.as_deref()
         );
 
-        // Legacy config JSON without `language` field still deserializes cleanly.
+        // Legacy config JSON without `language` or `onboarding_completed` still deserializes cleanly.
         let legacy: AppConfig =
             serde_json::from_str(r#"{"schema_version":1,"workspace_root":"/tmp/m3"}"#).unwrap();
         assert_eq!(legacy.language, None);
+        assert!(!legacy.onboarding_completed);
         assert_eq!(legacy.workspace_root.as_deref(), Some("/tmp/m3"));
+
+        let m3_paths = M3Paths::from_root(&dir);
+        assert!(read_onboarding_completed_with_paths(&m3_paths));
+        write_onboarding_completed_with_paths(&m3_paths, false).unwrap();
+        assert!(!read_onboarding_completed_with_paths(&m3_paths));
+        write_onboarding_completed_with_paths(&m3_paths, true).unwrap();
+        assert!(read_onboarding_completed_with_paths(&m3_paths));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

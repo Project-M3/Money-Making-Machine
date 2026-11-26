@@ -173,7 +173,7 @@ fn empty_company_state(store: AppStore, l: UiLang) -> View {
             )
             .child(view().pt(px(4.0)).flex().flex_row().gap(px(8.0)).child(
                 action_button(
-                    l.t("前往全市场雷达 (⌘2)", "Open Universe Radar (⌘2)"),
+                    l.t("前往全市场雷达", "Open Universe Radar"),
                     true,
                     move || store.open_tab(WorkspaceTab::Universe),
                 ),
@@ -248,13 +248,35 @@ fn rich_top_bar(store: AppStore) -> View {
                     _ => val_opt.and_then(|v| v.distance_to_strike_pct),
                 };
                 let (dist_str, _) = fmt_pct_clean(dist_live, true);
-                let (st_fg, st_bg, st_br) = status_colors(rep.status);
-                let mos_label = match dist_live {
-                    Some(d) if d <= Decimal::ZERO => {
-                        format!("{} ({dist_str})", l.t("击球区", "Strike Zone"))
+                let (st_fg, st_bg, st_br) = if matches!(rep.bucket, Bucket::Out | Bucket::TooHard) {
+                    status_colors(rep.status)
+                } else if rep.bucket == Bucket::Watch
+                    && dist_live.is_some_and(|d| d <= Decimal::ZERO)
+                {
+                    (GOLD_FG, GOLD_BG, GOLD_BORDER)
+                } else if rep.bucket == Bucket::Core
+                    && dist_live.is_some_and(|d| d <= Decimal::ZERO)
+                {
+                    (EMERALD_FG, EMERALD_BG, EMERALD_BORDER)
+                } else {
+                    status_colors(rep.status)
+                };
+                let mos_label = if matches!(rep.bucket, Bucket::Out | Bucket::TooHard) {
+                    rep.status.label_for(l).to_owned()
+                } else {
+                    match dist_live {
+                        Some(d) if d <= Decimal::ZERO && rep.bucket == Bucket::Core => {
+                            format!("{} ({dist_str})", l.t("击球区", "Strike Zone"))
+                        }
+                        Some(d) if d <= Decimal::ZERO && rep.bucket == Bucket::Watch => {
+                            format!("{} ({dist_str})", l.t("观察池折价", "Watch Discount"))
+                        }
+                        Some(d) if d <= Decimal::ZERO => {
+                            format!("{}: {dist_str}", l.t("距参考", "vs Ref"))
+                        }
+                        Some(_) => format!("{}: {dist_str}", l.t("距击球", "vs Strike")),
+                        None => rep.status.label_for(l).to_owned(),
                     }
-                    Some(_) => format!("{}: {dist_str}", l.t("距击球", "vs Strike")),
-                    None => rep.status.label_for(l).to_owned(),
                 };
 
                 left_group = left_group
@@ -368,7 +390,7 @@ fn rich_top_bar(store: AppStore) -> View {
                         move || store.company_view_tab.set(CompanyViewTab::FinancialsMemo),
                     ))
                     .child(seg_tab(
-                        "2 Deep Research & Alan",
+                        l.t("2 深度研究与 Alan", "2 Deep Research & Alan"),
                         cur_tab == CompanyViewTab::DeepResearchAlan,
                         Some((VIOLET_FG, VIOLET_BG)),
                         false,
@@ -621,7 +643,7 @@ fn human_judgment_card(store: AppStore, ticker: &str, metric_draft: Signal<Strin
                                 )
                                 .child(
                                     text(l.t(
-                                        "仅本人确认 · AI 草稿见「2 Deep Research & Alan」",
+                                        "仅本人确认 · AI 草稿见「2 深度研究与 Alan」",
                                         "Human-Owned Only · AI drafts live under Tab 2",
                                     ))
                                     .font_family(FONT_UI)
@@ -2418,7 +2440,7 @@ fn properties_rail(store: AppStore) -> Scroll {
                 )
                 // 2. Decision Gate
                 .child(
-                    prop_section(l.t("DECISION GATE · 决策检查", "DECISION GATE"))
+                    prop_section(l.t("决策检查", "DECISION GATE"))
                         .child(
                             view()
                                 .flex()
@@ -2499,7 +2521,7 @@ fn properties_rail(store: AppStore) -> Scroll {
                 // 3. Circle 2x2 Switcher
                 .child({
                     let tk_remove = rep.ticker.clone();
-                    prop_section(l.t("CIRCLE · 能力圈分层", "CIRCLE · TIER"))
+                    prop_section(l.t("能力圈分层", "CIRCLE · TIER"))
                         .child(
                             view()
                                 .flex()
@@ -2545,7 +2567,7 @@ fn properties_rail(store: AppStore) -> Scroll {
                 })
                 // 4. Circle Tag Linkage
                 .child(
-                    prop_section(l.t("LABELS · 能力圈", "LABELS · CIRCLE")).child(
+                    prop_section(l.t("能力圈标签", "LABELS · CIRCLE")).child(
                         view()
                             .flex()
                             .flex_row()
@@ -2573,7 +2595,7 @@ fn properties_rail(store: AppStore) -> Scroll {
                 )
                 // 5. Provenance Metadata
                 .child(
-                    prop_section(l.t("PROVENANCE · 溯源", "PROVENANCE"))
+                    prop_section(l.t("财报溯源", "PROVENANCE"))
                         .child(kv_line(
                             "CIK",
                             rep.cik.clone().unwrap_or_else(|| "MANUAL".to_owned()),

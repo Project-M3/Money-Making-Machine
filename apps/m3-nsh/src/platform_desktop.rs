@@ -283,7 +283,9 @@ pub fn count_circle_tray_badges(
             .or(rep.fy_valuation.as_ref())
             .and_then(|v| v.strike_price);
         let price_in_zone = matches!((latest_price, strike_price), (Some(p), Some(s)) if p <= s);
-        if rep.status == StrikeZoneStatus::InStrikeZone || price_in_zone {
+        if rep.bucket == Bucket::Core
+            && (rep.status == StrikeZoneStatus::InStrikeZone || price_in_zone)
+        {
             strike_hits += 1;
         }
     }
@@ -557,7 +559,7 @@ pub fn build_app_menus(lang: UiLang, channel: ReleaseChannel, store: AppStore) -
                 MenuItem::new(lang.t("财报与活研报", "Financials & Memo"))
                     .shortcut("mod+6")
                     .on_select(move || store.open_selected_company(CompanyViewTab::FinancialsMemo)),
-                MenuItem::new("Research Desk · Alan")
+                MenuItem::new(lang.t("研究台 · Alan", "Research Desk · Alan"))
                     .shortcut("mod+7")
                     .on_select(move || {
                         store.open_selected_company(CompanyViewTab::DeepResearchAlan);
@@ -581,7 +583,7 @@ pub fn build_app_menus(lang: UiLang, channel: ReleaseChannel, store: AppStore) -
             lang.t("研究", "Research"),
             [
                 MenuItem::new(lang.t(
-                    "对当前标的运行 Deep Research（4 视角）",
+                    "对当前标的运行深度研究（4 视角）",
                     "Run Deep Research on Selected (4 Perspectives)",
                 ))
                 .shortcut("mod+shift+d")
@@ -595,13 +597,13 @@ pub fn build_app_menus(lang: UiLang, channel: ReleaseChannel, store: AppStore) -
                     [
                         MenuItem::new(lang.t("全部能力圈", "All Tiers"))
                             .on_select(move || store.focus_basket(None)),
-                        MenuItem::new(lang.t("WATCH · 持续跟踪", "WATCH · Tracking"))
+                        MenuItem::new(lang.t("WATCH · 待审讯", "WATCH · Tracking"))
                             .on_select(move || store.focus_basket(Some(Bucket::Watch))),
-                        MenuItem::new(lang.t("CORE · 核心重仓候补", "CORE · Strike Candidates"))
+                        MenuItem::new(lang.t("IN · 核心击球", "IN · Core Strike"))
                             .on_select(move || store.focus_basket(Some(Bucket::Core))),
-                        MenuItem::new(lang.t("OUT · 超出能力圈", "OUT · Outside Circle"))
+                        MenuItem::new(lang.t("OUT · 看懂否决", "OUT · Outside Circle"))
                             .on_select(move || store.focus_basket(Some(Bucket::Out))),
-                        MenuItem::new(lang.t("TOO HARD · 暂不碰", "TOO HARD · Archived"))
+                        MenuItem::new(lang.t("TOO HARD · 能力圈外", "TOO HARD · Archived"))
                             .on_select(move || store.focus_basket(Some(Bucket::TooHard))),
                     ],
                 ),
@@ -620,6 +622,9 @@ pub fn build_app_menus(lang: UiLang, channel: ReleaseChannel, store: AppStore) -
         MenuItem::submenu(
             lang.t("帮助", "Help"),
             [
+                MenuItem::new(lang.t("新手引导与核心概念…", "Welcome & Setup Guide…"))
+                    .on_select(move || store.open_landing_onboarding()),
+                MenuItem::separator(),
                 MenuItem::new(lang.t("Project M3 官网", "Project M3 Website"))
                     .on_select(|| open_external_url(M3_WEBSITE_URL)),
                 MenuItem::new(lang.t("GitHub 开源仓库", "GitHub Open Source Repository"))
@@ -726,9 +731,9 @@ pub fn show_company_context_menu(store: AppStore, ticker: String, at: Point<Poin
     let items = vec![
         MenuItem::new(l.t("打开财报与活研报", "Open Financials & Memo"))
             .on_select(move || store.open_company(&t_dossier, CompanyViewTab::FinancialsMemo)),
-        MenuItem::new("Open Research Desk · Alan")
+        MenuItem::new(l.t("打开研究台 · Alan", "Open Research Desk · Alan"))
             .on_select(move || store.open_company(&t_alan, CompanyViewTab::DeepResearchAlan)),
-        MenuItem::new(l.t("运行 Deep Research（4 视角）", "Run Deep Research (4-Lens)")).on_select(
+        MenuItem::new(l.t("运行深度研究（4 视角）", "Run Deep Research (4-Lens)")).on_select(
             move || {
                 store.open_company(&t_dr, CompanyViewTab::DeepResearchAlan);
                 store.start_deep_research(&t_dr, None, "context_menu");

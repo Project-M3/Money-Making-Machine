@@ -533,19 +533,39 @@ fn kline_sandbox_overlay_timeframe_slicing_and_hover_mapping() {
 #[test]
 fn universe_scatter_coordinate_mapping_thresholds_and_hit_testing() {
     let empty_strikes = HashSet::new();
+    let empty_buckets = HashMap::new();
     let unpriced = make_universe_row("0000000001", "NOPRICE", 5, Some(25), None, None, false);
-    assert!(build_scatter_model(std::slice::from_ref(&unpriced), &empty_strikes, None).is_none());
+    assert!(
+        build_scatter_model(
+            std::slice::from_ref(&unpriced),
+            &empty_strikes,
+            &empty_buckets,
+            None,
+        )
+        .is_none()
+    );
 
     let circle = make_universe_row("0000769397", "ADSK", 8, Some(32), Some(6), Some(15), true);
-    let strike = make_universe_row(
+    let core_strike = make_universe_row(
         "0000000002",
-        "CHEAP",
+        "COREHIT",
         6,
         Some(22),
         Some(9),
         Some(-12),
-        false,
+        true,
     );
+    let watch_discount = make_universe_row(
+        "0000000006",
+        "WATCHDISC",
+        6,
+        Some(24),
+        Some(8),
+        Some(-10),
+        true,
+    );
+    let non_circle_discount =
+        make_universe_row("0000000007", "CHEAP", 6, Some(21), Some(8), Some(-8), false);
     let screened = make_universe_row("0000000003", "POOL", 5, Some(16), Some(4), Some(8), false);
     let stale_strike = make_universe_row(
         "0000000005",
@@ -566,22 +586,55 @@ fn universe_scatter_coordinate_mapping_thresholds_and_hit_testing() {
         false,
     );
 
-    let fresh_strikes = HashSet::from([strike.cik.clone()]);
+    let fresh_strikes = HashSet::from([
+        core_strike.cik.clone(),
+        watch_discount.cik.clone(),
+        non_circle_discount.cik.clone(),
+    ]);
+    let live_buckets = HashMap::from([
+        ("ADSK".to_owned(), Bucket::Watch),
+        ("COREHIT".to_owned(), Bucket::Core),
+        ("WATCHDISC".to_owned(), Bucket::Watch),
+    ]);
     let model = build_scatter_model(
-        &[unpriced, outlier, circle, strike, stale_strike, screened],
+        &[
+            unpriced,
+            outlier,
+            circle,
+            core_strike,
+            watch_discount,
+            non_circle_discount,
+            stale_strike,
+            screened,
+        ],
         &fresh_strikes,
+        &live_buckets,
         Some("0000769397"),
     )
     .expect("scatter model");
 
-    assert_eq!(model.points.len(), 5);
+    assert_eq!(model.points.len(), 7);
     assert!(model.ref_roic_norm.is_some());
     assert!(model.ref_fcf_norm.is_some());
     assert_eq!(model.strike_count, 1);
-    assert_eq!(model.watch_count, 1);
+    assert_eq!(model.watch_count, 3);
+    assert_eq!(model.discount_count, 2);
     assert!(model.clipped_count >= 1);
     assert!(model.x_max <= 80.0);
     assert!(model.y_max <= 25.0);
+    let core_pt = model.points.iter().find(|p| p.ticker == "COREHIT").unwrap();
+    assert!(core_pt.in_strike_zone);
+    assert!(!core_pt.in_watch_discount);
+    let watch_pt = model
+        .points
+        .iter()
+        .find(|p| p.ticker == "WATCHDISC")
+        .unwrap();
+    assert!(!watch_pt.in_strike_zone);
+    assert!(watch_pt.in_watch_discount);
+    let cheap_pt = model.points.iter().find(|p| p.ticker == "CHEAP").unwrap();
+    assert!(!cheap_pt.in_strike_zone);
+    assert!(cheap_pt.in_ref_discount);
     let stale_pt = model.points.iter().find(|p| p.ticker == "STALE").unwrap();
     assert!(!stale_pt.in_strike_zone);
     let hyper = model.points.iter().find(|p| p.ticker == "HYPER").unwrap();
@@ -1720,8 +1773,12 @@ fn bilingual_ui_helpers_and_theme_token_invariants() {
     assert_eq!(StrikeZoneStatus::InStrikeZone.label_for(en), "Strike Zone");
     assert_eq!(fmt_time_cn_for(None, en), "Never");
     assert_eq!(PerspectiveUiStatus::Pending.label_for(en), "Pending");
-    assert_eq!(UniversePreset::StrikeZone.label_for(en), "Strike Zone");
+    assert_eq!(UniversePreset::StrikeZone.label_for(en), "≤18x Discount");
     assert_eq!(UniverseSearchMode::Similar.label_for(en), "Lookalike");
+    assert_eq!(
+        UniverseSearchMode::Similar.label_for(UiLang::Zh),
+        "相似公司"
+    );
 
     // Theme token invariants
     assert_eq!(bucket_colors(Bucket::Core).0, EMERALD_FG);
@@ -2890,6 +2947,16 @@ fn falsification_metric_crud_persists_deduplicated_metrics() {
 #[test]
 fn inbox_view_mode_and_noise_collapse_defaults_and_toggle() {
     use crate::stores::InboxViewMode;
+    use crate::stores::app_store::resolve_default_inbox_view_mode;
+
+    assert_eq!(
+        resolve_default_inbox_view_mode(false),
+        InboxViewMode::Stream
+    );
+    assert_eq!(
+        resolve_default_inbox_view_mode(true),
+        InboxViewMode::Briefing
+    );
 
     let root = temp_workspace("inbox_defaults");
     let paths = WorkspacePaths::from_root(root.clone());
@@ -2897,19 +2964,60 @@ fn inbox_view_mode_and_noise_collapse_defaults_and_toggle() {
     run_with_reactive_runtime(
         move || AppStore::new(paths),
         move |store| {
+            // Fresh workspace with 0 briefings opens Stream by default so Inbox is not empty.
+            assert_eq!(store.inbox_view_mode.get_untracked(), InboxViewMode::Stream);
+            assert!(!store.inbox_noise_expanded.get_untracked());
+
+            store.set_inbox_view_mode(InboxViewMode::Briefing);
             assert_eq!(
                 store.inbox_view_mode.get_untracked(),
                 InboxViewMode::Briefing
             );
-            assert!(!store.inbox_noise_expanded.get_untracked());
-
-            store.set_inbox_view_mode(InboxViewMode::Stream);
-            assert_eq!(store.inbox_view_mode.get_untracked(), InboxViewMode::Stream);
 
             store.toggle_inbox_noise_expanded();
             assert!(store.inbox_noise_expanded.get_untracked());
             store.toggle_inbox_noise_expanded();
             assert!(!store.inbox_noise_expanded.get_untracked());
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn landing_onboarding_auto_open_skip_and_step_navigation_work() {
+    use crate::stores::OnboardingStep;
+    use crate::stores::app_store::should_auto_open_landing_onboarding;
+
+    assert!(should_auto_open_landing_onboarding(false, true, false));
+    assert!(!should_auto_open_landing_onboarding(true, true, false));
+    assert!(!should_auto_open_landing_onboarding(false, false, false));
+    assert!(!should_auto_open_landing_onboarding(false, true, true));
+
+    let root = temp_workspace("landing_onboarding");
+    let paths = WorkspacePaths::from_root(root.clone());
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            assert!(!store.landing_onboarding_open.get_untracked());
+            store.open_landing_onboarding();
+            assert!(store.landing_onboarding_open.get_untracked());
+            assert_eq!(
+                store.landing_onboarding_step.get_untracked(),
+                OnboardingStep::WelcomeConcepts
+            );
+
+            store.set_landing_onboarding_step(OnboardingStep::ConnectAlan);
+            assert_eq!(
+                store.landing_onboarding_step.get_untracked(),
+                OnboardingStep::ConnectAlan
+            );
+
+            store.complete_landing_onboarding();
+            assert!(!store.landing_onboarding_open.get_untracked());
+            assert!(store.onboarding_completed.get_untracked());
+            assert!(!store.should_show_onboarding());
         },
     );
 
@@ -2953,4 +3061,196 @@ fn tray_template_icon_and_quiet_status_runs_match_spec() {
     assert_eq!(tray_status_runs(1, 0).len(), 1);
     assert_eq!(tray_status_runs(0, 1).len(), 1);
     assert_eq!(tray_status_runs(2, 3).len(), 3);
+}
+
+#[test]
+fn strike_zone_counts_and_filters_require_core_in_bucket_only() {
+    use crate::platform_desktop::count_circle_tray_badges;
+    use m3_core::proactive::{SignalTriageRecord, TriageVerdict};
+
+    let mut core_hit = make_rep("CORE1", Bucket::Core, "Tech", Some(Decimal::from(25)), None);
+    core_hit.status = StrikeZoneStatus::InStrikeZone;
+
+    let mut watch_hit = make_rep(
+        "WATCH1",
+        Bucket::Watch,
+        "Tech",
+        Some(Decimal::from(25)),
+        None,
+    );
+    watch_hit.status = StrikeZoneStatus::InStrikeZone;
+
+    let reports = vec![core_hit, watch_hit];
+
+    let inbox_signals = vec![
+        SignalInboxRow {
+            signal_id: "sig-c".into(),
+            kind: SignalKind::Strike,
+            status: SignalStatus::Unread,
+            primary_ticker: "CORE1".into(),
+            tickers: vec!["CORE1".into()],
+            title: "Strike".into(),
+            summary: "Core alert".into(),
+            evidence: vec![],
+            score: 0.9,
+            event_id: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        },
+        SignalInboxRow {
+            signal_id: "sig-w".into(),
+            kind: SignalKind::Strike,
+            status: SignalStatus::Unread,
+            primary_ticker: "WATCH1".into(),
+            tickers: vec!["WATCH1".into()],
+            title: "Watch".into(),
+            summary: "Watch alert".into(),
+            evidence: vec![],
+            score: 0.9,
+            event_id: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        },
+    ];
+    let triages = vec![
+        SignalTriageRecord {
+            signal_id: "sig-c".into(),
+            ticker: "CORE1".into(),
+            verdict: TriageVerdict::FalsificationAlert,
+            headline: "Core falsification".into(),
+            rationale: "test".into(),
+            matched_metrics: vec![],
+            suggested_metrics: vec![],
+            quotes: vec![],
+            fallback_no_metrics_warning: false,
+            model_used: "mock".into(),
+            tokens_used: 0,
+            cost_usd: Decimal::ZERO,
+            created_at_ms: 1,
+        },
+        SignalTriageRecord {
+            signal_id: "sig-w".into(),
+            ticker: "WATCH1".into(),
+            verdict: TriageVerdict::FalsificationAlert,
+            headline: "Watch falsification".into(),
+            rationale: "test".into(),
+            matched_metrics: vec![],
+            suggested_metrics: vec![],
+            quotes: vec![],
+            fallback_no_metrics_warning: false,
+            model_used: "mock".into(),
+            tokens_used: 0,
+            cost_usd: Decimal::ZERO,
+            created_at_ms: 1,
+        },
+    ];
+
+    // Tray counts falsification alerts for WATCH + IN, but Strike Zone ONLY for IN (Core).
+    let (alerts, strikes) = count_circle_tray_badges(&reports, &inbox_signals, &triages);
+    assert_eq!(alerts, 2);
+    assert_eq!(strikes, 1);
+
+    // Basket StrikeOnly filter matches only Core, excluding Watch even if InStrikeZone.
+    let core_filtered = filter_reports_for_basket(
+        &reports,
+        Bucket::Core,
+        None,
+        StatusQuickFilter::StrikeOnly,
+        SortCol::Default,
+        false,
+    );
+    assert_eq!(core_filtered.len(), 1);
+    assert_eq!(core_filtered[0].ticker, "CORE1");
+
+    let watch_filtered = filter_reports_for_basket(
+        &reports,
+        Bucket::Watch,
+        None,
+        StatusQuickFilter::StrikeOnly,
+        SortCol::Default,
+        false,
+    );
+    assert!(watch_filtered.is_empty());
+}
+
+#[test]
+fn delete_industry_removes_profile_and_clears_selection() {
+    let root = temp_workspace("delete_industry_ui");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            store.open_or_create_industry_from_topic("Medical Devices");
+            let slug = store
+                .selected_industry_slug
+                .get_untracked()
+                .expect("created industry slug");
+            assert_eq!(store.industries.get_untracked().len(), 1);
+
+            store.delete_industry(&slug);
+            assert!(store.industries.get_untracked().is_empty());
+            assert!(store.selected_industry_slug.get_untracked().is_none());
+            assert!(store.industry_delete_confirm_slug.get_untracked().is_none());
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn journal_gui_composer_validates_and_records_entries() {
+    use crate::stores::JournalViewTab;
+
+    assert_eq!(JournalViewTab::default(), JournalViewTab::Ledger);
+
+    let root = temp_workspace("journal_gui_composer");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            store.open_journal_form(None);
+            assert!(store.journal_form_open.get_untracked());
+
+            // Missing ticker -> validation error
+            store.submit_journal_entry();
+            assert!(store.journal_form_error.get_untracked().is_some());
+
+            // Missing rationale -> validation error
+            store.journal_draft_ticker.set("cost".into());
+            store.submit_journal_entry();
+            assert!(store.journal_form_error.get_untracked().is_some());
+
+            // PaperBuy with missing/invalid shares -> validation error
+            store.journal_draft_action.set(JournalAction::PaperBuy);
+            store.journal_draft_note.set("Durable club moat".into());
+            store.submit_journal_entry();
+            assert!(store.journal_form_error.get_untracked().is_some());
+
+            // Valid Wait entry records into append-only journal and resets form
+            store.journal_draft_action.set(JournalAction::Wait);
+            store
+                .journal_draft_falsification
+                .set("Renewal drops below 90%".into());
+            store.submit_journal_entry();
+
+            assert!(!store.journal_form_open.get_untracked());
+            assert!(store.journal_form_error.get_untracked().is_none());
+            assert!(store.journal_draft_ticker.get_untracked().is_empty());
+            let j = store.journal.get_untracked();
+            assert_eq!(j.entries.len(), 1);
+            assert_eq!(j.entries[0].ticker, "COST");
+            assert_eq!(j.entries[0].action, JournalAction::Wait);
+            assert_eq!(j.entries[0].rationale, "Durable club moat");
+            assert_eq!(
+                j.entries[0].falsification_trigger,
+                "Renewal drops below 90%"
+            );
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

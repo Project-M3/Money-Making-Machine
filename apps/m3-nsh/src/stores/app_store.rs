@@ -18,10 +18,10 @@ use crate::stores::async_bridge::{
 use crate::stores::types::{
     AgentMessageRole, AgentUiMessage, AlanReplyTarget, BasketsViewMode, BriefingPeriod,
     ChartTimeframe, CircleBriefing, CompanyViewTab, DeepResearchPerspectiveUi, FeynmanRound,
-    FeynmanScope, FeynmanTurn, InboxFilter, InboxViewMode, InboxViewState, PaletteItem,
-    ParsedResearchMemo, SettingsTab, SignalTriageRecord, SortCol, StatusQuickFilter,
-    StoredAppMessage, UniversePreset, UniverseSearchMode, UniverseViewState, WorkspaceTab,
-    apply_ui_row_guards, default_deep_research_perspectives,
+    FeynmanScope, FeynmanTurn, InboxFilter, InboxViewMode, InboxViewState, JournalViewTab,
+    OnboardingStep, PaletteItem, ParsedResearchMemo, SettingsTab, SignalTriageRecord, SortCol,
+    StatusQuickFilter, StoredAppMessage, UniversePreset, UniverseSearchMode, UniverseViewState,
+    WorkspaceTab, apply_ui_row_guards, default_deep_research_perspectives,
 };
 use m3_core::alan_connection::{
     self, AlanConnectionBrowserLoginResult, AlanConnectionProfileSummary, AlanConnectionProvider,
@@ -51,8 +51,8 @@ use m3_core::lake_l1::{
 };
 use m3_core::lake_l2::{self, BudgetStatusReport, ResearchRunRow};
 use m3_core::model::{
-    Bucket, DecisionJournal, Dossier, MungerReport, PriceHistorySnapshot, PriceSnapshot,
-    SyncStatusFile, ValuationAssumptions,
+    Bucket, DecisionJournal, Dossier, JournalAction, MungerReport, PriceHistorySnapshot,
+    PriceSnapshot, SyncStatusFile, ValuationAssumptions,
 };
 use m3_core::proactive::{self, TriageRunSummary};
 use m3_core::research::{self, DeepResearchEvent, DeepResearchRequest, DeepResearchResult};
@@ -108,6 +108,9 @@ pub struct AppStore {
     pub startup_hydrated: Signal<bool>,
     pub onboarding_dismissed: Signal<bool>,
     pub onboarding_applying: Signal<bool>,
+    pub onboarding_completed: Signal<bool>,
+    pub landing_onboarding_open: Signal<bool>,
+    pub landing_onboarding_step: Signal<OnboardingStep>,
 
     // ── Circle Overview / Baskets / Journal / Budget ─────────────────────────
     pub reports: Signal<Vec<MungerReport>>,
@@ -171,6 +174,7 @@ pub struct AppStore {
 
     // ── Briefing Inbox (L1 Event-Driven + L1.5 Watchdog + Calm Briefings) ────
     pub inbox_view_mode: Signal<InboxViewMode>,
+    pub inbox_view_mode_user_override: Signal<bool>,
     pub briefing_period: Signal<BriefingPeriod>,
     pub briefings: Signal<Vec<CircleBriefing>>,
     pub selected_briefing_id: Signal<Option<String>>,
@@ -229,6 +233,17 @@ pub struct AppStore {
     pub industry_alan_messages: Signal<Vec<AgentUiMessage>>,
     pub industry_alan_streaming: Signal<bool>,
     pub industry_alan_status_hint: Signal<Option<String>>,
+    pub industry_delete_confirm_slug: Signal<Option<String>>,
+
+    // ── Decision Journal Composer & Tabs ─────────────────────────────────────
+    pub journal_view_tab: Signal<JournalViewTab>,
+    pub journal_form_open: Signal<bool>,
+    pub journal_draft_ticker: Signal<String>,
+    pub journal_draft_action: Signal<JournalAction>,
+    pub journal_draft_shares: Signal<String>,
+    pub journal_draft_note: Signal<String>,
+    pub journal_draft_falsification: Signal<String>,
+    pub journal_form_error: Signal<Option<String>>,
 
     // ── Settings & Updater ───────────────────────────────────────────────────
     pub settings_tab: Signal<SettingsTab>,
@@ -292,6 +307,27 @@ struct PrimaryStartupSnapshot {
     inbox_selected_details: Option<UniverseDrawerDetails>,
     inbox_selected_business_chunks: Vec<SignalEvidence>,
     budget_report: Option<BudgetStatusReport>,
+    briefings: Vec<CircleBriefing>,
+    signal_triages: Vec<SignalTriageRecord>,
+}
+
+/// Resolves the initial `⌘1` Inbox subview mode from persisted briefing availability.
+/// Defaults to `Stream` when no briefings exist yet so fresh/quiet workspaces avoid an empty screen.
+pub fn resolve_default_inbox_view_mode(has_briefings: bool) -> InboxViewMode {
+    if has_briefings {
+        InboxViewMode::Briefing
+    } else {
+        InboxViewMode::Stream
+    }
+}
+
+/// Returns `true` when the first-run Landing & Setup Wizard should open automatically on launch.
+pub fn should_auto_open_landing_onboarding(
+    onboarding_completed: bool,
+    watchlist_empty: bool,
+    lake_present: bool,
+) -> bool {
+    !onboarding_completed && watchlist_empty && !lake_present
 }
 
 struct SecondaryStartupSnapshot {
@@ -364,6 +400,8 @@ fn load_primary_startup_snapshot(
     let mut inbox_selected_details = None;
     let mut inbox_selected_business_chunks = Vec::new();
     let mut budget_report = None;
+    let mut briefings = Vec::new();
+    let mut signal_triages = Vec::new();
     let mut opened_db: Option<LakeDb> = None;
 
     match LakeDb::open_read_only_if_exists(paths) {
@@ -399,6 +437,8 @@ fn load_primary_startup_snapshot(
                     ));
                 }
             }
+            briefings = db.list_circle_briefings(None, 24).unwrap_or_default();
+            signal_triages = db.list_signal_triages(None, None, 200).unwrap_or_default();
             opened_db = Some(db);
         }
         Err(err) => {
@@ -440,6 +480,8 @@ fn load_primary_startup_snapshot(
         inbox_selected_details,
         inbox_selected_business_chunks,
         budget_report,
+        briefings,
+        signal_triages,
     };
     (snap, opened_db)
 }
@@ -557,6 +599,10 @@ impl AppStore {
     fn new_empty(paths: WorkspacePaths) -> Self {
         let (effective_ch, _) = update::effective_channel();
         let initial_lang = app_config::read_ui_language();
+        #[cfg(not(test))]
+        let initial_onboarding_completed = app_config::read_onboarding_completed();
+        #[cfg(test)]
+        let initial_onboarding_completed = false;
         let initial_budget = budget::load_budget_config(&paths).unwrap_or_default();
         let default_journal = DecisionJournal {
             schema_version: 1,
@@ -595,6 +641,9 @@ impl AppStore {
             startup_hydrated: signal(false),
             onboarding_dismissed: signal(false),
             onboarding_applying: signal(false),
+            onboarding_completed: signal(initial_onboarding_completed),
+            landing_onboarding_open: signal(false),
+            landing_onboarding_step: signal(OnboardingStep::WelcomeConcepts),
 
             reports: signal_with(Vec::new(), SignalEquals::Never),
             journal: signal_with(default_journal, SignalEquals::Never),
@@ -652,7 +701,8 @@ impl AppStore {
             feynman_busy: signal(false),
             feynman_archive_markdown: signal(String::new()),
 
-            inbox_view_mode: signal(InboxViewMode::Briefing),
+            inbox_view_mode: signal(InboxViewMode::Stream),
+            inbox_view_mode_user_override: signal(false),
             briefing_period: signal(BriefingPeriod::Daily),
             briefings: signal_with(Vec::new(), SignalEquals::Never),
             selected_briefing_id: signal(None),
@@ -709,6 +759,16 @@ impl AppStore {
             industry_alan_messages: signal(Vec::new()),
             industry_alan_streaming: signal(false),
             industry_alan_status_hint: signal(None),
+            industry_delete_confirm_slug: signal(None),
+
+            journal_view_tab: signal(JournalViewTab::Ledger),
+            journal_form_open: signal(false),
+            journal_draft_ticker: signal(String::new()),
+            journal_draft_action: signal(JournalAction::Wait),
+            journal_draft_shares: signal(String::new()),
+            journal_draft_note: signal(String::new()),
+            journal_draft_falsification: signal(String::new()),
+            journal_form_error: signal(None),
 
             settings_tab: signal(SettingsTab::General),
             update_channel: signal(effective_ch),
@@ -835,6 +895,19 @@ impl AppStore {
             } else {
                 self.sync_inbox_selection();
             }
+            self.apply_proactive_snapshot(snap.briefings, snap.signal_triages);
+        }
+
+        let watchlist_empty = self.reports.with_untracked(|r| r.is_empty());
+        if should_auto_open_landing_onboarding(
+            self.onboarding_completed.get_untracked(),
+            watchlist_empty,
+            snap.lake_present,
+        ) {
+            self.landing_onboarding_step
+                .set(OnboardingStep::WelcomeConcepts);
+            self.landing_onboarding_open.set(true);
+            self.refresh_alan_connection_status();
         }
 
         self.startup_hydrated.set(true);
@@ -2378,7 +2451,10 @@ impl AppStore {
 
     /// Returns `true` when the active workspace is fresh and onboarding has not been dismissed.
     pub fn should_show_onboarding(self) -> bool {
-        if !self.startup_hydrated.get() {
+        if !self.startup_hydrated.get()
+            || self.landing_onboarding_open.get()
+            || self.onboarding_completed.get()
+        {
             return false;
         }
         let watchlist_empty = self.reports.with(|r| r.is_empty());
@@ -2390,6 +2466,34 @@ impl AppStore {
                 dismissed,
             )
         })
+    }
+
+    /// Opens the interactive Landing & Setup Wizard from Settings, Help menu, or Command Palette.
+    pub fn open_landing_onboarding(self) {
+        self.palette_open.set(false);
+        self.message_box_open.set(false);
+        self.settings_open.set(false);
+        self.landing_onboarding_step
+            .set(OnboardingStep::WelcomeConcepts);
+        self.landing_onboarding_open.set(true);
+        self.refresh_alan_connection_status();
+    }
+
+    /// Switches to a specific step inside the Landing & Setup Wizard.
+    pub fn set_landing_onboarding_step(self, step: OnboardingStep) {
+        self.landing_onboarding_step.set(step);
+        if step == OnboardingStep::ConnectAlan {
+            self.refresh_alan_connection_status();
+        }
+    }
+
+    /// Completes or skips the Landing & Setup Wizard and persists completion to `config.json`.
+    pub fn complete_landing_onboarding(self) {
+        self.landing_onboarding_open.set(false);
+        self.onboarding_dismissed.set(true);
+        self.onboarding_completed.set(true);
+        #[cfg(not(test))]
+        let _ = app_config::write_onboarding_completed(true);
     }
 
     /// Dismisses the first-run onboarding card for the current session.
@@ -3765,9 +3869,135 @@ impl AppStore {
     }
 
     pub fn select_industry(self, slug: &str) {
+        self.industry_delete_confirm_slug.set(None);
         self.selected_industry_slug.set(Some(slug.to_owned()));
         self.industry_live_perspectives.set(BTreeMap::new());
         self.reload_selected_industry_context();
+    }
+
+    pub fn delete_industry(self, slug: &str) {
+        let paths = self.paths.get_untracked();
+        let l = self.lang.get_untracked();
+        match industry::delete_industry(&paths, slug) {
+            Ok(removed) => {
+                self.industry_delete_confirm_slug.set(None);
+                self.reload_industries_from_disk();
+                if removed {
+                    self.set_info_notice(
+                        l.t("已删除行业研究", "Deleted industry study").to_owned(),
+                    );
+                }
+            }
+            Err(err) => {
+                self.set_error_notice(format!(
+                    "{}: {err:#}",
+                    l.t("删除行业研究失败", "Failed to delete industry study")
+                ));
+            }
+        }
+    }
+
+    pub fn open_journal_form(self, prefill_ticker: Option<&str>) {
+        self.journal_view_tab.set(JournalViewTab::Ledger);
+        if let Some(tk) = prefill_ticker {
+            self.journal_draft_ticker
+                .set(tk.trim().to_ascii_uppercase());
+        }
+        self.journal_form_error.set(None);
+        self.journal_form_open.set(true);
+    }
+
+    pub fn close_journal_form(self) {
+        self.journal_form_open.set(false);
+        self.journal_form_error.set(None);
+    }
+
+    pub fn submit_journal_entry(self) {
+        let l = self.lang.get_untracked();
+        let ticker = self
+            .journal_draft_ticker
+            .get_untracked()
+            .trim()
+            .to_ascii_uppercase();
+        let action = self.journal_draft_action.get_untracked();
+        let shares_raw = self.journal_draft_shares.get_untracked();
+        let note = self.journal_draft_note.get_untracked().trim().to_owned();
+        let falsif = self
+            .journal_draft_falsification
+            .get_untracked()
+            .trim()
+            .to_owned();
+
+        if ticker.is_empty() {
+            self.journal_form_error.set(Some(
+                l.t(
+                    "请输入股票代码（如 AAPL / COST）",
+                    "Enter a ticker symbol (e.g., AAPL / COST).",
+                )
+                .to_owned(),
+            ));
+            return;
+        }
+        if note.is_empty() {
+            self.journal_form_error.set(Some(
+                l.t(
+                    "请填写判断依据，便于日后对照复盘",
+                    "Write your rationale before freezing this decision.",
+                )
+                .to_owned(),
+            ));
+            return;
+        }
+        let shares_opt = if matches!(action, JournalAction::PaperBuy | JournalAction::PaperSell) {
+            let trimmed_shares = shares_raw.trim();
+            match trimmed_shares.parse::<Decimal>() {
+                Ok(v) if v > Decimal::ZERO => Some(v),
+                _ => {
+                    self.journal_form_error.set(Some(
+                        l.t(
+                            "模拟买入 / 卖出需填写大于 0 的股数",
+                            "Paper Buy / Sell requires shares > 0.",
+                        )
+                        .to_owned(),
+                    ));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
+        let paths = self.paths.get_untracked();
+        let falsif_opt = (!falsif.is_empty()).then_some(falsif.as_str());
+        match store::record_journal_entry(&paths, &ticker, action, &note, shares_opt, falsif_opt) {
+            Ok(entry) => {
+                if let Ok(updated_journal) = store::load_journal(&paths) {
+                    self.journal.set(updated_journal);
+                }
+                self.journal_draft_ticker.set(String::new());
+                self.journal_draft_action.set(JournalAction::Wait);
+                self.journal_draft_shares.set(String::new());
+                self.journal_draft_note.set(String::new());
+                self.journal_draft_falsification.set(String::new());
+                self.journal_form_error.set(None);
+                self.journal_form_open.set(false);
+                self.set_info_notice(match l {
+                    UiLang::Zh => format!(
+                        "已冻结决策记录：{} ({})",
+                        entry.ticker,
+                        entry.action.label()
+                    ),
+                    UiLang::En => format!(
+                        "Decision recorded: {} ({})",
+                        entry.ticker,
+                        entry.action.label()
+                    ),
+                });
+            }
+            Err(err) => {
+                self.journal_form_error.set(Some(format!("{err:#}")));
+            }
+        }
     }
 
     pub fn reload_selected_industry_context(self) {
@@ -4992,6 +5222,11 @@ impl AppStore {
         briefings: Vec<CircleBriefing>,
         signal_triages: Vec<SignalTriageRecord>,
     ) {
+        let has_briefings = !briefings.is_empty();
+        if !self.inbox_view_mode_user_override.get_untracked() {
+            self.inbox_view_mode
+                .set(resolve_default_inbox_view_mode(has_briefings));
+        }
         let period = self.briefing_period.get_untracked();
         let current_id = self.selected_briefing_id.get_untracked();
         let still_exists = current_id
@@ -5057,6 +5292,7 @@ impl AppStore {
     }
 
     pub fn set_inbox_view_mode(self, mode: InboxViewMode) {
+        self.inbox_view_mode_user_override.set(true);
         self.inbox_view_mode.set(mode);
     }
 
@@ -5158,6 +5394,7 @@ impl AppStore {
                         self.apply_proactive_snapshot(res.briefings, res.triages);
                         self.selected_briefing_id
                             .set(Some(res.briefing.briefing_id.clone()));
+                        self.inbox_view_mode.set(InboxViewMode::Briefing);
                         if let Some(report) = res.budget_report {
                             self.budget_report.set(Some(report));
                         }
@@ -5251,6 +5488,7 @@ impl AppStore {
                         self.apply_proactive_snapshot(res.briefings, res.triages);
                         self.selected_briefing_id
                             .set(Some(res.briefing.briefing_id.clone()));
+                        self.inbox_view_mode.set(InboxViewMode::Briefing);
                         if let Some(report) = res.budget_report {
                             self.budget_report.set(Some(report));
                         }

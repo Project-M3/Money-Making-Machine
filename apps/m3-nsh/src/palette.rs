@@ -69,12 +69,7 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
     }
     items.push(PaletteItem {
         group: "VIEW".into(),
-        title: l
-            .t(
-                "简报收件箱 · Event-Driven Inbox",
-                "Briefing Inbox · Event-Driven L1",
-            )
-            .into(),
+        title: l.t("简报收件箱", "Briefing Inbox · Event-Driven L1").into(),
         subtitle: l
             .t(
                 "新浮现、隐空间传导与击球红灯待审讯信号（0 Flagship Token）",
@@ -88,14 +83,11 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
     items.push(PaletteItem {
         group: "VIEW".into(),
         title: l
-            .t(
-                "全市场雷达 · US Lakehouse L0/L1",
-                "Universe Radar · US Lakehouse L0/L1",
-            )
+            .t("全市场雷达", "Universe Radar · US Lakehouse L0/L1")
             .into(),
         subtitle: l
             .t(
-                "DuckDB 全美股筛选、Lookalike 相似搜索与一键入观察池",
+                "全美股 DuckDB 筛选、相似公司搜索与一键入观察池",
                 "DuckDB full-US screening, lookalike search, and 1-click Watch",
             )
             .into(),
@@ -106,10 +98,7 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
     items.push(PaletteItem {
         group: "VIEW".into(),
         title: l
-            .t(
-                "行业研究 · Industry Research Studio",
-                "Industry Research · Alan Studio",
-            )
+            .t("行业研究工作台", "Industry Research · Alan Studio")
             .into(),
         subtitle: l
             .t(
@@ -258,9 +247,7 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
     });
     items.push(PaletteItem {
         group: "VIEW".into(),
-        title: l
-            .t("决策账本 · Decision Journal", "Decision Journal")
-            .into(),
+        title: l.t("决策账本", "Decision Journal").into(),
         subtitle: l
             .t(
                 "事前冻结决策账本 (100% 现金与 S&P 500 对比)",
@@ -274,10 +261,7 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
     items.push(PaletteItem {
         group: "SETTINGS".into(),
         title: l
-            .t(
-                "设置 · Preferences & Guardrails",
-                "Settings · Preferences & Guardrails",
-            )
+            .t("设置与护栏", "Settings · Preferences & Guardrails")
             .into(),
         subtitle: l
             .t(
@@ -313,7 +297,7 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
         group: "SEARCH".into(),
         title: l
             .t(
-                "混合语义相似搜索 · Lookalike Discovery",
+                "混合语义相似搜索",
                 "Hybrid Semantic Search · Lookalike Discovery",
             )
             .into(),
@@ -473,7 +457,7 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
         group: "DATA".into(),
         title: l
             .t(
-                "追平事件流 · L1 SEC Filings / News / 语义索引",
+                "追平事件流 · SEC 公告与新闻",
                 "Catch Up L1 · SEC Filings / News / Semantic Index",
             )
             .into(),
@@ -592,6 +576,21 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
         action: PaletteAction::SwitchUpdateChannel(target_channel),
     });
     items.push(PaletteItem {
+        group: "SETTINGS".into(),
+        title: l
+            .t("新手引导与核心概念向导", "Welcome & First-Run Setup Guide")
+            .into(),
+        subtitle: l
+            .t(
+                "了解能力圈、本地确定性计算、Alan 与费曼答辩，并快速完成基础配置",
+                "Walk through core concepts, workspace, Alan connection, and starter data",
+            )
+            .into(),
+        shortcut: None,
+        dot_color: SKY_FG,
+        action: PaletteAction::OpenLandingOnboarding,
+    });
+    items.push(PaletteItem {
         group: "M³".into(),
         title: "M³ · Money Making Machine".into(),
         subtitle: l
@@ -689,6 +688,9 @@ pub fn execute_palette_action(store: AppStore, action: PaletteAction) {
         PaletteAction::OpenSettings => {
             store.open_settings();
         }
+        PaletteAction::OpenLandingOnboarding => {
+            store.open_landing_onboarding();
+        }
         PaletteAction::SetLanguage(lang) => {
             store.set_language(lang);
         }
@@ -725,9 +727,9 @@ fn palette_item_icon(item: &PaletteItem) -> &'static str {
         PaletteAction::SwitchTab(WorkspaceTab::Industry) => ICON_LAYERS,
         PaletteAction::SwitchTab(WorkspaceTab::Baskets) => ICON_TARGET,
         PaletteAction::SwitchTab(WorkspaceTab::Journal) => ICON_JOURNAL,
-        PaletteAction::SwitchTab(WorkspaceTab::Settings) | PaletteAction::OpenSettings => {
-            ICON_SETTINGS
-        }
+        PaletteAction::SwitchTab(WorkspaceTab::Settings)
+        | PaletteAction::OpenSettings
+        | PaletteAction::OpenLandingOnboarding => ICON_SETTINGS,
         PaletteAction::OpenCompanyTab(_)
         | PaletteAction::OpenDossier(_)
         | PaletteAction::FocusBasket(_)

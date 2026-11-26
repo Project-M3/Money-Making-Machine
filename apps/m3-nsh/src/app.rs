@@ -32,6 +32,7 @@ use crate::views::{
     inbox::inbox_view,
     industry::industry_view,
     journal::journal_view,
+    onboarding::landing_onboarding_overlay,
     settings::{settings_modal_overlay, settings_view},
     universe::universe_view,
 };
@@ -71,16 +72,10 @@ fn topbar_breadcrumb(store: AppStore) -> Memo<String> {
         }
         match store.active_tab.get() {
             WorkspaceTab::Inbox => l
-                .t(
-                    "简报收件箱 · Event-Driven L1",
-                    "Briefing Inbox · Event-Driven L1",
-                )
+                .t("简报收件箱", "Briefing Inbox · Event-Driven L1")
                 .to_owned(),
             WorkspaceTab::Universe => l
-                .t(
-                    "全市场雷达 · US Lakehouse L0/L1",
-                    "Universe Radar · US Lakehouse L0/L1",
-                )
+                .t("全市场雷达", "Universe Radar · US Lakehouse L0/L1")
                 .to_owned(),
             WorkspaceTab::Industry => {
                 let slug = store.selected_industry_slug.get();
@@ -98,7 +93,7 @@ fn topbar_breadcrumb(store: AppStore) -> Memo<String> {
                     )
                 } else {
                     l.t(
-                        "行业研究工作台 · Alan Deep Research",
+                        "行业研究工作台",
                         "Industry Research Studio · Alan Deep Research",
                     )
                     .to_owned()
@@ -120,9 +115,7 @@ fn topbar_breadcrumb(store: AppStore) -> Memo<String> {
                 (None, Some(tag)) => format!("{} / #{tag}", l.t("能力圈总览", "Circle")),
                 (None, None) => l.t("能力圈总览", "Circle Overview").to_owned(),
             },
-            WorkspaceTab::Journal => l
-                .t("决策账本 · Decision Journal", "Decision Journal")
-                .to_owned(),
+            WorkspaceTab::Journal => l.t("决策账本", "Decision Journal").to_owned(),
             WorkspaceTab::Settings => format!(
                 "{} · {}",
                 l.t("设置", "Settings"),
@@ -247,6 +240,10 @@ pub fn render_app_root() -> impl IntoElement {
                 .child(when(
                     move || store.settings_open.get(),
                     move || settings_modal_overlay(store),
+                ))
+                .child(when(
+                    move || store.landing_onboarding_open.get(),
+                    move || landing_onboarding_overlay(store),
                 ))
                 .child(when(
                     move || store.pending_graduation_ticker.get().is_some(),
@@ -1486,8 +1483,8 @@ fn render_statusline(store: AppStore) -> impl IntoElement {
             return (
                 SKY_FG,
                 l.t(
-                    "↑/↓ 选择 · ↵ 执行 · esc 关闭命令面板",
-                    "↑/↓ select · ↵ run · esc close palette",
+                    "↑/↓ 或 ^J/^K 选择 · ↵ 执行 · esc 关闭命令面板",
+                    "↑/↓ or ^J/^K select · ↵ run · esc close palette",
                 ),
                 "PALETTE",
             );
@@ -1497,7 +1494,7 @@ fn render_statusline(store: AppStore) -> impl IntoElement {
             return (
                 if is_alan { VIOLET_FG } else { EMERALD_FG },
                 l.t(
-                    "1 财报与活研报 · 2 Deep Research & Alan · 3 XBRL · t TTM/FY · j/k 换股 · esc 返回",
+                    "1 财报与活研报 · 2 深度研究与 Alan · 3 XBRL · t TTM/FY · j/k 换股 · esc 返回",
                     "1 Financials & Memo · 2 Deep Research & Alan · 3 XBRL · t TTM/FY · j/k switch · esc back",
                 ),
                 if is_alan {
@@ -1686,6 +1683,18 @@ fn render_statusline(store: AppStore) -> impl IntoElement {
         )
 }
 
+fn step_palette_cursor(store: AppStore, delta: isize) {
+    let all = build_palette_items_from_store(store);
+    let q = store.palette_query.get_untracked();
+    let exp = store.palette_expanded_groups.get_untracked();
+    let len = visible_palette_items_for(&all, &q, &exp).len();
+    if len > 0 {
+        store.palette_cursor.update(|c| {
+            *c = (*c as isize + delta).rem_euclid(len as isize) as usize;
+        });
+    }
+}
+
 fn register_keyboard_shortcuts(store: AppStore) {
     // Global Cmd/Mod shortcuts (safe across Input focus via When::Auto; never bind reserved keys!)
     on_key("mod+1", move |_| store.open_tab(WorkspaceTab::Inbox));
@@ -1739,6 +1748,11 @@ fn register_keyboard_shortcuts(store: AppStore) {
                 store.close_settings();
                 return;
             }
+            if store.landing_onboarding_open.get_untracked() {
+                animate_shell_spring();
+                store.complete_landing_onboarding();
+                return;
+            }
             if store.pending_graduation_ticker.get_untracked().is_some() {
                 animate_shell_spring();
                 store.cancel_graduation_gate();
@@ -1787,8 +1801,15 @@ fn register_keyboard_shortcuts(store: AppStore) {
         },
     );
 
-    // Palette arrow/enter navigation while palette is open
-    for (key, delta) in [("up", -1isize), ("down", 1isize)] {
+    // Palette arrow & Ctrl+J/K (Ctrl+N/P) navigation while palette is open
+    for (key, delta) in [
+        ("up", -1isize),
+        ("down", 1isize),
+        ("ctrl+k", -1isize),
+        ("ctrl+j", 1isize),
+        ("ctrl+p", -1isize),
+        ("ctrl+n", 1isize),
+    ] {
         on_key_with(
             key,
             KeyOptions {
@@ -1799,15 +1820,10 @@ fn register_keyboard_shortcuts(store: AppStore) {
             },
             move |_| {
                 if store.palette_open.get_untracked() {
-                    let all = build_palette_items_from_store(store);
-                    let q = store.palette_query.get_untracked();
-                    let exp = store.palette_expanded_groups.get_untracked();
-                    let len = visible_palette_items_for(&all, &q, &exp).len();
-                    if len > 0 {
-                        store.palette_cursor.update(|c| {
-                            *c = (*c as isize + delta).rem_euclid(len as isize) as usize;
-                        });
-                    }
+                    step_palette_cursor(store, delta);
+                    return;
+                }
+                if key.starts_with("ctrl+") {
                     return;
                 }
                 if !store.company_open.get_untracked() {
@@ -1839,6 +1855,10 @@ fn register_keyboard_shortcuts(store: AppStore) {
     };
 
     on_key_with("j", not_editing, move |_| {
+        if store.palette_open.get_untracked() {
+            step_palette_cursor(store, 1);
+            return;
+        }
         if store.company_open.get_untracked() {
             store.step_selected_company(1);
             return;
@@ -1859,6 +1879,10 @@ fn register_keyboard_shortcuts(store: AppStore) {
     });
 
     on_key_with("k", not_editing, move |_| {
+        if store.palette_open.get_untracked() {
+            step_palette_cursor(store, -1);
+            return;
+        }
         if store.company_open.get_untracked() {
             store.step_selected_company(-1);
             return;

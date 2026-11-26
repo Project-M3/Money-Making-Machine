@@ -470,11 +470,12 @@ pub(super) fn cross_company_context_strip(store: AppStore) -> View {
 
             let mut card = view().flex().flex_col().gap(px(12.0)).child(section_header(
                 l.t(
-                    "跨公司对照 · 同业分位数 & 隐空间 Lookalike",
+                    "跨公司对照 · 同业分位数与语义相似",
                     "Cross-Company Comparison · Peer Percentiles & Latent Lookalikes",
                 ),
                 if has_data {
-                    "DUCKDB L0/L1 · 0 LLM TOKEN".to_owned()
+                    l.t("本地 L0/L1 · 0 LLM Token", "DUCKDB L0/L1 · 0 LLM TOKEN")
+                        .to_owned()
                 } else {
                     l.t("等待 L0/L1 湖仓数据", "Awaiting L0/L1 Lakehouse Data")
                         .to_owned()
@@ -484,7 +485,7 @@ pub(super) fn cross_company_context_strip(store: AppStore) -> View {
             if !has_data {
                 return card.child(
                     text(l.t(
-                        "同步全美股 L0/L1 湖仓后，此处展示 SIC 同业 ROIC/毛利/FCF 分位数与语义 Lookalike 近邻公司。",
+                        "同步全美股 L0/L1 湖仓后，此处展示 SIC 同业 ROIC/毛利/FCF 分位数与语义相似近邻公司。",
                         "After syncing US L0/L1 lakehouse, SIC peer ROIC/gross margin/strict FCF percentiles and semantic lookalikes appear here.",
                     ))
                     .font_family(FONT_UI)
@@ -595,7 +596,7 @@ pub(super) fn cross_company_context_strip(store: AppStore) -> View {
                         .flex_wrap()
                         .gap(px(6.0))
                         .child(
-                            text(l.t("隐空间 Lookalike:", "Latent Lookalike:"))
+                            text(l.t("语义相似公司:", "Latent Lookalike:"))
                                 .font_family(FONT_UI)
                                 .text_size(px(TEXT_XS))
                                 .text_color(rgb(INK_MUTED)),
@@ -883,7 +884,7 @@ pub(super) fn living_research_memo_card(store: AppStore, compact: bool) -> View 
                     .gap(px(4.0))
                     .child(
                         text(l.t(
-                            "## Human Notes（人类主权区 · Deep Research 永不覆盖）",
+                            "人类主权区（深度研究永不覆盖）",
                             "## Human Notes (Human-Owned · Never Overwritten by Deep Research)",
                         ))
                         .font_family(FONT_UI)

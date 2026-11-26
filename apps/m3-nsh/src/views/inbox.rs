@@ -20,7 +20,7 @@ use m3_core::i18n::UiLang;
 use m3_core::industry::{self, IndustryStatus};
 use m3_core::lake::{UniverseDrawerDetails, UniverseRow};
 use m3_core::lake_l1::{SignalEvidence, SignalInboxRow, SignalStatus};
-use m3_core::model::WarningSeverity;
+use m3_core::model::{Bucket, WarningSeverity};
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
@@ -514,26 +514,62 @@ fn render_briefing_view(store: AppStore, l: UiLang) -> View {
     let detail_content = match active_briefing {
         Some(b) => render_briefing_reading_pane(store, b, l),
         None => obsidian_card()
-            .p(px(24.0))
+            .p(px(28.0))
             .flex()
             .flex_col()
-            .gap(px(12.0))
+            .gap(px(14.0))
             .child(
-                text(l.t("无球可挥 · 耐心等待 · 0 LLM Token", "No Fat Pitches · Stay Patient · 0 LLM Tokens"))
-                    .font_family(FONT_UI)
-                    .text_size(px(TEXT_MD))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(EMERALD_FG)),
+                view()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(10.0))
+                    .child(
+                        text(l.t(
+                            "尚无历史能力圈简报",
+                            "No Saved Circle Briefings Yet",
+                        ))
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_MD))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(INK_HERO)),
+                    )
+                    .child(badge_pill(
+                        l.t("静默 0 LLM Token", "0 LLM Tokens When Quiet"),
+                        EMERALD_FG,
+                        EMERALD_BG,
+                        EMERALD_BORDER,
+                    )),
             )
             .child(
                 text(l.t(
-                    "尚未生成历史简报。点击左侧「立即生成简报」汇总能力圈击球雷达、财报异动与 Alan L1.5 巡检结果，或点击「巡检能力圈」立即检查 WATCH + IN 最新公告。",
-                    "No briefing generated yet. Click Generate Briefing on the left to compile Strike Radar, Filing Deltas, and Alan L1.5 Watchdog hits, or click Catch Up Circle.",
+                    "当你还没有生成日/周简报时，收件箱默认会直接展示「事件流」以便浏览信号。你也可以点击下方按钮立即汇编一次能力圈简报（静默期 0 Token，绝不废话）。",
+                    "When no briefings are saved yet, Inbox opens the Stream view by default. You can generate a Circle Briefing anytime below (0 LLM tokens during quiet periods).",
                 ))
                 .font_family(FONT_UI)
                 .text_size(px(TEXT_BASE))
                 .line_height(px(21.0))
                 .text_color(rgb(INK_SECONDARY)),
+            )
+            .child(
+                view()
+                    .pt(px(4.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .flex_wrap()
+                    .gap(px(10.0))
+                    .child(action_button(
+                        l.t("立即生成今日简报", "Generate Today's Briefing"),
+                        true,
+                        move || store.generate_briefing_now(period, true),
+                    ))
+                    .child(action_button(
+                        l.t("切换到事件流", "Switch to Event Stream"),
+                        false,
+                        move || store.set_inbox_view_mode(InboxViewMode::Stream),
+                    )),
             ),
     };
 
@@ -744,7 +780,7 @@ fn render_briefing_reading_pane(store: AppStore, b: &CircleBriefing, l: UiLang) 
         .flex_col()
         .gap(px(10.0))
         .child(section_header(
-            l.t("① 击球雷达 · Strike Radar", "① Strike Radar (WATCH + IN)"),
+            l.t("① 击球雷达", "① Strike Radar (WATCH + IN)"),
             format!(
                 "{} {}",
                 b.strike_radar.len(),
@@ -765,11 +801,12 @@ fn render_briefing_reading_pane(store: AppStore, b: &CircleBriefing, l: UiLang) 
         for item in &b.strike_radar {
             let tk = item.ticker.clone();
             let (dist_str, _) = fmt_pct_clean(item.distance_to_strike_pct, true);
-            let dist_col = if item.in_strike_zone {
-                EMERALD_FG
-            } else {
-                GOLD_FG
-            };
+            let is_core_strike = item.in_strike_zone && item.bucket == Bucket::Core;
+            let is_watch_disc = item.bucket == Bucket::Watch
+                && item
+                    .distance_to_strike_pct
+                    .is_some_and(|d| d <= Decimal::ZERO);
+            let dist_col = if is_core_strike { EMERALD_FG } else { GOLD_FG };
             let (bfg, bbg, bbr) = bucket_colors(item.bucket);
             strike_card = strike_card.child(
                 view()
@@ -826,14 +863,14 @@ fn render_briefing_reading_pane(store: AppStore, b: &CircleBriefing, l: UiLang) 
                                 .text_color(rgb(INK_PRIMARY)),
                             )
                             .child(badge_pill(
-                                dist_str,
-                                dist_col,
-                                if item.in_strike_zone {
-                                    EMERALD_BG
+                                if is_watch_disc {
+                                    format!("{} {dist_str}", l.t("观察池折价", "Watch Disc."))
                                 } else {
-                                    GOLD_BG
+                                    dist_str
                                 },
-                                if item.in_strike_zone {
+                                dist_col,
+                                if is_core_strike { EMERALD_BG } else { GOLD_BG },
+                                if is_core_strike {
                                     EMERALD_BORDER
                                 } else {
                                     GOLD_BORDER
@@ -851,10 +888,7 @@ fn render_briefing_reading_pane(store: AppStore, b: &CircleBriefing, l: UiLang) 
         .flex_col()
         .gap(px(10.0))
         .child(section_header(
-            l.t(
-                "② 财报与排雷异动 · Filing & Red-Flag Deltas",
-                "② Filing & Red-Flag Deltas",
-            ),
+            l.t("② 财报与排雷异动", "② Filing & Red-Flag Deltas"),
             format!("{} {}", b.filing_deltas.len(), l.t("条异动", "deltas")),
         ));
     if b.filing_deltas.is_empty() {
@@ -986,7 +1020,7 @@ fn render_briefing_reading_pane(store: AppStore, b: &CircleBriefing, l: UiLang) 
         .gap(px(10.0))
         .child(section_header(
             l.t(
-                "③ 证伪警报 & Alan 巡检命中 · Watchdog Hits",
+                "③ 证伪警报与 Alan 巡检",
                 "③ Falsification Alerts & Alan Watchdog Hits",
             ),
             format!("{} {}", sorted_hits.len(), l.t("条命中", "hits")),
@@ -2080,10 +2114,7 @@ fn render_inbox_business_profile_card(
         .flex_col()
         .gap(px(12.0))
         .child(section_header(
-            l.t(
-                "公司业务简介 · Business Profile",
-                "Business Profile · 10-K Item 1",
-            ),
+            l.t("公司业务简介", "Business Profile · 10-K Item 1"),
             filing_tag,
         ));
 

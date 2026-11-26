@@ -16,7 +16,9 @@ use crate::stores::{
 use crate::theme::*;
 use crate::views::onboarding::onboarding_card;
 use m3_core::i18n::UiLang;
-use m3_core::model::{Bucket, MungerReport, primary_circle_tag, secondary_circle_detail};
+use m3_core::model::{
+    Bucket, MungerReport, StrikeZoneStatus, primary_circle_tag, secondary_circle_detail,
+};
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
 
@@ -549,8 +551,8 @@ fn render_empty_circle_card(store: AppStore, l: UiLang) -> View {
         .child(
             text(
                 l.t(
-                    "M3 不会预置任何持仓或观察名单。你可以先同步全美股 L0 湖仓，从全市场雷达或简报收件箱中挑选真正读懂的公司加入能力圈（CORE / WATCH / OUT / TOO HARD），也可以在终端通过 CLI 自行维护。",
-                    "M3 ships with zero pre-loaded holdings or watchlists. Sync the US L0 lakehouse, then promote businesses you understand from Universe Radar or Briefing Inbox into your Circle (CORE / WATCH / OUT / TOO HARD).",
+                    "M3 不会预置任何持仓或观察名单。建议从「全市场雷达」初筛公司先加入 WATCH 跟踪；读懂护城河并通过费曼答辩后再晋升为 IN（只有 IN 才会触发正式击球区提醒），不熟悉的领域果断放进 OUT 或 TOO HARD。",
+                    "M3 ships with zero pre-loaded watchlists. Start by adding companies from Universe Radar to WATCH; promote them to IN once understood (only IN triggers formal Strike Zone alerts), and park unknowns in OUT or TOO HARD.",
                 )
                 .to_owned(),
             )
@@ -568,36 +570,15 @@ fn render_empty_circle_card(store: AppStore, l: UiLang) -> View {
                 .flex_wrap()
                 .gap(px(10.0))
                 .child(action_button(
-                    l.t("前往全市场雷达 (⌘2)", "Open Universe Radar (⌘2)"),
+                    l.t("前往全市场雷达", "Open Universe Radar"),
                     true,
                     move || store.open_tab(WorkspaceTab::Universe),
                 ))
                 .child(action_button(
-                    l.t("打开简报收件箱 (⌘1)", "Open Briefing Inbox (⌘1)"),
+                    l.t("打开简报收件箱", "Open Briefing Inbox"),
                     false,
                     move || store.open_tab(WorkspaceTab::Inbox),
                 )),
-        )
-        .child(
-            view()
-                .px(px(12.0))
-                .py(px(8.0))
-                .rounded_md()
-                .bg(rgb(BG_WELL))
-                .border_1()
-                .border_color(rgb(BORDER_HAIRLINE))
-                .child(
-                    text(
-                        l.t(
-                            "CLI: m3 add AAPL --bucket watch --circle \"消费生态\"",
-                            "CLI: m3 add AAPL --bucket watch --circle \"Ecosystem\"",
-                        )
-                        .to_owned(),
-                    )
-                    .font_family(FONT_MONO_TERM)
-                    .text_size(px(TEXT_XS))
-                    .text_color(rgb(INK_MUTED)),
-                ),
         )
 }
 
@@ -900,7 +881,8 @@ fn render_core_watch_row(
     let dist_opt = val.and_then(|v| v.distance_to_strike_pct);
     let (dist_str, _) = fmt_pct_clean(dist_opt, true);
     let dist_col = match dist_opt {
-        Some(d) if d <= Decimal::ZERO => EMERALD_FG,
+        Some(d) if d <= Decimal::ZERO && rep.bucket == Bucket::Core => EMERALD_FG,
+        Some(d) if d <= Decimal::ZERO && rep.bucket == Bucket::Watch => GOLD_FG,
         Some(_) => INK_SECONDARY,
         None => INK_MUTED,
     };
@@ -1035,12 +1017,20 @@ fn render_core_watch_row(
                 .flex()
                 .flex_row()
                 .items_center()
-                .child(badge_pill(
-                    rep.status.label_for(l).to_owned(),
-                    s_fg,
-                    s_bg,
-                    s_br,
-                )),
+                .child({
+                    let is_watch_disc =
+                        rep.bucket == Bucket::Watch && rep.status == StrikeZoneStatus::InStrikeZone;
+                    if is_watch_disc {
+                        badge_pill(
+                            l.t("观察池折价", "Watch Disc.").to_owned(),
+                            GOLD_FG,
+                            GOLD_BG,
+                            GOLD_BORDER,
+                        )
+                    } else {
+                        badge_pill(rep.status.label_for(l).to_owned(), s_fg, s_bg, s_br)
+                    }
+                }),
         );
 
     view()
