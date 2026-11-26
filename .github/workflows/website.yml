@@ -1,5 +1,9 @@
 name: Website
 
+# Build verification only. Production deploys come from Cloudflare Workers
+# Builds (connected to this repo, root directory /website); this workflow
+# never deploys and needs no Cloudflare credentials.
+
 on:
   push:
     branches: [main]
@@ -49,48 +53,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck and build Cloudflare Worker + assets
+      - name: Typecheck, build and prerender (en + zh)
         run: pnpm build
 
-      - name: Verify Cloudflare Build Output
+      - name: Verify Cloudflare build output
         run: |
-          test -f .cloudflare/output/v1/config.json
-          test -f .cloudflare/output/v1/workers/default/assets/index.html
-          test -f .cloudflare/output/v1/workers/default/assets/install.sh
-          test -f .cloudflare/output/v1/workers/default/bundle/index.js
-
-  deploy:
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: website
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          version: 12
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: website/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Deploy m3-website to Cloudflare Workers
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "CLOUDFLARE_API_TOKEN is not configured; skipping automatic Cloudflare deploy."
-            exit 0
-          fi
-          pnpm exec cloudflare deploy
+          out=.cloudflare/output/v1/workers/default
+          test -f $out/../../config.json || test -f .cloudflare/output/v1/config.json
+          test -f $out/assets/index.html
+          test -f $out/assets/_i18n/zh.html
+          test -f $out/assets/install.sh
+          test -f $out/bundle/index.js
+          grep -q 'lang="en"' $out/assets/index.html
+          grep -q 'Read every filing.' $out/assets/index.html
+          grep -q 'lang="zh-CN"' $out/assets/_i18n/zh.html
+          grep -q '读遍每一份财报。' $out/assets/_i18n/zh.html
