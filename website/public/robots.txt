@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /_i18n/
+
+Sitemap: https://m3.thinksmart.systems/sitemap.xml
