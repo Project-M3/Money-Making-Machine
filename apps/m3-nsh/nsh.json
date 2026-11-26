@@ -1,7 +1,7 @@
 {
   "name": "M3",
   "id": "systems.thinksmart.m3",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "build": 1,
   "rust": ".",
   "root": "App",

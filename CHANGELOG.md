@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-26
+
+### Added
+- **L1.5 Circle Filing Watchdog** (`crates/m3-core/src/proactive.rs`, DuckDB `signal_triage` table): monitors Circle `WATCH + IN` companies only (leaving `OUT`, `TOO HARD`, and 6,000+ Discovery signals at 0 LLM tokens), classifying unread events into `Noise | Material | FalsificationAlert` with 1–3 verbatim primary-source quotes, falling back cleanly to `Dossier.premortem` + deterministic red flags when `falsification_metrics` is empty, folding `Noise` non-destructively in the stream, and surfacing coral `FalsificationAlert` cards with a one-click manual 4-lens Deep Research trigger.
+- **Calm Daily/Weekly Briefings** (`circle_briefings` DuckDB table): deterministic 3-part briefing skeleton (Strike Radar within `<= 15%` of Strike, Filing & Red-Flag Delta, and Watchdog Hits) with an optional 1-call Alan executive summary skipped at 0 tokens during quiet periods (`无球可挥 · 耐心等待`).
+- **`⌘1` Dual-View Inbox & Cross-Surface Interfaces**: upgraded `⌘1 Briefing Inbox` with a segmented `简报 | 事件流` toggle while keeping sidebar navigation strictly `⌘1–⌘5`; added `m3 briefing`, `m3 triage`, and `m3 falsification` CLI subcommands plus 3 new read-only `m3 mcp` tools (`m3_briefing_latest`, `m3_briefing_list`, `m3_triage_list`, bringing MCP total to 17).
+- **NSH Native Background Keep-Alive & Menu Bar Tray**: enabled `AppOptions::keep_alive_on_close: true`, automatic macOS Dock hide/restore (`NSApplicationActivationPolicy::Accessory ↔ Regular`) across `⌘W` / reopen, and a monochrome template `PIXEL_M3` Menu Bar tray icon that lights up status dots only on active Circle alerts or Strike Zone hits.
+- **Interactive 3-Round Socratic Feynman Coach & `WATCH → IN` Soft Gate** (`crates/m3-core/src/feynman.rs`): added structured 3-round defense coaching in Company Desk (`2 Deep Research & Alan`) and Industry Studio (`⌘3`) compatible with macOS native Dictation, explicit human sign-off (`my_stance`, `falsification_metrics`, `feynman_checked_at`, archived Markdown defense history), in-app `falsification_metrics` CRUD editor with one-click Alan suggestion adoption, and a non-blocking `WATCH → IN` Soft Gate across Company Desk, Circle Overview, context menu, and `⌘K` Command Palette.
+- **Proactive Alan Quotas & Settings Controls** (`crates/m3-core/src/budget.rs`): added backward-compatible daily quotas (`proactive_triage_enabled = true`, `daily_triage_quota = 10`, `daily_briefing_summary_quota = 1`, `background_refresh_hours = 4`) stacked under combined L2 + L1.5 monthly USD/token ceilings and configurable in `Settings → AI`.
+
+### Changed
+- Scoped `v0.6.0` exclusively to Proactive Alan (Branches A + B + C) and moved HKEX / multi-market expansion to `v0.6.5` (`ROADMAP.md`, `CONTEXT.md`, `docs/v0.6-proactive-alan.md`).
+- Restricted `smoked_glass::install()` to normal titled windows (`NSNormalWindowLevel` + `NSWindowStyleMask::Titled`) so macOS Menu Bar `NSStatusBarWindow` renders cleanly without a translucent box backdrop.
+
 ## [0.5.1] - 2026-11-26
 
 ### Added
