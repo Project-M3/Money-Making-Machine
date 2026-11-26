@@ -358,40 +358,17 @@ pub fn tray_status_runs(alerts: usize, strike_hits: usize) -> Vec<TrayTitleRun> 
 }
 
 /// Installs a reactive macOS Menu Bar tray (`set_tray`) with a monochrome template M3 SVG icon
-/// that stays quiet by default, hides the Dock icon on close-to-tray, and recreates the status
-/// item cleanly across `Regular ↔ Accessory` activation policy transitions.
+/// that stays quiet by default and hides/restores the Dock icon cleanly when the main window closes or opens.
 pub fn bind_live_system_tray(store: AppStore, main_open: Signal<bool>) {
     if !os().is_desktop() {
         return;
     }
-    let tray_epoch = signal(0u64);
-    let rebind_seq = signal(0u64);
-    let last_open = signal(main_open.get_untracked());
 
     effect(move || {
-        let open = main_open.get();
-        set_macos_dock_visible(open);
-        if open != last_open.get_untracked() {
-            last_open.set(open);
-            let seq = rebind_seq.get_untracked().wrapping_add(1);
-            rebind_seq.set(seq);
-            spawn(async move {
-                timer(std::time::Duration::from_millis(80)).await;
-                if rebind_seq.get_untracked() != seq {
-                    return;
-                }
-                set_tray(None);
-                timer(std::time::Duration::from_millis(40)).await;
-                if rebind_seq.get_untracked() != seq {
-                    return;
-                }
-                tray_epoch.update(|n| *n = n.wrapping_add(1));
-            });
-        }
+        set_macos_dock_visible(main_open.get());
     });
 
     effect(move || {
-        let _epoch = tray_epoch.get();
         let lang = store.lang.get();
         let proactive_running = store.proactive_running.get();
         let syncing = store.sync_running.get()
