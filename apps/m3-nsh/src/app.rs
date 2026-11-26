@@ -146,9 +146,6 @@ pub fn render_app_root() -> impl IntoElement {
 
     let main_open = signal(true);
     bind_live_system_tray(store, main_open);
-    effect(move || {
-        set_macos_dock_visible(main_open.get());
-    });
     on_reopen(move || {
         set_macos_dock_visible(true);
         if !main_open.get_untracked() {
