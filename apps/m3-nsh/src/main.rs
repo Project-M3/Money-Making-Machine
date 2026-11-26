@@ -57,6 +57,7 @@ fn run_gui() -> std::process::ExitCode {
             title: "M3".to_owned(),
             app_id: "systems.thinksmart.m3".to_owned(),
             size: (1380, 880),
+            keep_alive_on_close: true,
             ..Default::default()
         },
     )

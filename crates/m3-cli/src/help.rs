@@ -36,6 +36,9 @@ COMMANDS:
   Research & Guardrails:
     research          Run or inspect L2 Alan Deep Research sessions
     budget            Inspect monthly/per-run AI research budget & usage
+    briefing          Show, run, or list calm daily/weekly Circle briefings
+    triage            Inspect or run L1.5 Circle Filing Watchdog signal triage
+    falsification     List, add, or remove human falsification metrics on a dossier
 
   Agent Integration:
     mcp               Run read-only JSON-RPC 2.0 MCP server over stdio
@@ -264,6 +267,72 @@ EXAMPLES:
   m3 budget status
 "
         }
+        "briefing" => {
+            "m3 briefing — Show, run, or list calm daily/weekly Circle briefings
+
+USAGE:
+  m3 briefing [show] [--period daily|weekly]
+  m3 briefing run [--period daily|weekly] [--no-llm]
+  m3 briefing list [--period daily|weekly] [--limit <N>]
+
+SUBCOMMANDS:
+  show                Show latest saved briefing for period, or 0-token preview (default)
+  run                 Build, optionally summarize with Alan, and persist a briefing
+  list                List persisted calm briefings (newest first)
+
+OPTIONS:
+  --period <PERIOD>   Briefing cadence: daily | weekly (default: daily for show/run)
+  --no-llm            Skip Alan executive summary (0 LLM tokens)
+  --limit <N>         Maximum briefings returned by `list` (1..=50, default: 10)
+
+EXAMPLES:
+  m3 briefing
+  m3 briefing show --period weekly
+  m3 briefing run --period daily --no-llm
+  m3 briefing list --limit 5
+"
+        }
+        "triage" => {
+            "m3 triage — Inspect or run L1.5 Circle Filing Watchdog signal triage
+
+USAGE:
+  m3 triage [status] [--ticker <SYM>] [--verdict noise|material|falsification_alert] [--limit <N>]
+  m3 triage run [--limit <N>] [--dry-run]
+
+SUBCOMMANDS:
+  status              List recent signal triage records and daily quota usage (default)
+  run                 Evaluate pending WATCH/CORE Circle signals against falsification metrics
+
+OPTIONS:
+  --ticker <SYM>      Filter `status` records by ticker symbol
+  --verdict <VERDICT> Filter `status`: noise | material | falsification_alert
+  --limit <N>         Max records returned (`status`, default: 50) or evaluated (`run`, default: 10)
+  --dry-run           Preview triage prompts/records without calling Alan or writing DuckDB
+
+EXAMPLES:
+  m3 triage status --ticker MCO
+  m3 triage run --dry-run --limit 5
+"
+        }
+        "falsification" => {
+            "m3 falsification — List, add, or remove human falsification metrics on a dossier
+
+USAGE:
+  m3 falsification <TICKER> [list]
+  m3 falsification <TICKER> add <TEXT>
+  m3 falsification <TICKER> remove <INDEX>
+
+SUBCOMMANDS:
+  list                Show `human_judgment.falsification_metrics` for <TICKER> (default)
+  add <TEXT>          Append a falsification metric (deduplicated, preserves human sovereignty)
+  remove <INDEX>      Remove the 0-based falsification metric at <INDEX>
+
+EXAMPLES:
+  m3 falsification MCO list
+  m3 falsification MCO add \"Operating margin < 35%\"
+  m3 falsification MCO remove 0
+"
+        }
         "mcp" => {
             "m3 mcp — Run read-only JSON-RPC 2.0 MCP server over stdio
 
@@ -276,10 +345,11 @@ OPTIONS:
 NOTES:
   - Reads line-delimited JSON-RPC 2.0 requests from stdin and writes responses to stdout.
   - All diagnostics go to stderr only; stdout carries JSON-RPC frames exclusively.
-  - Exposes 14 deterministic read-only tools (m3_status, m3_doctor, m3_report, m3_dossier,
+  - Exposes 17 deterministic read-only tools (m3_status, m3_doctor, m3_report, m3_dossier,
     m3_universe_status, m3_universe_screen, m3_universe_peers, m3_universe_similar,
     m3_inbox_list, m3_industry_list, m3_industry_show, m3_budget_status,
-    m3_themes_list, m3_storage_status).
+    m3_themes_list, m3_storage_status, m3_briefing_latest, m3_briefing_list,
+    m3_triage_list).
   - Never mutates `human_judgment` and never deletes `personal_workbench`.
 
 EXAMPLES:

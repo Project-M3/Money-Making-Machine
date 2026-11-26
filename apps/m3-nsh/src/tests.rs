@@ -2761,3 +2761,181 @@ fn bucket_display_order_and_remove_company_from_circle_work() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn watch_to_core_soft_gate_and_confirm_direct_graduation_work() {
+    use m3_core::model::{CompanyEntry, WatchlistFile};
+    use m3_core::store::{apply_feynman_sign_off, load_watchlist, save_watchlist};
+
+    let root = temp_workspace("soft_gate_core");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+    let wl = WatchlistFile {
+        schema_version: 1,
+        benchmark_symbol: "^GSPC".into(),
+        default_target_return_pct: Decimal::from(10),
+        companies: vec![CompanyEntry {
+            ticker: "HRMY".into(),
+            name: "Harmony Biosciences".into(),
+            bucket: Bucket::Watch,
+            source: DataSource::SecEdgar,
+            cik: Some("0001802665".into()),
+            currency: "USD".into(),
+            circle: "Pharma".into(),
+            too_hard_reason: None,
+            assumptions: ValuationAssumptions {
+                multiple_low: Decimal::from(18),
+                multiple_high: Decimal::from(22),
+                target_return_pct: Decimal::from(10),
+                expected_growth_pct: Decimal::from(8),
+                strike_price_override: None,
+            },
+        }],
+    };
+    save_watchlist(&paths, &wl).expect("save watchlist");
+
+    let paths_check = paths.clone();
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            // Missing dossier / feynman_checked_at triggers Soft Gate without moving bucket.
+            store.request_bucket_change("HRMY", Bucket::Core);
+            assert_eq!(
+                store.pending_graduation_ticker.get_untracked().as_deref(),
+                Some("HRMY")
+            );
+            let wl_before = load_watchlist(&paths_check).expect("load watchlist");
+            assert_eq!(wl_before.companies[0].bucket, Bucket::Watch);
+
+            // Explicit human override moves directly to Core and clears modal.
+            store.confirm_direct_graduation("HRMY");
+            assert_eq!(store.pending_graduation_ticker.get_untracked(), None);
+            let wl_after = load_watchlist(&paths_check).expect("load watchlist");
+            assert_eq!(wl_after.companies[0].bucket, Bucket::Core);
+
+            // Move back to Watch, complete Feynman sign-off, then promote directly without gate.
+            store.request_bucket_change("HRMY", Bucket::Watch);
+            assert_eq!(store.pending_graduation_ticker.get_untracked(), None);
+            apply_feynman_sign_off(
+                &paths_check,
+                "HRMY",
+                "Durable narcolepsy franchise".into(),
+                vec!["Wakix Rx volume declines YoY".into()],
+                "2026-11-26".into(),
+            )
+            .expect("sign off");
+
+            store.request_bucket_change("HRMY", Bucket::Core);
+            assert_eq!(store.pending_graduation_ticker.get_untracked(), None);
+            let wl_final = load_watchlist(&paths_check).expect("load watchlist");
+            assert_eq!(wl_final.companies[0].bucket, Bucket::Core);
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn falsification_metric_crud_persists_deduplicated_metrics() {
+    use m3_core::store::load_dossier;
+
+    let root = temp_workspace("falsification_crud");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+    let paths_check = paths.clone();
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            store.selected_ticker.set("AAPL".to_owned());
+            store.add_falsification_metric("AAPL", "Gross margin < 42% for 2 quarters");
+            store.add_falsification_metric("AAPL", "Gross margin < 42% for 2 quarters");
+            store.add_falsification_metric("AAPL", "SBC / OCF > 15%");
+
+            let dos = load_dossier(&paths_check, "AAPL")
+                .expect("load dossier")
+                .expect("dossier created");
+            assert_eq!(
+                dos.human_judgment.falsification_metrics,
+                vec![
+                    "Gross margin < 42% for 2 quarters".to_owned(),
+                    "SBC / OCF > 15%".to_owned(),
+                ]
+            );
+            assert_eq!(
+                store
+                    .selected_dossier
+                    .get_untracked()
+                    .map(|d| d.human_judgment.falsification_metrics),
+                Some(vec![
+                    "Gross margin < 42% for 2 quarters".to_owned(),
+                    "SBC / OCF > 15%".to_owned(),
+                ])
+            );
+
+            store.remove_falsification_metric("AAPL", 0);
+            let dos_after = load_dossier(&paths_check, "AAPL")
+                .expect("load dossier")
+                .expect("dossier exists");
+            assert_eq!(
+                dos_after.human_judgment.falsification_metrics,
+                vec!["SBC / OCF > 15%".to_owned()]
+            );
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn inbox_view_mode_and_noise_collapse_defaults_and_toggle() {
+    use crate::stores::InboxViewMode;
+
+    let root = temp_workspace("inbox_defaults");
+    let paths = WorkspacePaths::from_root(root.clone());
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            assert_eq!(
+                store.inbox_view_mode.get_untracked(),
+                InboxViewMode::Briefing
+            );
+            assert!(!store.inbox_noise_expanded.get_untracked());
+
+            store.set_inbox_view_mode(InboxViewMode::Stream);
+            assert_eq!(store.inbox_view_mode.get_untracked(), InboxViewMode::Stream);
+
+            store.toggle_inbox_noise_expanded();
+            assert!(store.inbox_noise_expanded.get_untracked());
+            store.toggle_inbox_noise_expanded();
+            assert!(!store.inbox_noise_expanded.get_untracked());
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn save_proactive_settings_persists_to_budget_json() {
+    use m3_core::budget::load_budget_config;
+
+    let root = temp_workspace("proactive_settings");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+    let paths_check = paths.clone();
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            store.save_proactive_settings(false, 20, 2, 12);
+            let cfg = load_budget_config(&paths_check).expect("load budget.json");
+            assert!(!cfg.proactive_triage_enabled);
+            assert_eq!(cfg.daily_triage_quota, 20);
+            assert_eq!(cfg.daily_briefing_summary_quota, 2);
+            assert_eq!(cfg.background_refresh_hours, 12);
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

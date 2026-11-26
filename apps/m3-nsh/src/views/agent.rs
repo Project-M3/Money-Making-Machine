@@ -7,11 +7,12 @@ use crate::format::{build_alan_interrogation_prompt_for, fmt_time_cn_for};
 use crate::icons::{ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, icon};
 use crate::platform_desktop::copy_text_with_notice;
 use crate::stores::{
-    AgentMessageRole, AppStore, CompanyViewTab, DeepResearchPerspectiveUi, MemoSection,
-    PerspectiveUiStatus, default_deep_research_perspectives,
+    AgentMessageRole, AppStore, CompanyViewTab, DeepResearchPerspectiveUi, FeynmanRound,
+    FeynmanScope, MemoSection, PerspectiveUiStatus, default_deep_research_perspectives,
 };
 use crate::theme::*;
 use m3_core::alan_interrogator::{AcmeEvidenceKind, TuringTapeKind};
+use m3_core::feynman;
 use m3_core::i18n::UiLang;
 use m3_core::lake_l2::ResearchRunStatus;
 use m3_core::model::{Bucket, MungerReport};
@@ -30,6 +31,7 @@ pub fn agent_view(store: AppStore) -> impl IntoElement {
             .flex_col()
             .gap(px(16.0))
             .child(deep_research_console(store, focus_draft))
+            .child(feynman_coach_panel(store, false))
             .child(cross_company_context_strip(store))
             .child(living_research_memo_card(store, false))
             .child(research_runs_history_card(store))
@@ -1065,20 +1067,35 @@ fn embedded_alan_console(store: AppStore, tape_drawer_open: Signal<bool>) -> Vie
                     move || store.interrupt_alan(),
                 ));
             } else {
-                actions = actions.child(action_button(
-                    l.t("费曼审讯", "Feynman Interrogation"),
-                    true,
-                    move || {
-                        if let Some(rep) = current_report_untracked(store) {
-                            store.start_feynman_interrogation(&rep.ticker, &rep.name, rep.bucket);
-                        } else {
-                            let t = store.selected_ticker.get_untracked();
-                            if !t.is_empty() {
-                                store.start_feynman_interrogation(&t, &t, Bucket::Watch);
+                let feynman_tk = ticker.clone();
+                actions = actions
+                    .child(action_button(
+                        l.t("3 轮费曼答辩", "3-Round Feynman Coach"),
+                        true,
+                        move || {
+                            if !feynman_tk.is_empty() {
+                                store.start_company_feynman(&feynman_tk);
                             }
-                        }
-                    },
-                ));
+                        },
+                    ))
+                    .child(action_button(
+                        l.t("费曼审讯", "Feynman Interrogation"),
+                        false,
+                        move || {
+                            if let Some(rep) = current_report_untracked(store) {
+                                store.start_feynman_interrogation(
+                                    &rep.ticker,
+                                    &rep.name,
+                                    rep.bucket,
+                                );
+                            } else {
+                                let t = store.selected_ticker.get_untracked();
+                                if !t.is_empty() {
+                                    store.start_feynman_interrogation(&t, &t, Bucket::Watch);
+                                }
+                            }
+                        },
+                    ));
             }
             if has_history {
                 actions = actions.child(action_button(l.t("清空", "Reset"), false, move || {
@@ -1874,4 +1891,753 @@ fn dossier_staff_draft_section(store: AppStore) -> View {
                 })),
         )
     }))
+}
+
+fn is_feynman_panel_visible(store: AppStore, is_industry: bool) -> bool {
+    if !store.feynman_mode_active.get() {
+        return false;
+    }
+    match (is_industry, store.feynman_scope.get()) {
+        (false, Some(FeynmanScope::Company { ticker })) => {
+            store.selected_ticker.get().eq_ignore_ascii_case(&ticker)
+        }
+        (true, Some(FeynmanScope::Industry { slug })) => {
+            store.selected_industry_slug.get().as_deref() == Some(slug.as_str())
+        }
+        _ => false,
+    }
+}
+
+/// Interactive 3-Round Socratic Feynman Coach & Human Sign-Off panel shared between
+/// Company Desk (`2 Deep Research & Alan`) and Industry Studio (`⌘3`).
+pub(crate) fn feynman_coach_panel(store: AppStore, is_industry: bool) -> View {
+    let draft_metric_input = signal(String::new());
+    let show_archive = signal(false);
+
+    view().child(when(
+        move || is_feynman_panel_visible(store, is_industry),
+        move || {
+            obsidian_card()
+                .p(px(18.0))
+                .border_color(rgba(VIOLET_BORDER))
+                .flex()
+                .flex_col()
+                .gap(px(14.0))
+                // 1. Header, Scope, Progress Stepper, Prior Turns & Active Question
+                .child(dynamic(move || {
+                    let l = store.lang.get();
+                    let Some(scope) = store.feynman_scope.get() else {
+                        return view();
+                    };
+                    let active_round_num = store.feynman_round.get().clamp(1, 3);
+                    let turns = store.feynman_turns.get();
+                    let busy = store.feynman_busy.get();
+
+                    let (scope_badge, subject_label) = match &scope {
+                        FeynmanScope::Company { ticker } => {
+                            let name = store.reports.with(|reps| {
+                                reps.iter()
+                                    .find(|r| r.ticker.eq_ignore_ascii_case(ticker))
+                                    .map(|r| format!("{} ({})", r.ticker, r.name))
+                            });
+                            (
+                                format!("COMPANY · {ticker}"),
+                                name.unwrap_or_else(|| ticker.clone()),
+                            )
+                        }
+                        FeynmanScope::Industry { slug } => {
+                            let title = store.industries.with(|list| {
+                                list.iter()
+                                    .find(|p| p.slug == *slug)
+                                    .map(|p| p.title.clone())
+                            });
+                            (
+                                format!("INDUSTRY · {slug}"),
+                                title.unwrap_or_else(|| slug.clone()),
+                            )
+                        }
+                    };
+
+                    let mut col = view()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .child(
+                            view()
+                                .pb(px(10.0))
+                                .border_b_1()
+                                .border_color(rgb(BORDER_HAIRLINE))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .flex_wrap()
+                                .gap(px(8.0))
+                                .child(
+                                    view()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .flex_wrap()
+                                        .gap(px(8.0))
+                                        .child(
+                                            view()
+                                                .w(px(7.0))
+                                                .h(px(7.0))
+                                                .rounded_full()
+                                                .bg(rgb(VIOLET_FG)),
+                                        )
+                                        .child(
+                                            text(l.t(
+                                                "3 轮费曼答辩教练 · Alan",
+                                                "3-Round Feynman Coach · Alan",
+                                            ))
+                                            .font_family(FONT_UI)
+                                            .text_size(px(TEXT_MD))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(INK_HERO)),
+                                        )
+                                        .child(badge_pill(
+                                            scope_badge,
+                                            VIOLET_FG,
+                                            VIOLET_BG,
+                                            VIOLET_BORDER,
+                                        ))
+                                        .child(if busy {
+                                            badge_pill(
+                                                l.t("Alan 正在推敲点评…", "Alan critiquing…")
+                                                    .to_owned(),
+                                                SKY_FG,
+                                                SKY_BG,
+                                                SKY_BORDER,
+                                            )
+                                        } else {
+                                            badge_pill(
+                                                match l {
+                                                    UiLang::Zh => {
+                                                        format!("进度 {}/3 轮", turns.len().min(3))
+                                                    }
+                                                    UiLang::En => {
+                                                        format!("Round {}/3 done", turns.len().min(3))
+                                                    }
+                                                },
+                                                if turns.len() >= 3 {
+                                                    EMERALD_FG
+                                                } else {
+                                                    GOLD_FG
+                                                },
+                                                if turns.len() >= 3 {
+                                                    EMERALD_BG
+                                                } else {
+                                                    GOLD_BG
+                                                },
+                                                if turns.len() >= 3 {
+                                                    EMERALD_BORDER
+                                                } else {
+                                                    GOLD_BORDER
+                                                },
+                                            )
+                                        }),
+                                )
+                                .child(action_button(
+                                    l.t("退出答辩", "Exit Coach"),
+                                    false,
+                                    move || store.exit_feynman_mode(),
+                                )),
+                        )
+                        // 3-Round Stepper
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .flex_wrap()
+                                .gap(px(8.0))
+                                .children(FeynmanRound::ALL.into_iter().map(|r| {
+                                    let r_num = r.as_u8();
+                                    let is_done = turns.iter().any(|t| t.round == r_num);
+                                    let is_curr = r_num == active_round_num && turns.len() < 3;
+                                    let (fg, bg, br) = if is_done {
+                                        (EMERALD_FG, EMERALD_BG, EMERALD_BORDER)
+                                    } else if is_curr {
+                                        (VIOLET_FG, VIOLET_BG, VIOLET_BORDER)
+                                    } else {
+                                        (INK_MUTED, BG_WELL, BORDER_SUBTLE)
+                                    };
+                                    let prefix = if is_done { "✓ " } else { "" };
+                                    let r_target = r_num;
+                                    view()
+                                        .flex_1()
+                                        .min_w(px(180.0))
+                                        .px(px(10.0))
+                                        .py(px(8.0))
+                                        .rounded_sm()
+                                        .bg(rgba(bg))
+                                        .border_1()
+                                        .border_color(rgba(br))
+                                        .cursor_pointer()
+                                        .on_press(move || store.feynman_round.set(r_target))
+                                        .child(
+                                            text(format!("{prefix}{}", r.title_for(l)))
+                                                .font_family(FONT_UI)
+                                                .text_size(px(TEXT_XS))
+                                                .font_weight(if is_curr || is_done {
+                                                    FontWeight::SEMIBOLD
+                                                } else {
+                                                    FontWeight::NORMAL
+                                                })
+                                                .text_color(rgb(fg)),
+                                        )
+                                })),
+                        );
+
+                    // Prior turns with Alan critiques, blind spots & suggested metrics
+                    if !turns.is_empty() {
+                        let mut turns_col = view().flex().flex_col().gap(px(10.0));
+                        for turn in &turns {
+                            let round_lbl = feynman::FeynmanRound::from_u8(turn.round)
+                                .map(|r| r.title_for(l).to_owned())
+                                .unwrap_or_else(|| format!("Round {}", turn.round));
+                            let mut turn_card = view()
+                                .p(px(12.0))
+                                .rounded_md()
+                                .bg(rgb(BG_VIEWPORT))
+                                .border_1()
+                                .border_color(rgb(BORDER_HAIRLINE))
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.0))
+                                .child(
+                                    text(round_lbl)
+                                        .font_family(FONT_MONO_TERM)
+                                        .text_size(px(TEXT_XS))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(EMERALD_FG)),
+                                )
+                                .child(
+                                    text(match l {
+                                        UiLang::Zh => format!("你的回答：{}", turn.human_answer),
+                                        UiLang::En => format!("Your answer: {}", turn.human_answer),
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_SM))
+                                    .line_height(px(19.0))
+                                    .text_color(rgb(INK_PRIMARY)),
+                                )
+                                .child(
+                                    view()
+                                        .p(px(10.0))
+                                        .rounded_sm()
+                                        .bg(rgb(BG_WELL))
+                                        .border_1()
+                                        .border_color(rgba(VIOLET_BORDER))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.0))
+                                        .child(
+                                            text("ALAN CRITIQUE")
+                                                .font_family(FONT_MONO_TERM)
+                                                .text_size(px(TEXT_2XS))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(rgb(VIOLET_FG)),
+                                        )
+                                        .child(
+                                            text(turn.alan_critique.clone())
+                                                .font_family(FONT_UI)
+                                                .text_size(px(TEXT_SM))
+                                                .line_height(px(19.0))
+                                                .text_color(rgb(INK_PRIMARY)),
+                                        ),
+                                );
+
+                            if !turn.blind_spots.is_empty() {
+                                turn_card = turn_card.child(
+                                    view()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(3.0))
+                                        .child(
+                                            text(l.t("潜在盲区：", "Blind Spots:"))
+                                                .font_family(FONT_UI)
+                                                .text_size(px(TEXT_2XS))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(rgb(GOLD_FG)),
+                                        )
+                                        .children(turn.blind_spots.iter().map(|b| {
+                                            text(format!("• {b}"))
+                                                .font_family(FONT_UI)
+                                                .text_size(px(TEXT_XS))
+                                                .text_color(rgb(INK_SECONDARY))
+                                        })),
+                                );
+                            }
+
+                            if !turn.suggested_metrics.is_empty() {
+                                turn_card = turn_card.child(
+                                    view()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.0))
+                                        .child(
+                                            text(l.t(
+                                                "Alan 建议的事前证伪指标：",
+                                                "Suggested Falsification Metrics:",
+                                            ))
+                                            .font_family(FONT_UI)
+                                            .text_size(px(TEXT_2XS))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(SKY_FG)),
+                                        )
+                                        .children(turn.suggested_metrics.iter().map(|m| {
+                                            let m_adopt = m.clone();
+                                            view()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .justify_between()
+                                                .gap(px(8.0))
+                                                .child(
+                                                    view().flex_1().min_w(px(0.0)).child(
+                                                        text(format!("+ {m}"))
+                                                            .font_family(FONT_UI)
+                                                            .text_size(px(TEXT_XS))
+                                                            .text_color(rgb(INK_PRIMARY)),
+                                                    ),
+                                                )
+                                                .child(action_button(
+                                                    l.t("采纳", "Adopt"),
+                                                    false,
+                                                    move || {
+                                                        store.adopt_suggested_falsification_metric(
+                                                            &m_adopt,
+                                                        );
+                                                    },
+                                                ))
+                                        })),
+                                );
+                            }
+
+                            turns_col = turns_col.child(turn_card);
+                        }
+                        col = col.child(turns_col);
+                    }
+
+                    // Active Socratic Question Prompt
+                    if turns.len() < 3
+                        && let Some(round) = FeynmanRound::from_u8(active_round_num)
+                    {
+                        let prompt =
+                            feynman::round_question_prompt(&scope, round, &subject_label, l);
+                        col = col.child(
+                            view()
+                                .p(px(14.0))
+                                .rounded_md()
+                                .bg(rgba(VIOLET_BG))
+                                .border_1()
+                                .border_color(rgba(VIOLET_BORDER))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0))
+                                .child(
+                                    text(round.title_for(l))
+                                        .font_family(FONT_MONO_TERM)
+                                        .text_size(px(TEXT_XS))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(VIOLET_FG)),
+                                )
+                                .child(
+                                    text(prompt)
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_BASE))
+                                        .line_height(px(21.0))
+                                        .text_color(rgb(INK_HERO)),
+                                ),
+                        );
+                    }
+
+                    col
+                }))
+                // 2. Multiline Answer Input (compatible with macOS Dictation) mounted outside dynamic()
+                .child(when(
+                    move || store.feynman_turns.with(|t| t.len() < 3),
+                    move || {
+                        view()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .child(
+                                styled_input(
+                                    move || store.feynman_input.get(),
+                                    move || {
+                                        store
+                                            .lang
+                                            .get()
+                                            .t(
+                                                "用大白话写下你的推理与边界（支持 macOS 原生语音听写 Dictation）…",
+                                                "Write your plain-language reasoning (supports macOS native Dictation)…",
+                                            )
+                                            .to_owned()
+                                    },
+                                    false,
+                                )
+                                .multiline(true)
+                                .min_h(px(96.0))
+                                .w_full()
+                                .on_change(move |val: &str| store.feynman_input.set(val.to_owned())),
+                            )
+                            .child(
+                                view()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(10.0))
+                                    .child(
+                                        text(move || {
+                                            store
+                                                .lang
+                                                .get()
+                                                .t(
+                                                    "提示：可按 macOS 听写快捷键口述，再由 Alan 逐轮追问盲区。",
+                                                    "Tip: Use macOS Dictation to speak your thesis; Alan will challenge blind spots each round.",
+                                                )
+                                                .to_owned()
+                                        })
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_XS))
+                                        .text_color(rgb(INK_MUTED)),
+                                    )
+                                    .child(action_button(
+                                        move || {
+                                            let l = store.lang.get();
+                                            if store.feynman_busy.get() {
+                                                l.t("Alan 评估中…", "Evaluating…").to_owned()
+                                            } else {
+                                                l.t("提交本轮回答", "Submit Round").to_owned()
+                                            }
+                                        },
+                                        true,
+                                        move || store.submit_feynman_round(),
+                                    )),
+                            )
+                    },
+                ))
+                // 3. Final Sign-Off Card when 3 rounds are complete
+                .child(when(
+                    move || store.feynman_turns.with(|t| t.len() >= 3),
+                    move || {
+                        view()
+                            .p(px(14.0))
+                            .rounded_md()
+                            .bg(rgba(EMERALD_BG))
+                            .border_1()
+                            .border_color(rgba(EMERALD_BORDER))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.0))
+                            .child(
+                                view()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        text(move || {
+                                            store
+                                                .lang
+                                                .get()
+                                                .t(
+                                                    "3 轮答辩已完成 · 人类最终签字归档",
+                                                    "3 Rounds Complete · Human Final Sign-Off",
+                                                )
+                                                .to_owned()
+                                        })
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_SM))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(EMERALD_FG)),
+                                    )
+                                    .child(badge_pill(
+                                        move || {
+                                            store
+                                                .lang
+                                                .get()
+                                                .t("仅本人签字生效", "HUMAN SIGN-OFF")
+                                                .to_owned()
+                                        },
+                                        EMERALD_FG,
+                                        EMERALD_BG,
+                                        EMERALD_BORDER,
+                                    )),
+                            )
+                            .child(
+                                view()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(
+                                        text(move || {
+                                            store
+                                                .lang
+                                                .get()
+                                                .t("我的核心判词 (my_stance)", "My Stance (my_stance)")
+                                                .to_owned()
+                                        })
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_XS))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(INK_PRIMARY)),
+                                    )
+                                    .child(
+                                        styled_input(
+                                            move || store.feynman_draft_stance.get(),
+                                            move || {
+                                                store
+                                                    .lang
+                                                    .get()
+                                                    .t(
+                                                        "总结你的最终能力圈判断与估值纪律…",
+                                                        "Summarize your final circle conviction and valuation discipline…",
+                                                    )
+                                                    .to_owned()
+                                            },
+                                            false,
+                                        )
+                                        .multiline(true)
+                                        .min_h(px(72.0))
+                                        .w_full()
+                                        .on_change(move |val: &str| {
+                                            store.feynman_draft_stance.set(val.to_owned());
+                                        }),
+                                    ),
+                            )
+                            .child(dynamic(move || {
+                                let l = store.lang.get();
+                                let metrics = store.feynman_draft_metrics.get();
+                                let mut suggested_pool: Vec<String> = Vec::new();
+                                store.feynman_turns.with(|turns| {
+                                    for t in turns {
+                                        for m in &t.suggested_metrics {
+                                            let trimmed = m.trim();
+                                            if !trimmed.is_empty()
+                                                && !metrics.iter().any(|e| e.trim() == trimmed)
+                                                && !suggested_pool.iter().any(|s| s == trimmed)
+                                            {
+                                                suggested_pool.push(trimmed.to_owned());
+                                            }
+                                        }
+                                    }
+                                });
+
+                                let mut col = view()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.0))
+                                    .child(
+                                        text(l.t(
+                                            "签字写入的事前证伪指标 (falsification_metrics)",
+                                            "Falsification Metrics to Commit",
+                                        ))
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_XS))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(INK_PRIMARY)),
+                                    );
+
+                                if metrics.is_empty() {
+                                    col = col.child(
+                                        text(l.t(
+                                            "（尚未添加；可在下方输入或从 Alan 建议中采纳）",
+                                            "(None yet; add below or adopt from Alan's suggestions)",
+                                        ))
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_XS))
+                                        .text_color(rgb(INK_MUTED)),
+                                    );
+                                } else {
+                                    for (idx, m) in metrics.into_iter().enumerate() {
+                                        col = col.child(
+                                            view()
+                                                .px(px(10.0))
+                                                .py(px(5.0))
+                                                .rounded_sm()
+                                                .bg(rgb(BG_VIEWPORT))
+                                                .border_1()
+                                                .border_color(rgb(BORDER_HAIRLINE))
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .justify_between()
+                                                .gap(px(8.0))
+                                                .child(
+                                                    view().flex_1().min_w(px(0.0)).child(
+                                                        text(format!("• {m}"))
+                                                            .font_family(FONT_UI)
+                                                            .text_size(px(TEXT_XS))
+                                                            .text_color(rgb(INK_PRIMARY)),
+                                                    ),
+                                                )
+                                                .child(action_button(
+                                                    l.t("移除", "Remove"),
+                                                    false,
+                                                    move || store.remove_feynman_draft_metric(idx),
+                                                )),
+                                        );
+                                    }
+                                }
+
+                                if !suggested_pool.is_empty() {
+                                    col = col.child(
+                                        view()
+                                            .pt(px(4.0))
+                                            .flex()
+                                            .flex_row()
+                                            .flex_wrap()
+                                            .gap(px(6.0))
+                                            .children(suggested_pool.into_iter().map(|m| {
+                                                let m_adopt = m.clone();
+                                                action_button(
+                                                    format!("+ {}", m),
+                                                    false,
+                                                    move || store.add_feynman_draft_metric(&m_adopt),
+                                                )
+                                            })),
+                                    );
+                                }
+                                col
+                            }))
+                            .child(
+                                view()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        styled_input(
+                                            move || draft_metric_input.get(),
+                                            move || {
+                                                store
+                                                    .lang
+                                                    .get()
+                                                    .t(
+                                                        "补充签字证伪指标…",
+                                                        "Add falsification metric for sign-off…",
+                                                    )
+                                                    .to_owned()
+                                            },
+                                            false,
+                                        )
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .on_change(move |val: &str| {
+                                            draft_metric_input.set(val.to_owned());
+                                        })
+                                        .on_submit(move |val: &str| {
+                                            let trimmed = val.trim().to_owned();
+                                            if !trimmed.is_empty() {
+                                                store.add_feynman_draft_metric(&trimmed);
+                                                draft_metric_input.set(String::new());
+                                            }
+                                        }),
+                                    )
+                                    .child(action_button(
+                                        move || store.lang.get().t("添加", "Add").to_owned(),
+                                        false,
+                                        move || {
+                                            let trimmed =
+                                                draft_metric_input.get_untracked().trim().to_owned();
+                                            if !trimmed.is_empty() {
+                                                store.add_feynman_draft_metric(&trimmed);
+                                                draft_metric_input.set(String::new());
+                                            }
+                                        },
+                                    )),
+                            )
+                            .child(
+                                view()
+                                    .pt(px(4.0))
+                                    .flex()
+                                    .flex_row()
+                                    .justify_end()
+                                    .child(action_button(
+                                        move || {
+                                            store
+                                                .lang
+                                                .get()
+                                                .t(
+                                                    "确认签字 · 写入判断与证伪指标",
+                                                    "Sign Off · Save Judgment & Metrics",
+                                                )
+                                                .to_owned()
+                                        },
+                                        true,
+                                        move || store.sign_off_feynman_defense(),
+                                    )),
+                            )
+                    },
+                ))
+                // 4. Archive History Preview
+                .child(dynamic(move || {
+                    let l = store.lang.get();
+                    let archive = store.feynman_archive_markdown.get();
+                    if archive.trim().is_empty() {
+                        return view();
+                    }
+                    let expanded = show_archive.get();
+                    let mut arch = view()
+                        .pt(px(8.0))
+                        .border_t_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.0))
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .cursor_pointer()
+                                .on_press(move || show_archive.update(|v| *v = !*v))
+                                .child(
+                                    text(l.t(
+                                        "历史费曼答辩归档 (Markdown)",
+                                        "Feynman Defense Archive (Markdown)",
+                                    ))
+                                    .font_family(FONT_MONO_TERM)
+                                    .text_size(px(TEXT_XS))
+                                    .text_color(rgb(INK_SECONDARY)),
+                                )
+                                .child(
+                                    text(if expanded {
+                                        l.t("收起", "Collapse")
+                                    } else {
+                                        l.t("展开查看", "Expand")
+                                    })
+                                    .font_family(FONT_MONO_TERM)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_MUTED)),
+                                ),
+                        );
+                    if expanded {
+                        arch = arch.child(
+                            view()
+                                .p(px(12.0))
+                                .rounded_sm()
+                                .bg(rgb(BG_VIEWPORT))
+                                .border_1()
+                                .border_color(rgb(BORDER_HAIRLINE))
+                                .child(
+                                    text(archive)
+                                        .font_family(FONT_MONO_TERM)
+                                        .text_size(px(TEXT_2XS))
+                                        .line_height(px(17.0))
+                                        .text_color(rgb(INK_SECONDARY))
+                                        .selectable(true),
+                                ),
+                        );
+                    }
+                    arch
+                }))
+        },
+    ))
 }

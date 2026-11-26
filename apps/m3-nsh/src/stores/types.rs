@@ -1,10 +1,15 @@
 //! Reactive store domain types and UI state structs for `m3-nsh`.
 
 use m3_core::alan_interrogator::AcmeEvidenceToken;
+pub use m3_core::feynman::{FeynmanRound, FeynmanScope, FeynmanTurn};
 use m3_core::i18n::UiLang;
 use m3_core::lake::{UniverseFilter, UniverseRow, UniverseSortBy};
 use m3_core::lake_l1::SimilarSearchFilter;
 use m3_core::model::Bucket;
+pub use m3_core::proactive::{
+    BriefingPeriod, CircleBriefing, FilingDeltaItem, SignalTriageRecord, StrikeRadarItem,
+    TriageQuote, TriageVerdict, WatchdogHitItem,
+};
 use m3_core::research::DeepResearchPerspective;
 use m3_core::update::ReleaseChannel;
 use rust_decimal::Decimal;
@@ -168,6 +173,27 @@ pub struct PaletteItem {
     pub shortcut: Option<&'static str>,
     pub dot_color: u32,
     pub action: PaletteAction,
+}
+
+/// Subview mode inside the Briefing Inbox (`⌘1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InboxViewMode {
+    #[default]
+    Briefing,
+    Stream,
+}
+
+impl InboxViewMode {
+    pub const fn all() -> [Self; 2] {
+        [Self::Briefing, Self::Stream]
+    }
+
+    pub fn label_for(self, lang: UiLang) -> &'static str {
+        match self {
+            Self::Briefing => lang.t("简报", "Briefing"),
+            Self::Stream => lang.t("事件流", "Stream"),
+        }
+    }
 }
 
 /// Filter tabs shown in the Event-Driven Inbox bar.
@@ -512,7 +538,7 @@ pub struct ScatterPlotModel {
     pub watch_count: usize,
 }
 
-/// Chat role in EmbeddedAlan / Industry Tutor panels.
+/// Chat role in Alan / Industry Tutor panels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentMessageRole {
     User,
@@ -520,7 +546,7 @@ pub enum AgentMessageRole {
     SystemNote,
 }
 
-/// Chat message rendered in EmbeddedAlan / Industry Tutor panels.
+/// Chat message rendered in Alan / Industry Tutor panels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentUiMessage {
     pub id: String,
@@ -531,7 +557,7 @@ pub struct AgentUiMessage {
     pub streaming: bool,
 }
 
-/// Routes EmbeddedAlan replies to either Company Research Desk or Industry Tutor.
+/// Routes Alan replies to either Company Research Desk or Industry Tutor.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AlanReplyTarget {
     #[default]

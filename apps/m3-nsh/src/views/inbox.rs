@@ -1,8 +1,8 @@
 //! Event-Driven L1 Briefing Inbox view (`⌘1`).
 
 use crate::components::{
-    action_button, badge_pill, cmd_kbd_corner, kbd, obsidian_card, section_header, v_divider,
-    view_filter_strip, view_header_strip,
+    action_button, badge_pill, cmd_kbd_corner, kbd, obsidian_card, section_header, seg_group,
+    seg_tab, v_divider, view_filter_strip, view_header_strip,
 };
 use crate::format::{
     budget_watermark_summary_for, count_inbox_filter, filter_inbox_signals, fmt_money_compact,
@@ -10,7 +10,10 @@ use crate::format::{
     signal_kind_badge_for, signal_status_badge_for,
 };
 use crate::platform_desktop::{copy_text_with_notice, open_external_url};
-use crate::stores::{AppStore, InboxFilter};
+use crate::stores::{
+    AppStore, BriefingPeriod, CircleBriefing, CompanyViewTab, InboxFilter, InboxViewMode,
+    SignalTriageRecord, TriageQuote, TriageVerdict,
+};
 use crate::theme::*;
 use crate::views::onboarding::onboarding_card;
 use m3_core::i18n::UiLang;
@@ -20,6 +23,7 @@ use m3_core::lake_l1::{SignalEvidence, SignalInboxRow, SignalStatus};
 use m3_core::model::WarningSeverity;
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 
 /// Renders the Event-Driven L1 Briefing Inbox (`⌘1`).
 pub fn inbox_view(store: AppStore) -> impl IntoElement {
@@ -31,7 +35,10 @@ pub fn inbox_view(store: AppStore) -> impl IntoElement {
         .flex_col()
         .overflow_hidden()
         .child(render_inbox_kpi_ribbon(store))
-        .child(render_inbox_filter_bar(store))
+        .child(when(
+            move || store.inbox_view_mode.get() == InboxViewMode::Stream,
+            move || render_inbox_filter_bar(store),
+        ))
         .child(when(
             move || store.inbox_error.with(|e| e.is_some()),
             move || {
@@ -143,16 +150,43 @@ fn render_inbox_kpi_ribbon(store: AppStore) -> View {
                 .items_center()
                 .gap(px(8.0))
                 .child(when(
-                    move || store.inbox_catching_up.get(),
+                    move || store.inbox_catching_up.get() || store.proactive_running.get(),
                     move || {
-                        text(move || store.inbox_catchup_progress.get().unwrap_or_default())
-                            .font_family(FONT_MONO_TERM)
-                            .text_size(px(TEXT_XS))
-                            .text_color(rgb(SKY_FG))
-                            .truncate()
-                            .number_of_lines(1)
+                        text(move || {
+                            store.inbox_catchup_progress.get().unwrap_or_else(|| {
+                                store
+                                    .lang
+                                    .get()
+                                    .t("Alan 巡检中…", "Proactive Alan…")
+                                    .to_owned()
+                            })
+                        })
+                        .font_family(FONT_MONO_TERM)
+                        .text_size(px(TEXT_XS))
+                        .text_color(rgb(SKY_FG))
+                        .truncate()
+                        .number_of_lines(1)
                     },
                 ))
+                .child(dynamic(move || {
+                    let l = store.lang.get();
+                    let mode = store.inbox_view_mode.get();
+                    seg_group()
+                        .child(seg_tab(
+                            InboxViewMode::Briefing.label_for(l),
+                            mode == InboxViewMode::Briefing,
+                            Some((EMERALD_FG, EMERALD_BG)),
+                            false,
+                            move || store.set_inbox_view_mode(InboxViewMode::Briefing),
+                        ))
+                        .child(seg_tab(
+                            InboxViewMode::Stream.label_for(l),
+                            mode == InboxViewMode::Stream,
+                            None,
+                            false,
+                            move || store.set_inbox_view_mode(InboxViewMode::Stream),
+                        ))
+                }))
                 .child(action_button(
                     move || {
                         let l = store.lang.get();
@@ -269,6 +303,823 @@ fn render_inbox_filter_bar(store: AppStore) -> View {
 
 fn render_inbox_body(store: AppStore) -> View {
     let l = store.lang.get();
+    match store.inbox_view_mode.get() {
+        InboxViewMode::Briefing => render_briefing_view(store, l),
+        InboxViewMode::Stream => render_stream_view(store, l),
+    }
+}
+
+fn render_briefing_view(store: AppStore, l: UiLang) -> View {
+    let show_onboarding = store.should_show_onboarding();
+    let period = store.briefing_period.get();
+    let briefings = store.briefings.get();
+    let proactive_running = store.proactive_running.get();
+    let selected_id = store.selected_briefing_id.get();
+
+    let period_briefings: Vec<&CircleBriefing> =
+        briefings.iter().filter(|b| b.period == period).collect();
+    let active_briefing: Option<&CircleBriefing> = selected_id
+        .as_deref()
+        .and_then(|id| {
+            period_briefings
+                .iter()
+                .find(|b| b.briefing_id == id)
+                .copied()
+        })
+        .or_else(|| period_briefings.first().copied())
+        .or_else(|| {
+            selected_id
+                .as_deref()
+                .and_then(|id| briefings.iter().find(|b| b.briefing_id == id))
+        })
+        .or_else(|| briefings.first());
+
+    let left_controls = view()
+        .p(px(14.0))
+        .border_b_1()
+        .border_color(rgb(BORDER_HAIRLINE))
+        .bg(rgb(BG_SURFACE))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(
+                    text(l.t("简报周期", "Cadence"))
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_XS))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(INK_SECONDARY)),
+                )
+                .child(
+                    seg_group()
+                        .child(seg_tab(
+                            l.t("日简报", "Daily"),
+                            period == BriefingPeriod::Daily,
+                            Some((EMERALD_FG, EMERALD_BG)),
+                            false,
+                            move || store.set_briefing_period(BriefingPeriod::Daily),
+                        ))
+                        .child(seg_tab(
+                            l.t("周简报", "Weekly"),
+                            period == BriefingPeriod::Weekly,
+                            Some((SKY_FG, SKY_BG)),
+                            false,
+                            move || store.set_briefing_period(BriefingPeriod::Weekly),
+                        )),
+                ),
+        )
+        .child(
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .flex_wrap()
+                .gap(px(8.0))
+                .child(action_button(
+                    if proactive_running {
+                        l.t("生成中…", "Generating…")
+                    } else {
+                        l.t("立即生成简报", "Generate Briefing")
+                    },
+                    true,
+                    move || store.generate_briefing_now(period, true),
+                ))
+                .child(action_button(
+                    if proactive_running {
+                        l.t("巡检中…", "Checking…")
+                    } else {
+                        l.t("巡检能力圈", "Catch Up Circle")
+                    },
+                    false,
+                    move || store.run_proactive_catchup(),
+                )),
+        );
+
+    let timeline_list = if period_briefings.is_empty() {
+        view().p(px(16.0)).child(
+            text(l.t(
+                "当前周期暂无历史简报。点击上方「立即生成简报」生成当前能力圈简报（静默期 0 LLM Token）。",
+                "No saved briefings for this period yet. Click Generate Briefing above (0 LLM tokens in quiet periods).",
+            ))
+            .font_family(FONT_UI)
+            .text_size(px(TEXT_XS))
+            .line_height(px(18.0))
+            .text_color(rgb(INK_MUTED)),
+        )
+    } else {
+        let active_bid = active_briefing.map(|b| b.briefing_id.as_str());
+        view()
+            .flex()
+            .flex_col()
+            .children(period_briefings.into_iter().enumerate().map(|(idx, b)| {
+                let is_selected = active_bid == Some(b.briefing_id.as_str());
+                let bid = b.briefing_id.clone();
+                let has_alerts = b
+                    .watchdog_hits
+                    .iter()
+                    .any(|h| h.verdict == TriageVerdict::FalsificationAlert);
+                let dot_col = if has_alerts {
+                    CORAL_FG
+                } else if b.is_quiet {
+                    INK_MUTED
+                } else {
+                    EMERALD_FG
+                };
+                let mut row = view()
+                    .px(px(14.0))
+                    .py(px(12.0))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .cursor_pointer()
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .on_press(move || store.select_briefing(&bid));
+                if is_selected {
+                    row = row.bg(rgb(BG_SELECTED_ROW));
+                } else {
+                    row = row
+                        .bg(rgb(if idx % 2 == 1 {
+                            BG_ROW_ALT
+                        } else {
+                            BG_VIEWPORT
+                        }))
+                        .hover(|s| s.bg(rgb(BG_HOVER)));
+                }
+                row.child(
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(6.0))
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(view().w(px(6.0)).h(px(6.0)).rounded_full().bg(rgb(dot_col)))
+                                .child(
+                                    text(b.period_key.clone())
+                                        .font_family(FONT_MONO_NUM)
+                                        .text_size(px(TEXT_XS))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(INK_HERO)),
+                                ),
+                        )
+                        .child(
+                            text(fmt_time_cn_for(Some(b.generated_at_ms), l))
+                                .font_family(FONT_MONO_NUM)
+                                .text_size(px(TEXT_2XS))
+                                .text_color(rgb(INK_MUTED)),
+                        ),
+                )
+                .child(
+                    text(b.headline.clone())
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_SM))
+                        .font_weight(if is_selected {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(rgb(if is_selected { INK_HERO } else { INK_PRIMARY }))
+                        .truncate()
+                        .number_of_lines(2),
+                )
+                .child(
+                    text(format!(
+                        "{} {} · {} {} · {} {}",
+                        b.strike_radar.len(),
+                        l.t("击球", "strike"),
+                        b.filing_deltas.len(),
+                        l.t("财报", "filings"),
+                        b.watchdog_hits.len(),
+                        l.t("巡检", "hits"),
+                    ))
+                    .font_family(FONT_MONO_TERM)
+                    .text_size(px(TEXT_2XS))
+                    .text_color(rgb(INK_MUTED)),
+                )
+            }))
+    };
+
+    let detail_content = match active_briefing {
+        Some(b) => render_briefing_reading_pane(store, b, l),
+        None => obsidian_card()
+            .p(px(24.0))
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(
+                text(l.t("无球可挥 · 耐心等待 · 0 LLM Token", "No Fat Pitches · Stay Patient · 0 LLM Tokens"))
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_MD))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(EMERALD_FG)),
+            )
+            .child(
+                text(l.t(
+                    "尚未生成历史简报。点击左侧「立即生成简报」汇总能力圈击球雷达、财报异动与 Alan L1.5 巡检结果，或点击「巡检能力圈」立即检查 WATCH + IN 最新公告。",
+                    "No briefing generated yet. Click Generate Briefing on the left to compile Strike Radar, Filing Deltas, and Alan L1.5 Watchdog hits, or click Catch Up Circle.",
+                ))
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_BASE))
+                .line_height(px(21.0))
+                .text_color(rgb(INK_SECONDARY)),
+            ),
+    };
+
+    let split = view()
+        .flex_1()
+        .min_h(px(0.0))
+        .w_full()
+        .flex()
+        .flex_row()
+        .overflow_hidden()
+        .child(
+            view()
+                .w(px(360.0))
+                .flex_shrink_0()
+                .h_full()
+                .border_r_1()
+                .border_color(rgb(BORDER_HAIRLINE))
+                .bg(rgb(BG_VIEWPORT))
+                .flex()
+                .flex_col()
+                .child(left_controls)
+                .child(scroll().flex_1().min_h(px(0.0)).child(timeline_list)),
+        )
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .h_full()
+                .flex()
+                .flex_col()
+                .child(
+                    scroll()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .child(view().p(px(20.0)).child(detail_content)),
+                ),
+        );
+
+    if show_onboarding {
+        view()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(
+                view()
+                    .px(px(20.0))
+                    .pt(px(14.0))
+                    .pb(px(10.0))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .child(onboarding_card(store)),
+            )
+            .child(split)
+    } else {
+        split
+    }
+}
+
+fn render_briefing_reading_pane(store: AppStore, b: &CircleBriefing, l: UiLang) -> View {
+    let period_badge = match b.period {
+        BriefingPeriod::Daily => (
+            l.t("日简报", "DAILY"),
+            EMERALD_FG,
+            EMERALD_BG,
+            EMERALD_BORDER,
+        ),
+        BriefingPeriod::Weekly => (l.t("周简报", "WEEKLY"), SKY_FG, SKY_BG, SKY_BORDER),
+    };
+    let tok_label = if b.summary_tokens_used == 0 {
+        "0 LLM Token".to_owned()
+    } else {
+        format!("{} tokens", b.summary_tokens_used)
+    };
+
+    let exec_card = if b.is_quiet
+        || b.executive_summary
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+    {
+        obsidian_card()
+            .p(px(20.0))
+            .border_color(rgba(EMERALD_BORDER))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(
+                view()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(
+                        view()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(badge_pill(
+                                period_badge.0,
+                                period_badge.1,
+                                period_badge.2,
+                                period_badge.3,
+                            ))
+                            .child(badge_pill(
+                                b.period_key.clone(),
+                                INK_SECONDARY,
+                                SLATE_BG,
+                                SLATE_BORDER,
+                            )),
+                    )
+                    .child(badge_pill(
+                        tok_label,
+                        EMERALD_FG,
+                        EMERALD_BG,
+                        EMERALD_BORDER,
+                    )),
+            )
+            .child(
+                text(l.t(
+                    "无球可挥 · 耐心等待 · 0 LLM Token",
+                    "No Fat Pitches · Stay Patient · 0 LLM Tokens",
+                ))
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_LG))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(EMERALD_FG)),
+            )
+            .child(
+                text(b.headline.clone())
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_BASE))
+                    .line_height(px(21.0))
+                    .text_color(rgb(INK_SECONDARY)),
+            )
+    } else {
+        obsidian_card()
+            .p(px(20.0))
+            .border_color(rgba(VIOLET_BORDER))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                view()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(
+                        view()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(badge_pill(
+                                period_badge.0,
+                                period_badge.1,
+                                period_badge.2,
+                                period_badge.3,
+                            ))
+                            .child(badge_pill(
+                                b.period_key.clone(),
+                                INK_SECONDARY,
+                                SLATE_BG,
+                                SLATE_BORDER,
+                            ))
+                            .child(badge_pill(
+                                l.t("Alan 执行摘要", "Alan Executive Summary"),
+                                VIOLET_FG,
+                                VIOLET_BG,
+                                VIOLET_BORDER,
+                            )),
+                    )
+                    .child(
+                        text(format!(
+                            "{} · {tok_label}",
+                            fmt_time_cn_for(Some(b.generated_at_ms), l)
+                        ))
+                        .font_family(FONT_MONO_NUM)
+                        .text_size(px(TEXT_XS))
+                        .text_color(rgb(INK_MUTED)),
+                    ),
+            )
+            .child(
+                text(b.headline.clone())
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_LG))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(INK_HERO)),
+            )
+            .child(
+                text(b.executive_summary.clone().unwrap_or_default())
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_BASE))
+                    .line_height(px(22.0))
+                    .text_color(rgb(INK_PRIMARY)),
+            )
+    };
+
+    // ① Strike Radar (WATCH + IN in Strike Zone or <=15% above Strike)
+    let mut strike_card = obsidian_card()
+        .p(px(18.0))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(section_header(
+            l.t("① 击球雷达 · Strike Radar", "① Strike Radar (WATCH + IN)"),
+            format!(
+                "{} {}",
+                b.strike_radar.len(),
+                l.t("家候选（击球区或 <=15%）", "within <=15% of Strike")
+            ),
+        ));
+    if b.strike_radar.is_empty() {
+        strike_card = strike_card.child(
+            text(l.t(
+                "当前 WATCH + IN 能力圈中暂无处于击球区或距击球 <= 15% 的标的。",
+                "No WATCH + IN Circle holdings are currently in or within 15% of Strike Zone.",
+            ))
+            .font_family(FONT_UI)
+            .text_size(px(TEXT_SM))
+            .text_color(rgb(INK_MUTED)),
+        );
+    } else {
+        for item in &b.strike_radar {
+            let tk = item.ticker.clone();
+            let (dist_str, _) = fmt_pct_clean(item.distance_to_strike_pct, true);
+            let dist_col = if item.in_strike_zone {
+                EMERALD_FG
+            } else {
+                GOLD_FG
+            };
+            let (bfg, bbg, bbr) = bucket_colors(item.bucket);
+            strike_card = strike_card.child(
+                view()
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .rounded_sm()
+                    .bg(rgb(BG_VIEWPORT))
+                    .border_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                    .cursor_pointer()
+                    .on_press(move || store.open_company(&tk, CompanyViewTab::FinancialsMemo))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(10.0))
+                    .child(
+                        view()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(badge_pill(item.bucket.code(), bfg, bbg, bbr))
+                            .child(
+                                text(item.ticker.clone())
+                                    .font_family(FONT_MONO_NUM)
+                                    .text_size(px(TEXT_SM))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(INK_HERO)),
+                            )
+                            .child(
+                                text(item.name.clone())
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_SM))
+                                    .text_color(rgb(INK_SECONDARY)),
+                            ),
+                    )
+                    .child(
+                        view()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.0))
+                            .child(
+                                text(format!(
+                                    "{} / {} {}",
+                                    fmt_price(item.latest_price, &item.currency),
+                                    l.t("击球", "Strike"),
+                                    fmt_price(item.strike_price, &item.currency),
+                                ))
+                                .font_family(FONT_MONO_NUM)
+                                .text_size(px(TEXT_XS))
+                                .text_color(rgb(INK_PRIMARY)),
+                            )
+                            .child(badge_pill(
+                                dist_str,
+                                dist_col,
+                                if item.in_strike_zone {
+                                    EMERALD_BG
+                                } else {
+                                    GOLD_BG
+                                },
+                                if item.in_strike_zone {
+                                    EMERALD_BORDER
+                                } else {
+                                    GOLD_BORDER
+                                },
+                            )),
+                    ),
+            );
+        }
+    }
+
+    // ② Filing & Red-Flag Deltas
+    let mut filing_card = obsidian_card()
+        .p(px(18.0))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(section_header(
+            l.t(
+                "② 财报与排雷异动 · Filing & Red-Flag Deltas",
+                "② Filing & Red-Flag Deltas",
+            ),
+            format!("{} {}", b.filing_deltas.len(), l.t("条异动", "deltas")),
+        ));
+    if b.filing_deltas.is_empty() {
+        filing_card = filing_card.child(
+            text(l.t(
+                "本周期能力圈内无新增 SEC 财报或确定性红灯异动。",
+                "No new SEC filing or deterministic red-flag deltas in your Circle.",
+            ))
+            .font_family(FONT_UI)
+            .text_size(px(TEXT_SM))
+            .text_color(rgb(INK_MUTED)),
+        );
+    } else {
+        for delta in &b.filing_deltas {
+            let tk = delta.ticker.clone();
+            let url_open = delta.url.clone();
+            let has_url = !delta.url.trim().is_empty();
+            let mut row = view()
+                .p(px(12.0))
+                .rounded_sm()
+                .bg(rgb(BG_VIEWPORT))
+                .border_1()
+                .border_color(if delta.is_red_flag {
+                    rgba(CORAL_BORDER)
+                } else {
+                    rgb(BORDER_HAIRLINE)
+                })
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .cursor_pointer()
+                                .on_press(move || {
+                                    store.open_company(&tk, CompanyViewTab::FinancialsMemo);
+                                })
+                                .child(
+                                    text(delta.ticker.clone())
+                                        .font_family(FONT_MONO_NUM)
+                                        .text_size(px(TEXT_SM))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(INK_HERO)),
+                                )
+                                .child(badge_pill(
+                                    delta.event_type.clone(),
+                                    SKY_FG,
+                                    SKY_BG,
+                                    SKY_BORDER,
+                                ))
+                                .child(if delta.is_red_flag {
+                                    badge_pill(
+                                        l.t("红灯警示", "Red Flag"),
+                                        CORAL_FG,
+                                        CORAL_BG,
+                                        CORAL_BORDER,
+                                    )
+                                } else {
+                                    view()
+                                }),
+                        )
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    text(delta.filing_date.clone().unwrap_or_else(|| {
+                                        fmt_time_cn_for(Some(delta.occurred_at_ms), l)
+                                    }))
+                                    .font_family(FONT_MONO_NUM)
+                                    .text_size(px(TEXT_XS))
+                                    .text_color(rgb(INK_MUTED)),
+                                )
+                                .child(if has_url {
+                                    action_button(
+                                        l.t("打开原文 ↗", "Open SEC ↗"),
+                                        false,
+                                        move || open_external_url(&url_open),
+                                    )
+                                } else {
+                                    view()
+                                }),
+                        ),
+                )
+                .child(
+                    text(delta.title.clone())
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_SM))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(INK_PRIMARY)),
+                );
+            if !delta.summary.trim().is_empty() {
+                row = row.child(
+                    text(delta.summary.clone())
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_XS))
+                        .line_height(px(18.0))
+                        .text_color(rgb(INK_SECONDARY)),
+                );
+            }
+            filing_card = filing_card.child(row);
+        }
+    }
+
+    // ③ Watchdog Hits (FalsificationAlert surfaced at top in coral + one-click Deep Research)
+    let mut sorted_hits: Vec<_> = b.watchdog_hits.iter().collect();
+    sorted_hits.sort_by_key(|h| match h.verdict {
+        TriageVerdict::FalsificationAlert => 0u8,
+        TriageVerdict::Material => 1u8,
+        TriageVerdict::Noise => 2u8,
+    });
+
+    let mut watchdog_card = obsidian_card()
+        .p(px(18.0))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(section_header(
+            l.t(
+                "③ 证伪警报 & Alan 巡检命中 · Watchdog Hits",
+                "③ Falsification Alerts & Alan Watchdog Hits",
+            ),
+            format!("{} {}", sorted_hits.len(), l.t("条命中", "hits")),
+        ));
+
+    if sorted_hits.is_empty() {
+        watchdog_card = watchdog_card.child(
+            text(l.t(
+                "本周期 Alan L1.5 巡检未发现证伪警报或实质异动（常规低噪信号已保留在「事件流」折叠区）。",
+                "No Falsification Alerts or Material hits from Alan L1.5 Watchdog (routine noise remains collapsed in Stream).",
+            ))
+            .font_family(FONT_UI)
+            .text_size(px(TEXT_SM))
+            .text_color(rgb(INK_MUTED)),
+        );
+    } else {
+        for hit in sorted_hits {
+            let is_alert = hit.verdict == TriageVerdict::FalsificationAlert;
+            let (v_lbl, v_fg, v_bg, v_br) = triage_verdict_badge(hit.verdict, l);
+            let tk_open = hit.ticker.clone();
+            let tk_research = hit.ticker.clone();
+
+            let mut hit_box = view()
+                .p(px(14.0))
+                .rounded_md()
+                .bg(if is_alert {
+                    rgba(CORAL_BG)
+                } else {
+                    rgb(BG_VIEWPORT)
+                })
+                .border_1()
+                .border_color(if is_alert {
+                    rgba(CORAL_BORDER)
+                } else {
+                    rgb(BORDER_SUBTLE)
+                })
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .flex_wrap()
+                        .gap(px(8.0))
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(badge_pill(v_lbl, v_fg, v_bg, v_br))
+                                .child(
+                                    text(hit.ticker.clone())
+                                        .font_family(FONT_MONO_NUM)
+                                        .text_size(px(TEXT_MD))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(INK_HERO))
+                                        .cursor_pointer()
+                                        .on_press(move || {
+                                            store.open_company(
+                                                &tk_open,
+                                                CompanyViewTab::FinancialsMemo,
+                                            );
+                                        }),
+                                ),
+                        )
+                        .child(action_button(
+                            l.t("派 Alan 4 视角深研", "Dispatch Alan 4-Lens Research"),
+                            is_alert,
+                            move || {
+                                store.open_company(&tk_research, CompanyViewTab::DeepResearchAlan);
+                                store.start_deep_research(&tk_research, None, "briefing_watchdog");
+                            },
+                        )),
+                )
+                .child(
+                    text(hit.headline.clone())
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_BASE))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(INK_HERO)),
+                )
+                .child(
+                    text(hit.rationale.clone())
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_SM))
+                        .line_height(px(19.0))
+                        .text_color(rgb(INK_PRIMARY)),
+                );
+
+            if hit.fallback_no_metrics_warning {
+                hit_box = hit_box.child(
+                    view()
+                        .px(px(10.0))
+                        .py(px(6.0))
+                        .rounded_sm()
+                        .bg(rgba(GOLD_BG))
+                        .border_1()
+                        .border_color(rgba(GOLD_BORDER))
+                        .child(
+                            text(l.t(
+                                "⚠ 该标的尚未设置个人事前证伪指标，本次已回退至事前验尸与确定性红灯检查；建议前往公司档案补充 falsification_metrics。",
+                                "⚠ No human falsification_metrics set yet — evaluated against pre-mortem & deterministic warnings. Add metrics in Company Desk.",
+                            ))
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_XS))
+                            .text_color(rgb(GOLD_FG)),
+                        ),
+                );
+            }
+
+            if !hit.quotes.is_empty() {
+                hit_box = hit_box.child(render_triage_quotes_list(&hit.quotes, l));
+            }
+
+            watchdog_card = watchdog_card.child(hit_box);
+        }
+    }
+
+    view()
+        .flex()
+        .flex_col()
+        .gap(px(16.0))
+        .child(exec_card)
+        .child(strike_card)
+        .child(filing_card)
+        .child(watchdog_card)
+}
+
+fn render_stream_view(store: AppStore, l: UiLang) -> View {
     let show_onboarding = store.should_show_onboarding();
     let lake_present = store.universe_lake_present.get();
     let lake_summary = store.universe_summary.get();
@@ -278,6 +1129,8 @@ fn render_inbox_body(store: AppStore) -> View {
             .is_some_and(|s| s.total_companies == 0);
     let signals = store.inbox_signals.get();
     let st = store.inbox_state.get();
+    let triages = store.signal_triages.get();
+    let noise_expanded = store.inbox_noise_expanded.get();
 
     if !store.startup_hydrated.get() && signals.is_empty() {
         return view().flex_1().min_h(px(0.0)).bg(rgb(BG_VIEWPORT));
@@ -297,6 +1150,11 @@ fn render_inbox_body(store: AppStore) -> View {
             .child(scroll().flex_1().min_h(px(0.0)).child(content));
     }
 
+    let triage_map: HashMap<&str, &SignalTriageRecord> = triages
+        .iter()
+        .map(|tr| (tr.signal_id.as_str(), tr))
+        .collect();
+
     let visible = filter_inbox_signals(&signals, st.filter);
     let active =
         resolve_active_inbox_signal(&visible, st.selected_signal_id.as_deref(), st.cursor_index);
@@ -305,17 +1163,125 @@ fn render_inbox_body(store: AppStore) -> View {
         render_inbox_empty_filter_state(store, st.filter, l)
     } else {
         let active_id = active.map(|(_, a)| a.signal_id.clone());
-        view()
-            .flex()
-            .flex_col()
-            .children(visible.iter().enumerate().map(|(idx, sig)| {
+        let mut alerts_material: Vec<(usize, &SignalInboxRow, &SignalTriageRecord)> = Vec::new();
+        let mut discovery_rows: Vec<(usize, &SignalInboxRow)> = Vec::new();
+        let mut noise_rows: Vec<(usize, &SignalInboxRow, &SignalTriageRecord)> = Vec::new();
+
+        for (idx, sig) in visible.iter().enumerate() {
+            match triage_map.get(sig.signal_id.as_str()).copied() {
+                Some(tr) if tr.verdict == TriageVerdict::Noise => {
+                    noise_rows.push((idx, sig, tr));
+                }
+                Some(tr) => {
+                    alerts_material.push((idx, sig, tr));
+                }
+                None => {
+                    discovery_rows.push((idx, sig));
+                }
+            }
+        }
+        alerts_material.sort_by_key(|(_, _, tr)| match tr.verdict {
+            TriageVerdict::FalsificationAlert => 0u8,
+            TriageVerdict::Material => 1u8,
+            TriageVerdict::Noise => 2u8,
+        });
+
+        let mut list_col = view().flex().flex_col();
+
+        // 1. 证伪警报 & 能力圈实质异动
+        if !alerts_material.is_empty() {
+            list_col = list_col.child(stream_group_header(
+                l.t(
+                    "证伪警报 & 能力圈实质异动",
+                    "Falsification Alerts & Material Circle Deltas",
+                ),
+                alerts_material.len(),
+                CORAL_FG,
+            ));
+            for (idx, sig, tr) in alerts_material {
                 let is_selected = active_id.as_deref() == Some(sig.signal_id.as_str());
-                render_inbox_row(store, sig, idx, is_selected, l)
-            }))
+                list_col = list_col.child(render_inbox_row(
+                    store,
+                    sig,
+                    Some(tr.verdict),
+                    idx,
+                    is_selected,
+                    l,
+                ));
+            }
+        }
+
+        // 2. 击球与发现
+        if !discovery_rows.is_empty() {
+            list_col = list_col.child(stream_group_header(
+                l.t("击球与发现", "Pitches & Discovery"),
+                discovery_rows.len(),
+                SKY_FG,
+            ));
+            for (idx, sig) in discovery_rows {
+                let is_selected = active_id.as_deref() == Some(sig.signal_id.as_str());
+                list_col = list_col.child(render_inbox_row(store, sig, None, idx, is_selected, l));
+            }
+        }
+
+        // 3. 常规低噪 (collapsed by default, never deleted/archived)
+        if !noise_rows.is_empty() {
+            let noise_cnt = noise_rows.len();
+            let header_label = match l {
+                UiLang::Zh => format!("常规低噪 ({noise_cnt}) · 点击展开/收起"),
+                UiLang::En => format!("Routine Noise ({noise_cnt}) · Click to expand/collapse"),
+            };
+            list_col = list_col.child(
+                view()
+                    .px(px(14.0))
+                    .py(px(8.0))
+                    .bg(rgb(BG_WELL))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                    .cursor_pointer()
+                    .on_press(move || store.toggle_inbox_noise_expanded())
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        text(header_label)
+                            .font_family(FONT_MONO_TERM)
+                            .text_size(px(TEXT_2XS))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(INK_MUTED)),
+                    )
+                    .child(
+                        text(if noise_expanded { "▾" } else { "▸" })
+                            .font_family(FONT_MONO_TERM)
+                            .text_size(px(TEXT_XS))
+                            .text_color(rgb(INK_MUTED)),
+                    ),
+            );
+            if noise_expanded {
+                for (idx, sig, tr) in noise_rows {
+                    let is_selected = active_id.as_deref() == Some(sig.signal_id.as_str());
+                    list_col = list_col.child(render_inbox_row(
+                        store,
+                        sig,
+                        Some(tr.verdict),
+                        idx,
+                        is_selected,
+                        l,
+                    ));
+                }
+            }
+        }
+
+        list_col
     };
 
     let detail_inner = match active {
-        Some((_, sig)) => render_inbox_detail(store, sig, l),
+        Some((_, sig)) => {
+            let triage_opt = triage_map.get(sig.signal_id.as_str()).copied();
+            render_inbox_detail(store, sig, triage_opt, l)
+        }
         None => render_inbox_no_selection(l),
     };
 
@@ -376,9 +1342,115 @@ fn render_inbox_body(store: AppStore) -> View {
     }
 }
 
+fn stream_group_header(title: &str, count: usize, dot_color: u32) -> View {
+    view()
+        .px(px(14.0))
+        .py(px(7.0))
+        .bg(rgb(BG_ROW_ALT))
+        .border_b_1()
+        .border_color(rgb(BORDER_HAIRLINE))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .child(
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    view()
+                        .w(px(5.0))
+                        .h(px(5.0))
+                        .rounded_full()
+                        .bg(rgb(dot_color)),
+                )
+                .child(
+                    text(title.to_owned())
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_2XS))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(INK_SECONDARY)),
+                ),
+        )
+        .child(
+            text(format!("{count}"))
+                .font_family(FONT_MONO_NUM)
+                .text_size(px(TEXT_2XS))
+                .text_color(rgb(INK_MUTED)),
+        )
+}
+
+fn triage_verdict_badge(verdict: TriageVerdict, l: UiLang) -> (&'static str, u32, u32, u32) {
+    match verdict {
+        TriageVerdict::FalsificationAlert => (
+            l.t("证伪警报", "Falsification Alert"),
+            CORAL_FG,
+            CORAL_BG,
+            CORAL_BORDER,
+        ),
+        TriageVerdict::Material => (l.t("实质异动", "Material"), SKY_FG, SKY_BG, SKY_BORDER),
+        TriageVerdict::Noise => (l.t("常规低噪", "Noise"), SLATE_FG, SLATE_BG, SLATE_BORDER),
+    }
+}
+
+fn render_triage_quotes_list(quotes: &[TriageQuote], l: UiLang) -> View {
+    let mut col = view().flex().flex_col().gap(px(6.0));
+    for q in quotes {
+        let open_url = q.source_url.clone();
+        let has_url = !q.source_url.trim().is_empty();
+        col = col.child(
+            view()
+                .p(px(10.0))
+                .rounded_sm()
+                .bg(rgb(BG_SHELL))
+                .border_1()
+                .border_color(rgb(BORDER_HAIRLINE))
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .child(
+                            text(format!(
+                                "{} · {}",
+                                q.section,
+                                q.filing_date.as_deref().unwrap_or("—")
+                            ))
+                            .font_family(FONT_MONO_TERM)
+                            .text_size(px(TEXT_2XS))
+                            .text_color(rgb(SKY_FG)),
+                        )
+                        .child(if has_url {
+                            action_button(l.t("原文 ↗", "SEC ↗"), false, move || {
+                                open_external_url(&open_url)
+                            })
+                        } else {
+                            view()
+                        }),
+                )
+                .child(
+                    text(q.quote.clone())
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_XS))
+                        .line_height(px(18.0))
+                        .text_color(rgb(INK_PRIMARY)),
+                ),
+        );
+    }
+    col
+}
+
 fn render_inbox_row(
     store: AppStore,
     sig: &SignalInboxRow,
+    verdict_opt: Option<TriageVerdict>,
     idx: usize,
     is_selected: bool,
     l: UiLang,
@@ -455,6 +1527,10 @@ fn render_inbox_row(
         .flex_row()
         .items_center()
         .gap(px(6.0));
+    if let Some(v) = verdict_opt {
+        let (v_lbl, v_fg, v_bg, v_br) = triage_verdict_badge(v, l);
+        top_right = top_right.child(badge_pill(v_lbl, v_fg, v_bg, v_br));
+    }
     if sig.status != SignalStatus::Unread {
         top_right = top_right.child(badge_pill(st_label, st_fg, st_bg, st_br));
     }
@@ -520,7 +1596,12 @@ fn render_inbox_row(
     )
 }
 
-fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View {
+fn render_inbox_detail(
+    store: AppStore,
+    sig: &SignalInboxRow,
+    triage_opt: Option<&SignalTriageRecord>,
+    l: UiLang,
+) -> View {
     let (kind_label, kind_fg, kind_bg, kind_br) = signal_kind_badge_for(sig.kind, l);
     let (st_label, st_fg, st_bg, st_br) = signal_status_badge_for(sig.status, l);
     let ticker_open = sig.primary_ticker.clone();
@@ -751,17 +1832,18 @@ fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View
         )
         .child(actions);
 
-    let mut root = view()
-        .flex()
-        .flex_col()
-        .gap(px(16.0))
-        .child(header_card)
-        .child(render_inbox_business_profile_card(
-            store,
-            sig,
-            details_opt,
-            l,
-        ));
+    let mut root = view().flex().flex_col().gap(px(16.0)).child(header_card);
+
+    if let Some(tr) = triage_opt {
+        root = root.child(render_stream_triage_card(store, sig, tr, l));
+    }
+
+    root = root.child(render_inbox_business_profile_card(
+        store,
+        sig,
+        details_opt,
+        l,
+    ));
 
     if let Some(det) = details_opt {
         root = root.child(render_inbox_financial_snapshot_card(
@@ -805,6 +1887,151 @@ fn render_inbox_detail(store: AppStore, sig: &SignalInboxRow, l: UiLang) -> View
     }
 
     root.child(ev_section)
+}
+
+fn render_stream_triage_card(
+    store: AppStore,
+    sig: &SignalInboxRow,
+    tr: &SignalTriageRecord,
+    l: UiLang,
+) -> View {
+    let is_alert = tr.verdict == TriageVerdict::FalsificationAlert;
+    let (v_lbl, v_fg, v_bg, v_br) = triage_verdict_badge(tr.verdict, l);
+    let tk_research = sig.primary_ticker.clone();
+
+    let mut card = obsidian_card()
+        .p(px(18.0))
+        .border_color(if is_alert {
+            rgba(CORAL_BORDER)
+        } else {
+            rgb(BORDER_SUBTLE)
+        })
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .flex_wrap()
+                .gap(px(8.0))
+                .child(
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(badge_pill(v_lbl, v_fg, v_bg, v_br))
+                        .child(
+                            text(l.t("Alan L1.5 能力圈巡检", "Alan L1.5 Watchdog"))
+                                .font_family(FONT_UI)
+                                .text_size(px(TEXT_SM))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(INK_HERO)),
+                        ),
+                )
+                .child(action_button(
+                    l.t("派 Alan 4 视角深研", "Dispatch Alan 4-Lens Research"),
+                    is_alert,
+                    move || {
+                        store.open_company(&tk_research, CompanyViewTab::DeepResearchAlan);
+                        store.start_deep_research(&tk_research, None, "stream_watchdog");
+                    },
+                )),
+        )
+        .child(
+            text(tr.headline.clone())
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_BASE))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(INK_HERO)),
+        )
+        .child(
+            text(tr.rationale.clone())
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_SM))
+                .line_height(px(20.0))
+                .text_color(rgb(INK_PRIMARY)),
+        );
+
+    if tr.fallback_no_metrics_warning {
+        card = card.child(
+            view()
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded_sm()
+                .bg(rgba(GOLD_BG))
+                .border_1()
+                .border_color(rgba(GOLD_BORDER))
+                .child(
+                    text(l.t(
+                        "⚠ 尚未设置个人事前证伪指标，本次已回退至事前验尸与确定性红灯检查。",
+                        "⚠ No falsification_metrics set — evaluated against pre-mortem & deterministic warnings.",
+                    ))
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .text_color(rgb(GOLD_FG)),
+                ),
+        );
+    }
+
+    if !tr.quotes.is_empty() {
+        card = card.child(render_triage_quotes_list(&tr.quotes, l));
+    }
+
+    if !tr.suggested_metrics.is_empty() {
+        card = card.child(
+            view()
+                .p(px(10.0))
+                .rounded_sm()
+                .bg(rgba(VIOLET_BG))
+                .border_1()
+                .border_color(rgba(VIOLET_BORDER))
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(
+                    text(l.t(
+                        "Alan 建议的事前证伪指标：",
+                        "Suggested Falsification Metrics:",
+                    ))
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(VIOLET_FG)),
+                )
+                .children(tr.suggested_metrics.iter().map(|m| {
+                    let m_adopt = m.clone();
+                    let tk_adopt = sig.primary_ticker.clone();
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .child(
+                            view().flex_1().min_w(px(0.0)).child(
+                                text(format!("+ {m}"))
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .text_color(rgb(INK_PRIMARY)),
+                            ),
+                        )
+                        .child(action_button(
+                            l.t("采纳证伪指标", "Adopt Metric"),
+                            false,
+                            move || {
+                                store.selected_ticker.set(tk_adopt.clone());
+                                store.adopt_suggested_falsification_metric(&m_adopt);
+                            },
+                        ))
+                })),
+        );
+    }
+
+    card
 }
 
 fn render_inbox_business_profile_card(

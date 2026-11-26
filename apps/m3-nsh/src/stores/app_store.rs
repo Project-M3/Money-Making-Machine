@@ -2,7 +2,7 @@
 //!
 //! `AppStore` is a `Copy` handle containing NSH `Signal<T>` and `Stored<T>` handles,
 //! providing complete MungerWorkbench state and action parity
-//! while executing background DuckDB, SEC EDGAR, Updater, Deep Research, and EmbeddedAlan
+//! while executing background DuckDB, SEC EDGAR, Updater, Deep Research, and Alan
 //! workflows over event-driven Tokio -> NSH channels with zero idle polling.
 
 use crate::format::{
@@ -16,11 +16,12 @@ use crate::stores::async_bridge::{
     run_streamed_blocking, spawn_notify_listener,
 };
 use crate::stores::types::{
-    AgentMessageRole, AgentUiMessage, AlanReplyTarget, BasketsViewMode, ChartTimeframe,
-    CompanyViewTab, DeepResearchPerspectiveUi, InboxFilter, InboxViewState, PaletteItem,
-    ParsedResearchMemo, SettingsTab, SortCol, StatusQuickFilter, StoredAppMessage, UniversePreset,
-    UniverseSearchMode, UniverseViewState, WorkspaceTab, apply_ui_row_guards,
-    default_deep_research_perspectives,
+    AgentMessageRole, AgentUiMessage, AlanReplyTarget, BasketsViewMode, BriefingPeriod,
+    ChartTimeframe, CircleBriefing, CompanyViewTab, DeepResearchPerspectiveUi, FeynmanRound,
+    FeynmanScope, FeynmanTurn, InboxFilter, InboxViewMode, InboxViewState, PaletteItem,
+    ParsedResearchMemo, SettingsTab, SignalTriageRecord, SortCol, StatusQuickFilter,
+    StoredAppMessage, UniversePreset, UniverseSearchMode, UniverseViewState, WorkspaceTab,
+    apply_ui_row_guards, default_deep_research_perspectives,
 };
 use m3_core::alan_connection::{
     self, AlanConnectionBrowserLoginResult, AlanConnectionProfileSummary, AlanConnectionProvider,
@@ -37,6 +38,7 @@ use m3_core::events::{
     self, CompanyProfileFetchReport, EventCatchupOptions, EventCatchupReport,
     catchup_events_with_progress, fetch_company_10k_profile,
 };
+use m3_core::feynman;
 use m3_core::i18n::UiLang;
 use m3_core::industry::{self, IndustryProfile, IndustryStatus};
 use m3_core::industry_research::{self, IndustryResearchEvent};
@@ -52,6 +54,7 @@ use m3_core::model::{
     Bucket, DecisionJournal, Dossier, MungerReport, PriceHistorySnapshot, PriceSnapshot,
     SyncStatusFile, ValuationAssumptions,
 };
+use m3_core::proactive::{self, TriageRunSummary};
 use m3_core::research::{self, DeepResearchEvent, DeepResearchRequest, DeepResearchResult};
 use m3_core::storage::{self, StorageCategory, StorageReport};
 use m3_core::store::{self, WorkspacePaths};
@@ -136,7 +139,7 @@ pub struct AppStore {
     pub selected_peers: Signal<Option<PeerComparison>>,
     pub selected_similar_hits: Signal<Vec<SimilarCompanyHit>>,
 
-    // ── Deep Research & EmbeddedAlan ─────────────────────────────────────────
+    // ── Deep Research & Alan ─────────────────────────────────────────────────
     pub deep_research_running: Signal<bool>,
     pub deep_research_ticker: Signal<Option<String>>,
     pub deep_research_run_id: Signal<Option<String>>,
@@ -154,7 +157,26 @@ pub struct AppStore {
     pub agent_expanded_tape: Signal<Option<usize>>,
     pub alan_reply_target: Signal<AlanReplyTarget>,
 
-    // ── Briefing Inbox (L1 Event-Driven) ─────────────────────────────────────
+    // ── Soft Gate & 3-Round Feynman Coach ────────────────────────────────────
+    pub pending_graduation_ticker: Signal<Option<String>>,
+    pub feynman_mode_active: Signal<bool>,
+    pub feynman_scope: Signal<Option<FeynmanScope>>,
+    pub feynman_round: Signal<u8>,
+    pub feynman_turns: Signal<Vec<FeynmanTurn>>,
+    pub feynman_input: Signal<String>,
+    pub feynman_draft_stance: Signal<String>,
+    pub feynman_draft_metrics: Signal<Vec<String>>,
+    pub feynman_busy: Signal<bool>,
+    pub feynman_archive_markdown: Signal<String>,
+
+    // ── Briefing Inbox (L1 Event-Driven + L1.5 Watchdog + Calm Briefings) ────
+    pub inbox_view_mode: Signal<InboxViewMode>,
+    pub briefing_period: Signal<BriefingPeriod>,
+    pub briefings: Signal<Vec<CircleBriefing>>,
+    pub selected_briefing_id: Signal<Option<String>>,
+    pub signal_triages: Signal<Vec<SignalTriageRecord>>,
+    pub inbox_noise_expanded: Signal<bool>,
+    pub proactive_running: Signal<bool>,
     pub inbox_state: Signal<InboxViewState>,
     pub inbox_summary: Signal<Option<L1Summary>>,
     pub inbox_signals: Signal<Vec<SignalInboxRow>>,
@@ -285,6 +307,8 @@ struct SecondaryStartupSnapshot {
     universe_rows: Vec<UniverseRow>,
     universe_selected_details: Option<UniverseDrawerDetails>,
     universe_error: Option<String>,
+    briefings: Vec<CircleBriefing>,
+    signal_triages: Vec<SignalTriageRecord>,
     alan_conn_status: Option<AlanConnectionStatus>,
 }
 
@@ -450,6 +474,8 @@ fn load_secondary_startup_snapshot(
     let mut universe_selected_details = None;
     let mut universe_error = None;
     let mut industry_peer_rows = Vec::new();
+    let mut briefings = Vec::new();
+    let mut signal_triages = Vec::new();
 
     if let Some(db) = db_opt {
         match db.load_universe_snapshot(universe_filter, None, 5) {
@@ -471,6 +497,8 @@ fn load_secondary_startup_snapshot(
                 .load_universe_rows_by_tickers(&ind.bound_tickers)
                 .unwrap_or_default();
         }
+        briefings = db.list_circle_briefings(None, 24).unwrap_or_default();
+        signal_triages = db.list_signal_triages(None, None, 200).unwrap_or_default();
     }
 
     let alan_conn_status = alan_connection::list_alan_connection_status().ok();
@@ -488,6 +516,8 @@ fn load_secondary_startup_snapshot(
         universe_rows,
         universe_selected_details,
         universe_error,
+        briefings,
+        signal_triages,
         alan_conn_status,
     }
 }
@@ -512,6 +542,8 @@ impl AppStore {
         drop(db_opt);
         store.apply_primary_startup_snapshot(primary);
         store.hydrate_secondary_startup_async();
+        #[cfg(not(test))]
+        store.start_proactive_background_loop();
         store
     }
 
@@ -609,6 +641,24 @@ impl AppStore {
             agent_expanded_tape: signal(None),
             alan_reply_target: signal(AlanReplyTarget::Company),
 
+            pending_graduation_ticker: signal(None),
+            feynman_mode_active: signal(false),
+            feynman_scope: signal(None),
+            feynman_round: signal(1),
+            feynman_turns: signal_with(Vec::new(), SignalEquals::Never),
+            feynman_input: signal(String::new()),
+            feynman_draft_stance: signal(String::new()),
+            feynman_draft_metrics: signal_with(Vec::new(), SignalEquals::Never),
+            feynman_busy: signal(false),
+            feynman_archive_markdown: signal(String::new()),
+
+            inbox_view_mode: signal(InboxViewMode::Briefing),
+            briefing_period: signal(BriefingPeriod::Daily),
+            briefings: signal_with(Vec::new(), SignalEquals::Never),
+            selected_briefing_id: signal(None),
+            signal_triages: signal_with(Vec::new(), SignalEquals::Never),
+            inbox_noise_expanded: signal(false),
+            proactive_running: signal(false),
             inbox_state: signal(InboxViewState::default()),
             inbox_summary: signal_with(None, SignalEquals::Never),
             inbox_signals: signal_with(Vec::new(), SignalEquals::Never),
@@ -848,6 +898,7 @@ impl AppStore {
                 self.universe_rows.set(Vec::new());
             }
             self.industry_peer_rows.set(snap.industry_peer_rows);
+            self.apply_proactive_snapshot(snap.briefings, snap.signal_triages);
         }
 
         if let Some(status) = snap.alan_conn_status {
@@ -916,6 +967,7 @@ impl AppStore {
         self.reload_industries_from_disk();
         self.reload_universe_from_lake();
         self.reload_inbox_from_lake();
+        self.reload_proactive_from_lake_sync();
         self.reload_budget_from_lake();
         self.startup_hydrated.set(true);
     }
@@ -1012,6 +1064,15 @@ impl AppStore {
             self.selected_research_runs.set(Vec::new());
             self.selected_peers.set(None);
             self.selected_similar_hits.set(Vec::new());
+            if self.feynman_mode_active.get_untracked()
+                && matches!(
+                    self.feynman_scope.get_untracked(),
+                    Some(FeynmanScope::Company { ticker: ref t }) if !t.eq_ignore_ascii_case(trimmed)
+                )
+            {
+                self.feynman_mode_active.set(false);
+                self.feynman_busy.set(false);
+            }
         }
         if self.company_open.get_untracked() {
             self.reload_research_desk_context(trimmed);
@@ -2066,6 +2127,10 @@ impl AppStore {
         self.company_open.set(true);
     }
 
+    pub fn set_company_bucket(self, ticker: &str, target: Bucket) {
+        self.move_company_bucket(ticker, target);
+    }
+
     pub fn move_company_bucket(self, ticker: &str, target: Bucket) {
         let paths = self.paths.get_untracked();
         let l = self.lang.get_untracked();
@@ -2092,6 +2157,47 @@ impl AppStore {
                 ));
             }
         }
+    }
+
+    /// Requests a Circle tier transition, intercepting `WATCH -> IN (Core)` with the calm
+    /// Feynman Graduation Soft Gate when the company has not completed Feynman sign-off yet.
+    pub fn request_bucket_change(self, ticker: &str, bucket: Bucket) {
+        let norm_ticker = ticker.trim().to_ascii_uppercase();
+        if norm_ticker.is_empty() {
+            return;
+        }
+        let paths = self.paths.get_untracked();
+        if should_open_graduation_gate(&paths, &norm_ticker, bucket) {
+            self.pending_graduation_ticker.set(Some(norm_ticker));
+            return;
+        }
+        self.set_company_bucket(&norm_ticker, bucket);
+    }
+
+    /// Confirms direct graduation to `Bucket::Core` (`IN`) despite the Soft Gate warning.
+    pub fn confirm_direct_graduation(self, ticker: &str) {
+        let norm_ticker = ticker.trim().to_ascii_uppercase();
+        self.pending_graduation_ticker.set(None);
+        if !norm_ticker.is_empty() {
+            self.set_company_bucket(&norm_ticker, Bucket::Core);
+        }
+    }
+
+    /// Dismisses the `WATCH -> IN` Feynman Graduation Soft Gate modal without mutating `Bucket`.
+    pub fn cancel_graduation_gate(self) {
+        self.pending_graduation_ticker.set(None);
+    }
+
+    /// Dismisses the Soft Gate modal, opens Company Research Desk · Alan, and starts the
+    /// 3-round Socratic Feynman Defense for `ticker`.
+    pub fn start_graduation_feynman(self, ticker: &str) {
+        let norm_ticker = ticker.trim().to_ascii_uppercase();
+        self.pending_graduation_ticker.set(None);
+        if norm_ticker.is_empty() {
+            return;
+        }
+        self.open_company(&norm_ticker, CompanyViewTab::DeepResearchAlan);
+        self.start_company_feynman(&norm_ticker);
     }
 
     /// Removes `ticker` from `workbench/watchlist.json` and refreshes DuckDB flags without
@@ -2708,6 +2814,8 @@ impl AppStore {
                         )));
                     }
                 }
+                drop(db);
+                self.reload_proactive_from_lake_sync();
             }
             Err(err) => {
                 self.inbox_error.set(Some(format!(
@@ -4141,7 +4249,7 @@ impl AppStore {
         );
     }
 
-    // ── Deep Research & EmbeddedAlan ─────────────────────────────────────────
+    // ── Deep Research & Alan ─────────────────────────────────────────────────
 
     pub fn run_deep_research_selected(self) {
         let ticker = self.selected_ticker.get_untracked();
@@ -4876,6 +4984,811 @@ impl AppStore {
     pub fn build_palette_items(self) -> Vec<PaletteItem> {
         crate::palette::build_palette_items_from_store(self)
     }
+
+    // ── Proactive Watchdog & Calm Briefings (Branches A & B) ─────────────────
+
+    fn apply_proactive_snapshot(
+        self,
+        briefings: Vec<CircleBriefing>,
+        signal_triages: Vec<SignalTriageRecord>,
+    ) {
+        let period = self.briefing_period.get_untracked();
+        let current_id = self.selected_briefing_id.get_untracked();
+        let still_exists = current_id
+            .as_deref()
+            .is_some_and(|id| briefings.iter().any(|b| b.briefing_id == id));
+        if !still_exists {
+            let next_id = briefings
+                .iter()
+                .find(|b| b.period == period)
+                .or_else(|| briefings.first())
+                .map(|b| b.briefing_id.clone());
+            self.selected_briefing_id.set(next_id);
+        }
+        self.briefings.set(briefings);
+        self.signal_triages.set(signal_triages);
+    }
+
+    fn reload_proactive_from_lake_sync(self) {
+        if !can_open_duckdb_read_only(
+            self.universe_syncing.get_untracked(),
+            self.inbox_catching_up.get_untracked(),
+        ) {
+            return;
+        }
+        let paths = self.paths.get_untracked();
+        let Ok(Some(db)) = LakeDb::open_read_only_if_exists(&paths) else {
+            self.briefings.set(Vec::new());
+            self.signal_triages.set(Vec::new());
+            self.selected_briefing_id.set(None);
+            return;
+        };
+        let briefings = db.list_circle_briefings(None, 24).unwrap_or_default();
+        let triages = db.list_signal_triages(None, None, 200).unwrap_or_default();
+        self.apply_proactive_snapshot(briefings, triages);
+    }
+
+    /// Refreshes `briefings` and `signal_triages` off-thread without blocking the UI thread.
+    pub fn refresh_proactive_data(self) {
+        if !can_open_duckdb_read_only(
+            self.universe_syncing.get_untracked(),
+            self.inbox_catching_up.get_untracked(),
+        ) {
+            return;
+        }
+        let paths = self.paths.get_untracked();
+        let expected_root = paths.repo_root.clone();
+        run_blocking_result(
+            move || {
+                let Ok(Some(db)) = LakeDb::open_read_only_if_exists(&paths) else {
+                    return (Vec::new(), Vec::new());
+                };
+                let briefings = db.list_circle_briefings(None, 24).unwrap_or_default();
+                let triages = db.list_signal_triages(None, None, 200).unwrap_or_default();
+                (briefings, triages)
+            },
+            move |(briefings, triages)| {
+                if self.paths.get_untracked().repo_root != expected_root {
+                    return;
+                }
+                self.apply_proactive_snapshot(briefings, triages);
+            },
+        );
+    }
+
+    pub fn set_inbox_view_mode(self, mode: InboxViewMode) {
+        self.inbox_view_mode.set(mode);
+    }
+
+    pub fn set_briefing_period(self, period: BriefingPeriod) {
+        self.briefing_period.set(period);
+        let matching_id = self.briefings.with_untracked(|list| {
+            list.iter()
+                .find(|b| b.period == period)
+                .map(|b| b.briefing_id.clone())
+        });
+        if matching_id.is_some() {
+            self.selected_briefing_id.set(matching_id);
+        }
+    }
+
+    pub fn select_briefing(self, briefing_id: &str) {
+        self.selected_briefing_id.set(Some(briefing_id.to_owned()));
+    }
+
+    pub fn toggle_inbox_noise_expanded(self) {
+        self.inbox_noise_expanded.update(|v| *v = !*v);
+    }
+
+    /// Runs L1.5 Circle Filing Watchdog triage (strictly `WATCH + IN`) followed by
+    /// Calm Briefing generation, respecting re-entry guards and daily/monthly quotas.
+    pub fn run_proactive_catchup(self) {
+        let l = self.lang.get_untracked();
+        if self.proactive_running.get_untracked() {
+            return;
+        }
+        if !can_start_duckdb_writer(
+            self.universe_syncing.get_untracked(),
+            self.inbox_catching_up.get_untracked(),
+            self.sync_running.get_untracked(),
+        ) {
+            self.set_info_notice(
+                l.t(
+                    "后台同步任务正在进行中，请稍候再巡检能力圈",
+                    "Another background sync is active; try Circle catch-up in a moment",
+                )
+                .to_owned(),
+            );
+            return;
+        }
+
+        let paths = self.paths.get_untracked();
+        let expected_root = paths.repo_root.clone();
+        let period = self.briefing_period.get_untracked();
+        let cfg = self.budget_config.get_untracked();
+        let triage_limit = cfg.daily_triage_quota;
+
+        self.proactive_running.set(true);
+        self.set_info_notice(
+            l.t(
+                "Alan 正在巡检能力圈公告并生成简报…",
+                "Alan is checking Circle filings and updating briefing…",
+            )
+            .to_owned(),
+        );
+
+        struct ProactiveCatchupOutcome {
+            triage_summary: TriageRunSummary,
+            briefing: CircleBriefing,
+            briefings: Vec<CircleBriefing>,
+            triages: Vec<SignalTriageRecord>,
+            budget_report: Option<BudgetStatusReport>,
+        }
+
+        run_blocking_or_err(
+            move || -> Result<ProactiveCatchupOutcome, String> {
+                let lake = LakeDb::open(&paths).map_err(|e| format!("{e:#}"))?;
+                let triage_summary =
+                    proactive::run_l15_circle_triage_blocking(&paths, &lake, triage_limit, false)
+                        .map_err(|e| format!("{e:#}"))?;
+                let briefing =
+                    proactive::generate_and_save_briefing_blocking(&paths, &lake, period, l, true)
+                        .map_err(|e| format!("{e:#}"))?;
+                let briefings = lake.list_circle_briefings(None, 24).unwrap_or_default();
+                let triages = lake
+                    .list_signal_triages(None, None, 200)
+                    .unwrap_or_default();
+                let budget_report = lake.budget_status_report(&paths).ok();
+                Ok(ProactiveCatchupOutcome {
+                    triage_summary,
+                    briefing,
+                    briefings,
+                    triages,
+                    budget_report,
+                })
+            },
+            move |outcome| {
+                self.proactive_running.set(false);
+                let l = self.lang.get_untracked();
+                match outcome {
+                    Ok(Ok(res)) => {
+                        if self.paths.get_untracked().repo_root != expected_root {
+                            return;
+                        }
+                        self.apply_proactive_snapshot(res.briefings, res.triages);
+                        self.selected_briefing_id
+                            .set(Some(res.briefing.briefing_id.clone()));
+                        if let Some(report) = res.budget_report {
+                            self.budget_report.set(Some(report));
+                        }
+                        let evaluated = res.triage_summary.evaluated;
+                        let alerts = res.triage_summary.falsification_alert_count;
+                        let headline = res.briefing.headline;
+                        self.set_info_notice(match l {
+                            UiLang::Zh => format!(
+                                "能力圈巡检完成 · 初筛 {evaluated} 条（证伪预警 {alerts}）· {headline}"
+                            ),
+                            UiLang::En => format!(
+                                "Circle catch-up complete · triaged {evaluated} ({alerts} falsification alerts) · {headline}"
+                            ),
+                        });
+                    }
+                    Ok(Err(err)) | Err(err) => {
+                        self.set_error_notice(format!(
+                            "{}: {err}",
+                            l.t("能力圈巡检失败", "Circle catch-up failed")
+                        ));
+                    }
+                }
+            },
+        );
+    }
+
+    /// Generates and persists a Calm Briefing for `period` (with optional single Alan summary).
+    pub fn generate_briefing_now(self, period: BriefingPeriod, allow_llm_summary: bool) {
+        let l = self.lang.get_untracked();
+        self.briefing_period.set(period);
+        if self.proactive_running.get_untracked() {
+            return;
+        }
+        if !can_start_duckdb_writer(
+            self.universe_syncing.get_untracked(),
+            self.inbox_catching_up.get_untracked(),
+            self.sync_running.get_untracked(),
+        ) {
+            self.set_info_notice(
+                l.t(
+                    "后台同步任务正在进行中，请稍候再生成简报",
+                    "Another background sync is active; try generating briefing in a moment",
+                )
+                .to_owned(),
+            );
+            return;
+        }
+
+        let paths = self.paths.get_untracked();
+        let expected_root = paths.repo_root.clone();
+        self.proactive_running.set(true);
+
+        struct BriefingGenerationOutcome {
+            briefing: CircleBriefing,
+            briefings: Vec<CircleBriefing>,
+            triages: Vec<SignalTriageRecord>,
+            budget_report: Option<BudgetStatusReport>,
+        }
+
+        run_blocking_or_err(
+            move || -> Result<BriefingGenerationOutcome, String> {
+                let lake = LakeDb::open(&paths).map_err(|e| format!("{e:#}"))?;
+                let briefing = proactive::generate_and_save_briefing_blocking(
+                    &paths,
+                    &lake,
+                    period,
+                    l,
+                    allow_llm_summary,
+                )
+                .map_err(|e| format!("{e:#}"))?;
+                let briefings = lake.list_circle_briefings(None, 24).unwrap_or_default();
+                let triages = lake
+                    .list_signal_triages(None, None, 200)
+                    .unwrap_or_default();
+                let budget_report = lake.budget_status_report(&paths).ok();
+                Ok(BriefingGenerationOutcome {
+                    briefing,
+                    briefings,
+                    triages,
+                    budget_report,
+                })
+            },
+            move |outcome| {
+                self.proactive_running.set(false);
+                let l = self.lang.get_untracked();
+                match outcome {
+                    Ok(Ok(res)) => {
+                        if self.paths.get_untracked().repo_root != expected_root {
+                            return;
+                        }
+                        self.apply_proactive_snapshot(res.briefings, res.triages);
+                        self.selected_briefing_id
+                            .set(Some(res.briefing.briefing_id.clone()));
+                        if let Some(report) = res.budget_report {
+                            self.budget_report.set(Some(report));
+                        }
+                        self.set_info_notice(res.briefing.headline);
+                    }
+                    Ok(Err(err)) | Err(err) => {
+                        self.set_error_notice(format!(
+                            "{}: {err}",
+                            l.t("生成简报失败", "Failed to generate briefing")
+                        ));
+                    }
+                }
+            },
+        );
+    }
+
+    /// Saves proactive watchdog & briefing cadence settings to `workbench/budget.json`.
+    pub fn save_proactive_settings(
+        self,
+        enabled: bool,
+        daily_triage_quota: usize,
+        daily_briefing_summary_quota: usize,
+        background_refresh_hours: u64,
+    ) {
+        let clamped_hours = background_refresh_hours.max(1);
+        self.update_budget_config(|cfg| {
+            cfg.proactive_triage_enabled = enabled;
+            cfg.daily_triage_quota = daily_triage_quota;
+            cfg.daily_briefing_summary_quota = daily_briefing_summary_quota;
+            cfg.background_refresh_hours = clamped_hours;
+        });
+    }
+
+    #[cfg(not(test))]
+    fn start_proactive_background_loop(self) {
+        if !os().is_desktop() {
+            return;
+        }
+        crate::stores::async_bridge::spawn_detached(async move {
+            let mut last_run = Instant::now();
+            loop {
+                timer(Duration::from_secs(60)).await;
+                let cfg = self.budget_config.get_untracked();
+                if !cfg.proactive_triage_enabled {
+                    continue;
+                }
+                let interval = Duration::from_secs(cfg.background_refresh_hours.max(1) * 3600);
+                if last_run.elapsed() >= interval
+                    && !self.proactive_running.get_untracked()
+                    && self.universe_lake_present.get_untracked()
+                    && can_start_duckdb_writer(
+                        self.universe_syncing.get_untracked(),
+                        self.inbox_catching_up.get_untracked(),
+                        self.sync_running.get_untracked(),
+                    )
+                {
+                    last_run = Instant::now();
+                    self.run_proactive_catchup();
+                }
+            }
+        });
+    }
+
+    // ── Falsification Metrics CRUD & 3-Round Feynman Coach (Branch C) ────────
+
+    /// Appends a human-authored falsification metric to `workbench/dossiers/<TICKER>.json`.
+    pub fn add_falsification_metric(self, ticker: &str, metric: &str) {
+        let trimmed = metric.trim();
+        let norm_ticker = ticker.trim().to_ascii_uppercase();
+        if norm_ticker.is_empty() || trimmed.is_empty() {
+            return;
+        }
+        let paths = self.paths.get_untracked();
+        let l = self.lang.get_untracked();
+        match store::add_falsification_metric(&paths, &norm_ticker, trimmed) {
+            Ok(dossier) => {
+                if self
+                    .selected_ticker
+                    .get_untracked()
+                    .eq_ignore_ascii_case(&norm_ticker)
+                {
+                    self.selected_dossier.set(Some(dossier));
+                }
+                self.set_info_notice(match l {
+                    UiLang::Zh => format!("已为 {norm_ticker} 添加事前证伪指标"),
+                    UiLang::En => format!("Added falsification metric for {norm_ticker}"),
+                });
+            }
+            Err(err) => {
+                self.set_error_notice(format!(
+                    "{}: {err:#}",
+                    l.t("保存证伪指标失败", "Failed to save falsification metric")
+                ));
+            }
+        }
+    }
+
+    /// Removes a falsification metric at `index` from `workbench/dossiers/<TICKER>.json`.
+    pub fn remove_falsification_metric(self, ticker: &str, index: usize) {
+        let norm_ticker = ticker.trim().to_ascii_uppercase();
+        if norm_ticker.is_empty() {
+            return;
+        }
+        let paths = self.paths.get_untracked();
+        let l = self.lang.get_untracked();
+        match store::remove_falsification_metric(&paths, &norm_ticker, index) {
+            Ok(dossier) => {
+                if self
+                    .selected_ticker
+                    .get_untracked()
+                    .eq_ignore_ascii_case(&norm_ticker)
+                {
+                    self.selected_dossier.set(Some(dossier));
+                }
+                self.set_info_notice(match l {
+                    UiLang::Zh => format!("已移除 {norm_ticker} 的事前证伪指标"),
+                    UiLang::En => format!("Removed falsification metric for {norm_ticker}"),
+                });
+            }
+            Err(err) => {
+                self.set_error_notice(format!(
+                    "{}: {err:#}",
+                    l.t("移除证伪指标失败", "Failed to remove falsification metric")
+                ));
+            }
+        }
+    }
+
+    /// Adopts a suggested falsification metric into the active company's dossier (and into
+    /// the current Feynman draft metrics when a Feynman Coach session is active).
+    pub fn adopt_suggested_falsification_metric(self, metric: &str) {
+        let trimmed = metric.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let target_ticker = match self.feynman_scope.get_untracked() {
+            Some(FeynmanScope::Company { ticker }) if self.feynman_mode_active.get_untracked() => {
+                ticker
+            }
+            _ => self.selected_ticker.get_untracked(),
+        };
+        if !target_ticker.trim().is_empty() {
+            self.add_falsification_metric(&target_ticker, trimmed);
+        }
+        if self.feynman_mode_active.get_untracked() {
+            self.add_feynman_draft_metric(trimmed);
+        }
+    }
+
+    /// Initializes the 3-round Socratic Feynman Coach session for a Company Dossier.
+    pub fn start_company_feynman(self, ticker: &str) {
+        let norm_ticker = ticker.trim().to_ascii_uppercase();
+        if norm_ticker.is_empty() {
+            return;
+        }
+        let paths = self.paths.get_untracked();
+        let scope = FeynmanScope::Company {
+            ticker: norm_ticker.clone(),
+        };
+        let dossier = store::load_dossier(&paths, &norm_ticker).ok().flatten();
+        let archive = feynman::load_defense_history(&paths, &scope).unwrap_or_default();
+
+        self.feynman_scope.set(Some(scope));
+        self.feynman_round.set(1);
+        self.feynman_turns.set(Vec::new());
+        self.feynman_input.set(String::new());
+        self.feynman_draft_stance.set(
+            dossier
+                .as_ref()
+                .and_then(|d| d.human_judgment.my_stance.clone())
+                .unwrap_or_default(),
+        );
+        self.feynman_draft_metrics.set(
+            dossier
+                .as_ref()
+                .map(|d| d.human_judgment.falsification_metrics.clone())
+                .unwrap_or_default(),
+        );
+        self.feynman_busy.set(false);
+        self.feynman_archive_markdown.set(archive);
+        self.feynman_mode_active.set(true);
+    }
+
+    /// Initializes the 3-round Socratic Feynman Coach session for an Industry Study.
+    pub fn start_industry_feynman(self, slug: &str) {
+        let trimmed = slug.trim().to_owned();
+        if trimmed.is_empty() {
+            return;
+        }
+        let paths = self.paths.get_untracked();
+        let scope = FeynmanScope::Industry { slug: trimmed };
+        let archive = feynman::load_defense_history(&paths, &scope).unwrap_or_default();
+
+        self.feynman_scope.set(Some(scope));
+        self.feynman_round.set(1);
+        self.feynman_turns.set(Vec::new());
+        self.feynman_input.set(String::new());
+        self.feynman_draft_stance.set(String::new());
+        self.feynman_draft_metrics.set(Vec::new());
+        self.feynman_busy.set(false);
+        self.feynman_archive_markdown.set(archive);
+        self.feynman_mode_active.set(true);
+    }
+
+    /// Submits the current Feynman defense round answer to Alan for structured Socratic critique.
+    pub fn submit_feynman_round(self) {
+        if self.feynman_busy.get_untracked() {
+            return;
+        }
+        let Some(scope) = self.feynman_scope.get_untracked() else {
+            return;
+        };
+        let l = self.lang.get_untracked();
+        let answer = self.feynman_input.get_untracked().trim().to_owned();
+        if answer.is_empty() {
+            self.set_info_notice(
+                l.t(
+                    "请先输入你对本轮费曼问题的回答",
+                    "Write your answer for this Feynman round first",
+                )
+                .to_owned(),
+            );
+            return;
+        }
+        let round_num = self.feynman_round.get_untracked().clamp(1, 3);
+        let Some(round) = FeynmanRound::from_u8(round_num) else {
+            return;
+        };
+
+        let paths = self.paths.get_untracked();
+        let expected_root = paths.repo_root.clone();
+        let (question, prompt) = match &scope {
+            FeynmanScope::Company { ticker } => {
+                let report = self.reports.with_untracked(|reps| {
+                    reps.iter()
+                        .find(|r| r.ticker.eq_ignore_ascii_case(ticker))
+                        .cloned()
+                });
+                let dossier = self
+                    .selected_dossier
+                    .get_untracked()
+                    .filter(|d| d.ticker.eq_ignore_ascii_case(ticker))
+                    .or_else(|| store::load_dossier(&paths, ticker).ok().flatten());
+                let subject_label = report
+                    .as_ref()
+                    .map(|r| format!("{} ({})", r.ticker, r.name))
+                    .unwrap_or_else(|| ticker.clone());
+                let question = feynman::round_question_prompt(&scope, round, &subject_label, l);
+                let report_summary =
+                    build_company_feynman_summary(ticker, report.as_ref(), dossier.as_ref());
+                let metrics = self.feynman_draft_metrics.get_untracked();
+                let prompt = feynman::compose_company_feynman_critique_prompt(
+                    ticker,
+                    &report_summary,
+                    round,
+                    &question,
+                    &answer,
+                    &metrics,
+                    l,
+                );
+                (question, prompt)
+            }
+            FeynmanScope::Industry { slug } => {
+                let profile_opt = self
+                    .industries
+                    .with_untracked(|list| list.iter().find(|p| p.slug == *slug).cloned())
+                    .or_else(|| industry::load_industry(&paths, slug).ok());
+                let Some(profile) = profile_opt else {
+                    self.set_error_notice(format!(
+                        "{}: {slug}",
+                        l.t("未找到行业研究档案", "Industry study not found")
+                    ));
+                    return;
+                };
+                let primer_excerpt = self
+                    .industry_primer_md
+                    .get_untracked()
+                    .filter(|_| {
+                        self.selected_industry_slug.get_untracked().as_deref() == Some(slug)
+                    })
+                    .or_else(|| industry::load_industry_primer_md(&paths, slug))
+                    .unwrap_or_default();
+                let question = feynman::round_question_prompt(&scope, round, &profile.title, l);
+                let prompt = feynman::compose_industry_feynman_critique_prompt(
+                    &profile,
+                    &primer_excerpt,
+                    round,
+                    &question,
+                    &answer,
+                    l,
+                );
+                (question, prompt)
+            }
+        };
+
+        self.feynman_busy.set(true);
+        let expected_scope = scope.normalized();
+
+        run_blocking_or_err(
+            move || -> Result<feynman::ParsedFeynmanCritique, String> {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("tokio runtime error: {e}"))?;
+                let (parsed, _raw) = rt
+                    .block_on(feynman::evaluate_feynman_round_with_alan(&paths, prompt, l))
+                    .map_err(|e| format!("{e:#}"))?;
+                Ok(parsed)
+            },
+            move |outcome| {
+                self.feynman_busy.set(false);
+                let l = self.lang.get_untracked();
+                if self.paths.get_untracked().repo_root != expected_root {
+                    return;
+                }
+                if self.feynman_scope.get_untracked().map(|s| s.normalized())
+                    != Some(expected_scope)
+                {
+                    return;
+                }
+                match outcome {
+                    Ok(Ok(parsed)) => {
+                        self.feynman_input.set(String::new());
+                        let turn = FeynmanTurn {
+                            round: round_num,
+                            prompt: question,
+                            human_answer: answer,
+                            alan_critique: parsed.critique,
+                            blind_spots: parsed.blind_spots,
+                            suggested_metrics: parsed.suggested_falsification_metrics,
+                        };
+                        self.feynman_turns.update(|turns| {
+                            if let Some(existing) = turns.iter_mut().find(|t| t.round == round_num)
+                            {
+                                *existing = turn;
+                            } else {
+                                turns.push(turn);
+                                turns.sort_by_key(|t| t.round);
+                            }
+                        });
+                        if let Some(next_round) = round.next() {
+                            self.feynman_round.set(next_round.as_u8());
+                        }
+                    }
+                    Ok(Err(err)) | Err(err) => {
+                        self.set_error_notice(format!(
+                            "{}: {err}",
+                            l.t("Alan 费曼点评未完成", "Alan Feynman critique failed")
+                        ));
+                    }
+                }
+            },
+        );
+    }
+
+    pub fn add_feynman_draft_metric(self, metric: &str) {
+        let trimmed = metric.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.feynman_draft_metrics.update(|list| {
+            if !list.iter().any(|existing| existing.trim() == trimmed) {
+                list.push(trimmed.to_owned());
+            }
+        });
+    }
+
+    pub fn remove_feynman_draft_metric(self, index: usize) {
+        self.feynman_draft_metrics.update(|list| {
+            if index < list.len() {
+                list.remove(index);
+            }
+        });
+    }
+
+    /// Persists human sign-off (`feynman_checked_at`, `my_stance`, `falsification_metrics`)
+    /// and appends the Feynman Defense transcript to the markdown archive.
+    pub fn sign_off_feynman_defense(self) {
+        if self.feynman_busy.get_untracked() {
+            return;
+        }
+        let Some(scope) = self.feynman_scope.get_untracked() else {
+            return;
+        };
+        let paths = self.paths.get_untracked();
+        let l = self.lang.get_untracked();
+        let my_stance = self.feynman_draft_stance.get_untracked().trim().to_owned();
+        let metrics = self.feynman_draft_metrics.get_untracked();
+        let turns = self.feynman_turns.get_untracked();
+        let mut blind_spots = Vec::new();
+        let mut seen = HashSet::new();
+        for t in &turns {
+            for b in &t.blind_spots {
+                let bt = b.trim();
+                if !bt.is_empty() && seen.insert(bt.to_owned()) {
+                    blind_spots.push(bt.to_owned());
+                }
+            }
+        }
+        let completed_at = store::civil_today_iso();
+        let summary = feynman::FeynmanDefenseSummary {
+            scope: scope.normalized(),
+            completed_at: completed_at.clone(),
+            my_stance: my_stance.clone(),
+            falsification_metrics: metrics.clone(),
+            blind_spots,
+            turns,
+        };
+
+        if let Err(err) = feynman::append_defense_summary(&paths, &summary) {
+            self.set_error_notice(format!(
+                "{}: {err:#}",
+                l.t("写入费曼答辩归档失败", "Failed to archive Feynman defense")
+            ));
+            return;
+        }
+
+        let archive = feynman::load_defense_history(&paths, &summary.scope).unwrap_or_default();
+        self.feynman_archive_markdown.set(archive);
+
+        match summary.scope {
+            FeynmanScope::Company { ticker } => {
+                match store::apply_feynman_sign_off(
+                    &paths,
+                    &ticker,
+                    my_stance,
+                    metrics,
+                    completed_at,
+                ) {
+                    Ok(updated) => {
+                        if self
+                            .selected_ticker
+                            .get_untracked()
+                            .eq_ignore_ascii_case(&ticker)
+                        {
+                            self.selected_dossier.set(Some(updated));
+                        }
+                        self.feynman_mode_active.set(false);
+                        self.set_info_notice(match l {
+                            UiLang::Zh => {
+                                format!("已完成 {ticker} 费曼答辩签字并归档（现可平顺移入 IN）")
+                            }
+                            UiLang::En => {
+                                format!("Signed off Feynman defense for {ticker} and archived")
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        self.set_error_notice(format!(
+                            "{}: {err:#}",
+                            l.t("保存人类签字结论失败", "Failed to save human sign-off")
+                        ));
+                    }
+                }
+            }
+            FeynmanScope::Industry { slug } => {
+                self.feynman_mode_active.set(false);
+                self.set_info_notice(match l {
+                    UiLang::Zh => format!("已完成行业「{slug}」费曼答辩并归档"),
+                    UiLang::En => format!("Archived Feynman defense for industry \"{slug}\""),
+                });
+            }
+        }
+    }
+
+    pub fn exit_feynman_mode(self) {
+        self.feynman_mode_active.set(false);
+        self.feynman_busy.set(false);
+    }
+}
+
+pub(crate) fn should_open_graduation_gate(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    target: Bucket,
+) -> bool {
+    if target != Bucket::Core {
+        return false;
+    }
+    let upper = ticker.trim().to_ascii_uppercase();
+    if upper.is_empty() {
+        return false;
+    }
+    let dossier = store::load_dossier(paths, &upper)
+        .ok()
+        .flatten()
+        .or_else(|| store::load_dossier(paths, ticker.trim()).ok().flatten());
+    feynman::needs_feynman_graduation_gate(dossier.as_ref())
+}
+
+fn build_company_feynman_summary(
+    ticker: &str,
+    report: Option<&MungerReport>,
+    dossier: Option<&Dossier>,
+) -> String {
+    let mut lines = Vec::new();
+    if let Some(rep) = report {
+        lines.push(format!(
+            "Ticker: {} | Name: {} | Bucket: {}",
+            rep.ticker,
+            rep.name,
+            rep.bucket.code()
+        ));
+        if let Some(p) = &rep.price {
+            lines.push(format!("Latest Price: {} {}", rep.currency, p.price));
+        }
+        if let Some(v) = rep.ttm_valuation.as_ref().or(rep.fy_valuation.as_ref())
+            && let Some(strike) = v.strike_price
+        {
+            lines.push(format!(
+                "Strike Price ({}): {} {strike}",
+                v.basis_label, rep.currency
+            ));
+        }
+        if let Some(roic) = rep.roic_5y_avg_pct {
+            lines.push(format!("5Y Avg ROIC: {}%", roic.round_dp(2).normalize()));
+        }
+        if let Some(gm) = rep.gross_margin_5y_avg_pct {
+            lines.push(format!(
+                "5Y Avg Gross Margin: {}%",
+                gm.round_dp(2).normalize()
+            ));
+        }
+    } else {
+        lines.push(format!("Ticker: {ticker}"));
+    }
+    if let Some(dos) = dossier {
+        if !dos.three_sentence_business.trim().is_empty() {
+            lines.push(format!(
+                "3-Sentence Business: {}",
+                dos.three_sentence_business.trim()
+            ));
+        }
+        if !dos.premortem.is_empty() {
+            lines.push(format!("Premortem Risks: {}", dos.premortem.join("; ")));
+        }
+    }
+    lines.join("\n")
 }
 
 #[allow(clippy::too_many_arguments)]

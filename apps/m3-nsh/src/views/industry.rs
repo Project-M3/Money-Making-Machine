@@ -8,6 +8,7 @@
 //!   with 10-K batch fetch, Living Industry Primer with strict `SEC 10-K` vs `Web`
 //!   source separation, and Alan 4-Lens streaming + Feynman Quiz tutor.
 
+use super::agent::feynman_coach_panel;
 use crate::components::{
     action_button, badge_pill, concept_hint, obsidian_card, seg_group, styled_input, v_divider,
     view_header_strip,
@@ -832,6 +833,7 @@ fn render_industry_workspace(store: AppStore, profile: IndustryProfile) -> View 
         .flex_col()
         .gap(px(16.0))
         .child(render_header_card(store, &profile))
+        .child(feynman_coach_panel(store, true))
         .child(render_sovereignty_card(store, &profile))
         .child(render_peer_matrix_card(store, &profile))
         .child(render_primer_card(store, &profile))
@@ -2581,7 +2583,7 @@ fn render_live_research_and_tutor_card(store: AppStore, profile: &IndustryProfil
         .gap(px(14.0))
         // 4-Lens live progress grid
         .child(render_4lens_live_section(store, slug))
-        // Embedded Alan Tutor & Feynman Quiz
+        // Alan Industry Tutor & Feynman Quiz
         .child(
             view()
                 .w_full()
@@ -2650,6 +2652,38 @@ fn render_live_research_and_tutor_card(store: AppStore, profile: &IndustryProfil
                                         )
                                     },
                                 ))
+                                .child(
+                                    view()
+                                        .flex_shrink_0()
+                                        .px(px(12.0))
+                                        .py(px(6.0))
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .bg(rgba(VIOLET_BG))
+                                        .border_1()
+                                        .border_color(rgba(VIOLET_BORDER))
+                                        .hover(|s| s.bg(rgb(BG_HOVER)))
+                                        .on_press(move || {
+                                            if let Some(slug) =
+                                                store.selected_industry_slug.get_untracked()
+                                            {
+                                                store.start_industry_feynman(&slug);
+                                            }
+                                        })
+                                        .child(
+                                            text(move || {
+                                                store
+                                                    .lang
+                                                    .get()
+                                                    .t("3 轮费曼答辩", "3-Round Feynman Coach")
+                                                    .to_owned()
+                                            })
+                                            .font_family(FONT_UI)
+                                            .text_size(px(TEXT_XS))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(VIOLET_FG)),
+                                        ),
+                                )
                                 .child(
                                     view()
                                         .flex_shrink_0()

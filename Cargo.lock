@@ -2543,7 +2543,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "m3-cli"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2554,7 +2554,7 @@ dependencies = [
 
 [[package]]
 name = "m3-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "alan-agent-engine",
  "alan-ap",
@@ -2582,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "m3-nsh"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "chrono",

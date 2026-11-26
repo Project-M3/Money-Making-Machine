@@ -10,17 +10,17 @@
 
 ---
 
-## Where We Are Today (`v0.2.0 – v0.5.0`, Shipped)
+## Where We Are Today (`v0.2.0 – v0.5.1`, Shipped)
 
-Project M3 has completed its local-first research & zero-friction onboarding foundation across `v0.2`–`v0.5.0`:
+Project M3 has completed its local-first research, zero-friction onboarding, and responsive desktop foundation across `v0.2`–`v0.5.1`:
 
 - **Deterministic Financial Kernel (`m3-core`)**: Fixed-point `rust_decimal` Charlie Calculator (ROIC, Strict Owner Earnings `OCF - CapEx - SBC`, 3Y share dilution, reverse-implied growth, Strike Price, accounting red flags) with SEC EDGAR XBRL SHA-256 provenance.
 - **L0 Full-US Lakehouse & Progressive Bootstrap**: Bulk `companyfacts.zip` & `submissions.zip` ingestion into immutable ZSTD Parquet generations and embedded `m3.duckdb` (`6,000+` issuers), sub-second screening, SIC peer percentiles, and non-blocking 2-phase progressive L0 onboarding.
-- **L1 Event Inbox & Latent Search**: Zero-LLM-token filing watcher (`8-K`, `10-K`, `10-Q`, RSS news) and local 256d cosine + BM25 hybrid retrieval with verbatim primary-source evidence cards.
+- **L1 Event Inbox & Latent Search**: Zero-LLM-token filing watcher (`8-K`, `10-K`, `10-Q`, RSS news) and local ~4x faster 256d cosine + BM25 hybrid retrieval (`search_similar`) with verbatim primary-source evidence cards.
 - **L2 Alan Deep Research, 5-Provider Setup & Industry Studio**: In-app **Alan** setup across OpenRouter, OpenAI Responses, ChatGPT OAuth, Google Vertex AI & Magpie, four-perspective adversarial interrogation (*Moat*, *Accounting*, *Latent Peers*, *5Y Pre-Mortem*) behind hard monthly USD/token and weekly quotas, preserving `human_judgment` and `## Human Notes`.
-- **Native macOS Desktop (`apps/m3-nsh`), Agent CLI (`m3`) & `m3 mcp`**: Smoked-black glass Longbridge NSH `0.7.0` bilingual Zh/En workbench, Canvas K-line & scatter charts, `⌘K` Command Palette, Settings Modal (`⌘,`), macOS-style Storage Manager, SHA-256 atomic updater, structured `m3` CLI, and read-only `m3 mcp` server (14 tools) + Agent Skill.
+- **Native macOS Desktop (`apps/m3-nsh`), Agent CLI (`m3`) & `m3 mcp`**: Smoked-black glass Longbridge NSH `0.7.0` bilingual Zh/En workbench with zero-blank-screen startup hydration, off-thread Research Desk loading, canonical `WATCH → IN → OUT → TOO HARD` Circle order, non-destructive watchlist removal, Canvas K-line & scatter charts, `⌘K` Command Palette, Settings Modal (`⌘,`), macOS-style Storage Manager, SHA-256 atomic updater, structured `m3` CLI, and read-only `m3 mcp` server (14 tools) + Agent Skill.
 
-> **Honest `0.x` Boundary**: As of `v0.5.0`, M3 is strictly a **research & paper-journaling instrument** (`PAPER RESEARCH`). It does not yet connect to brokerage accounts or execute live trades. Milestones `v0.6 → v1.0` close that loop deliberately and safely.
+> **Honest `0.x` Boundary**: As of `v0.5.1`, M3 is strictly a **research & paper-journaling instrument** (`PAPER RESEARCH`). It does not yet connect to brokerage accounts or execute live trades. Milestones `v0.6 → v1.0` close that loop deliberately and safely.
 
 ---
 
@@ -30,7 +30,9 @@ Project M3 has completed its local-first research & zero-friction onboarding fou
 | :--- | :--- | :--- | :--- |
 | **`v0.4.x`** | **Munger Research Workbench** | Full-US Lakehouse (`L0`/`L1`/`L2`), Industry Studio, NSH 0.7 macOS UI, Storage Manager, `m3` CLI | **Shipped** |
 | **`v0.5`** | **Zero-Friction Onboarding & Alan Setup** | In-app 5-provider Alan setup, guided starter workspace, progressive L0 bootstrap, `m3 mcp` server & Agent Skills, smoked-glass UI | **Shipped** |
-| **`v0.6`** | **Proactive Alan & Multi-Market** | Event-driven Alan auto-triage, falsification watchdog, scheduled Circle briefings, interactive Feynman tutor, HK equities | **Next** |
+| **`v0.5.1`** | **Startup & Circle Polish** | Zero-blank-screen startup (`e23259f`), off-thread Research Desk & 4x faster `search_similar`, non-destructive Circle removal, `WATCH → IN → OUT → TOO HARD` | **Shipped** |
+| **`v0.6.0`** | **Proactive Alan** | Branch A (L1.5 Circle Filing Watchdog), Branch B (Calm Briefings + NSH `0.7.0` Tray Keep-Alive), Branch C (3-Round Socratic Feynman Coach & `WATCH → IN` Soft Gate) | **Next** |
+| **`v0.6.5`** | **Multi-Market & HKEX Expansion** | `HKEX` filing ingestion alongside US SEC EDGAR, dual-market data pipelines, and multi-currency accounting | **Planned** |
 | **`v0.7`** | **Programmable Strategy Engine & Paper Broker** | Declarative/scriptable value strategies, point-in-time historical backtesting on DuckDB/Parquet, built-in Paper Broker | **Planned** |
 | **`v0.8`** | **Deterministic RiskEngine & Brokerage Adapters** | Hardcoded Rust `RiskEngine` guardrails + unified `BrokerAdapter` (**Longbridge OpenAPI** US/HK + **Alpaca** US) | **Planned** |
 | **`v0.9 – v1.0`** | **Autonomous Alan Portfolio Sleeves** | Owner-defined capital sleeves & investment mandates driven by built-in Alan (`Research Only` / `Approval` / `Autonomous`) | **Planned** |
@@ -51,14 +53,42 @@ Make M3 immediately useful within two minutes of installation—both for first-t
 
 ---
 
-### `v0.6` — Proactive Alan & Multi-Market Foundation (`Next`)
+### `v0.5.1` — Startup Hydration, Research Desk Performance & Canonical Circle Order (`Shipped` · `e23259f`)
 
-Turn M3's built-in **Alan** runtime from an on-demand responder into a calm, proactive Munger-style analyst:
+Eliminate startup flashes and UI-thread stalls while aligning Circle ordering and non-destructive editing:
 
-- **Event-Driven Alan Monitoring**: Automatically triage newly ingested `8-K` / `10-K` / `10-Q` filings against your active Circle companies and pre-registered falsification criteria (`falsification_metrics`).
-- **Scheduled Briefings & Falsification Watchdog**: Surface calm daily/weekly digests only when fundamentals move meaningfully or a valuation approaches Strike Price—never noisy intraday tick alerts.
-- **Interactive Feynman Coach**: Structured voice/text Socratic defense drills with Alan inside Industry Studio and Company Desk before graduating a company into `Core`.
-- **Hong Kong Equities (`HKEX`) Expansion**: Unified multi-currency accounting & filing ingestion alongside US SEC EDGAR inside the shared `m3-core` model and DuckDB lakehouse.
+- **Zero-Blank-Screen Startup**: Hydrate primary Inbox and Circle state before frame 1 with `startup_hydrated` empty-state guards.
+- **Off-Thread Research Desk & ~4x Faster `search_similar`**: Move DuckDB context queries (`research_runs`, `peers`, `search_similar`, budget) off the UI thread with request-sequence guards, and speed up `search_similar` via zero-allocation BM25 scanning and streaming cosine similarity.
+- **Non-Destructive Circle Removal & Canonical Order**: Add non-destructive "Remove from Circle" (preserving dossiers, memos, and journal entries) and standardize bucket order to **`WATCH → IN → OUT → TOO HARD`** across core, desktop, and website.
+
+---
+
+### `v0.6.0` — Proactive Alan (`Next`)
+
+Turn **Alan** inside M3 from an on-demand responder into a calm, bounded, human-sovereign Munger analyst across three focused branches (see [docs/v0.6-proactive-alan.md](./docs/v0.6-proactive-alan.md)):
+
+- **Branch A — L1.5 Circle Filing Watchdog**:
+  - Watches **`WATCH` (`待审讯`) + `IN` (`核心击球`)** Circle companies only (`OUT`, `TOO HARD`, and non-Circle Discovery signals remain at 0 LLM tokens).
+  - Classifies newly ingested filings into `Noise | Material | FalsificationAlert` with verbatim primary-source quotes (`TriageQuote`).
+  - **`Noise`** is collapsed in the UI and **never auto-deleted or archived** (`SignalStatus` untouched); **`FalsificationAlert`** is surfaced in coral with a one-click 4-lens Deep Research trigger (**never auto-triggered**).
+  - Includes an in-app `falsification_metrics` CRUD editor in Company Desk and deterministic `Dossier.premortem` fallback (`fallback_no_metrics_warning`) when explicit falsification metrics are not yet registered.
+- **Branch B — Calm Daily/Weekly Briefings + NSH `0.7.0` Native Background Keep-Alive**:
+  - Single-process background lifecycle via NSH `0.7.0` `AppOptions::keep_alive_on_close` + macOS Menu Bar `SetTray`, avoiding DuckDB (`m3.duckdb`) cross-process file lock conflicts without separate `launchd` daemons.
+  - Builds a deterministic 3-part briefing skeleton (*Strike Radar* for `WATCH + IN` in Strike Zone or `<=15%` above Strike, *Filing & Red-Flag Delta*, *Alan L1.5 Watchdog Hits*) plus at most 1 lightweight Alan Munger-style executive summary call—skipped at **0 LLM tokens** during quiet periods (`"无球可挥 · 耐心等待"` / `"No Fat Pitches · Stay Patient"`).
+  - Persisted locally in DuckDB (`circle_briefings`) and surfaced via the `⌘1` segmented `简报 | 事件流` Briefing view, `m3 briefing` CLI, and read-only `m3 mcp` tools.
+- **Branch C — Interactive 3-Round Socratic Feynman Coach & `WATCH → IN` Soft Gate**:
+  - Text-first 3-round Socratic defense (*Moat & Unit Economics* → *5-Year Failure Modes & Testable Falsification Metrics* → *Valuation Margin of Safety & Kill Criteria*) inside Company Desk and Industry Studio, compatible with macOS native Dictation.
+  - Explicit human sign-off atomically writes `my_stance`, `falsification_metrics`, and `feynman_checked_at`, clears `pending_human_review`, and archives the defense summary to Markdown (`workbench/memos/<TICKER>-feynman.md` or `workbench/industries/<slug>/feynman-defense.md`).
+  - Moving a company from `WATCH` (`待审讯`) to `IN` (`核心击球`) invokes a calm **`WATCH → IN` Soft Gate** dialog when Feynman verification is missing or pending review.
+
+---
+
+### `v0.6.5` — Multi-Market & HKEX Expansion (`Planned`)
+
+Expand M3's deterministic lakehouse and filing pipelines beyond US equities:
+
+- **Hong Kong Equities (`HKEX`) Filings**: Ingest `HKEX` corporate filings alongside US SEC EDGAR into the shared `m3-core` and DuckDB/Parquet lakehouse.
+- **Dual-Market Data & Multi-Currency Accounting**: Support USD/HKD reporting, FX-aware `rust_decimal` valuation metrics, and unified cross-market Circle screening without compromising single-market provenance.
 
 ---
 

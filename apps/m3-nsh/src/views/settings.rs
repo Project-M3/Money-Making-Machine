@@ -66,6 +66,7 @@ fn render_settings_tab_body(store: AppStore, ver_for_body: String) -> View {
             .flex_col()
             .gap(px(20.0))
             .child(render_alan_connection_card(store))
+            .child(render_proactive_alan_card(store))
             .child(render_mcp_card(store))
             .child(render_budget_card(store)),
         SettingsTab::Data => view()
@@ -555,6 +556,221 @@ fn render_updates_card(store: AppStore, ver_text: &str) -> View {
                     .child(setting_chip("Releases ↗", false, false, None, || {
                         open_external_url(M3_RELEASES_URL)
                     }))
+            })),
+    )
+}
+
+fn render_proactive_alan_card(store: AppStore) -> View {
+    let triage_quotas: [usize; 4] = [0, 5, 10, 20];
+    let summary_quotas: [usize; 3] = [0, 1, 2];
+    let refresh_hours: [u64; 4] = [2, 4, 6, 12];
+
+    section_block(
+        move || {
+            store
+                .lang
+                .get()
+                .t(
+                    "Proactive Alan · 主动巡检与简报",
+                    "Proactive Alan · Watchdog & Briefings",
+                )
+                .to_owned()
+        },
+        Some(Box::new(move || {
+            store
+                .lang
+                .get()
+                .t(
+                    "L1.5 仅盯防 WATCH + IN 能力圈公告；所有主动巡检与简报均受下方月度美元/Token 硬上限约束，静默期保持 0 Token。",
+                    "L1.5 watches Circle WATCH + IN filings only. All proactive runs remain governed by your monthly USD/token hard ceilings, with 0 tokens in quiet periods.",
+                )
+                .to_owned()
+        })),
+        None,
+        obsidian_card()
+            .child(dynamic(move || {
+                let l = store.lang.get();
+                let cfg = store.budget_config.get();
+                let enabled = cfg.proactive_triage_enabled;
+                let daily_triage = cfg.daily_triage_quota;
+                let daily_summary = cfg.daily_briefing_summary_quota;
+                let refresh_h = cfg.background_refresh_hours;
+
+                setting_row_static(
+                    l.t("启用后台主动巡检与简报", "Enable Proactive Watchdog & Briefings"),
+                    Some(l.t(
+                        "仅对 WATCH + IN 标的做 L1.5 初筛，绝不自动归档噪声或自动触发深研。",
+                        "Runs L1.5 triage on WATCH + IN only; never auto-archives noise or triggers Deep Research.",
+                    )),
+                    None,
+                    false,
+                    true,
+                )
+                .child(
+                    view().flex_shrink_0().child(
+                        seg_group()
+                            .child(seg_tab(
+                                l.t("关闭", "Off"),
+                                !enabled,
+                                None,
+                                false,
+                                move || {
+                                    store.save_proactive_settings(
+                                        false,
+                                        daily_triage,
+                                        daily_summary,
+                                        refresh_h,
+                                    );
+                                },
+                            ))
+                            .child(seg_tab(
+                                l.t("开启", "On"),
+                                enabled,
+                                Some((EMERALD_FG, EMERALD_BG)),
+                                false,
+                                move || {
+                                    store.save_proactive_settings(
+                                        true,
+                                        daily_triage,
+                                        daily_summary,
+                                        refresh_h,
+                                    );
+                                },
+                            )),
+                    ),
+                )
+            }))
+            .child(dynamic(move || {
+                let l = store.lang.get();
+                let cfg = store.budget_config.get();
+                let enabled = cfg.proactive_triage_enabled;
+                let daily_triage = cfg.daily_triage_quota;
+                let daily_summary = cfg.daily_briefing_summary_quota;
+                let refresh_h = cfg.background_refresh_hours;
+
+                setting_row_static(
+                    l.t("每日 L1.5 公告初筛配额", "Daily L1.5 Triage Quota"),
+                    Some(l.t(
+                        "超出配额或月度硬上限时自动停止调用模型",
+                        "Stops LLM triage once daily quota or monthly ceiling is reached",
+                    )),
+                    None,
+                    false,
+                    true,
+                )
+                .child(
+                    view()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .children(triage_quotas.into_iter().map(|q| {
+                            let active = daily_triage == q;
+                            setting_chip(
+                                &format!("{q}/d"),
+                                active,
+                                true,
+                                Some((SKY_FG, SKY_BG, SKY_BORDER)),
+                                move || {
+                                    store.save_proactive_settings(
+                                        enabled,
+                                        q,
+                                        daily_summary,
+                                        refresh_h,
+                                    );
+                                },
+                            )
+                        })),
+                )
+            }))
+            .child(dynamic(move || {
+                let l = store.lang.get();
+                let cfg = store.budget_config.get();
+                let enabled = cfg.proactive_triage_enabled;
+                let daily_triage = cfg.daily_triage_quota;
+                let daily_summary = cfg.daily_briefing_summary_quota;
+                let refresh_h = cfg.background_refresh_hours;
+
+                setting_row_static(
+                    l.t("每日简报摘要配额", "Daily Briefing Summary Quota"),
+                    Some(l.t(
+                        "静默无异动日强制 0 Token；有实质异动时最多消耗 1 次轻量摘要",
+                        "Quiet periods always use 0 tokens; material updates use at most 1 lightweight summary",
+                    )),
+                    None,
+                    false,
+                    true,
+                )
+                .child(
+                    view()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .children(summary_quotas.into_iter().map(|q| {
+                            let active = daily_summary == q;
+                            setting_chip(
+                                &format!("{q}/d"),
+                                active,
+                                true,
+                                Some((VIOLET_FG, VIOLET_BG, VIOLET_BORDER)),
+                                move || {
+                                    store.save_proactive_settings(
+                                        enabled,
+                                        daily_triage,
+                                        q,
+                                        refresh_h,
+                                    );
+                                },
+                            )
+                        })),
+                )
+            }))
+            .child(dynamic(move || {
+                let l = store.lang.get();
+                let cfg = store.budget_config.get();
+                let enabled = cfg.proactive_triage_enabled;
+                let daily_triage = cfg.daily_triage_quota;
+                let daily_summary = cfg.daily_briefing_summary_quota;
+                let refresh_h = cfg.background_refresh_hours;
+
+                setting_row_static(
+                    l.t("后台巡检周期", "Background Refresh Interval"),
+                    Some(l.t(
+                        "受月度 USD / Token 硬上限与菜单栏保活调度双重约束",
+                        "Governed by monthly USD/token hard ceilings and menu-bar keep-alive loop",
+                    )),
+                    None,
+                    false,
+                    false,
+                )
+                .child(
+                    view()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .children(refresh_hours.into_iter().map(|h| {
+                            let active = refresh_h == h;
+                            setting_chip(
+                                &format!("{h}h"),
+                                active,
+                                true,
+                                Some((EMERALD_FG, EMERALD_BG, EMERALD_BORDER)),
+                                move || {
+                                    store.save_proactive_settings(
+                                        enabled,
+                                        daily_triage,
+                                        daily_summary,
+                                        h,
+                                    );
+                                },
+                            )
+                        })),
+                )
             })),
     )
 }
@@ -1489,8 +1705,8 @@ fn render_mcp_card(store: AppStore) -> View {
                 .lang
                 .get()
                 .t(
-                    "只读 stdio MCP 服务（14 个确定性工具），供 Claude Code、Codex 与 Cursor 接入当前工作区。",
-                    "Read-only stdio MCP server (14 deterministic tools) for Claude Code, Codex, and Cursor.",
+                    "只读 stdio MCP 服务（17 个确定性工具），供 Claude Code、Codex 与 Cursor 接入当前工作区。",
+                    "Read-only stdio MCP server (17 deterministic tools) for Claude Code, Codex, and Cursor.",
                 )
                 .to_owned()
         })),
@@ -1542,7 +1758,7 @@ fn render_mcp_card(store: AppStore) -> View {
                             .items_center()
                             .gap(px(8.0))
                             .child(badge_pill(
-                                l.t("只读 · 14 Tools", "Read-Only · 14 Tools").to_owned(),
+                                l.t("只读 · 17 Tools", "Read-Only · 17 Tools").to_owned(),
                                 INK_SECONDARY,
                                 SLATE_BG,
                                 SLATE_BORDER,

@@ -94,6 +94,7 @@ pub fn company_view(store: AppStore) -> impl IntoElement {
             .normalize()
             .to_string(),
     );
+    let metric_draft = signal(String::new());
     sync_decimal_input_effect(store.sandbox_multiple, mult_text);
     sync_decimal_input_effect(store.sandbox_target_return, ret_text);
     sync_decimal_input_effect(store.sandbox_expected_growth, gro_text);
@@ -117,7 +118,12 @@ pub fn company_view(store: AppStore) -> impl IntoElement {
                     .min_w(px(0.0))
                     .min_h(px(0.0))
                     .child(financials_memo_body(
-                        store, &rep, mult_text, ret_text, gro_text,
+                        store,
+                        &rep,
+                        mult_text,
+                        ret_text,
+                        gro_text,
+                        metric_draft,
                     ))
                     .into_element(),
                 CompanyViewTab::DeepResearchAlan => agent_view(store).into_element(),
@@ -286,7 +292,7 @@ fn rich_top_bar(store: AppStore) -> View {
                                 true,
                                 move || {
                                     if !active {
-                                        store.move_company_bucket(&t_move, b);
+                                        store.request_bucket_change(&t_move, b);
                                     }
                                 },
                             )
@@ -395,6 +401,7 @@ fn financials_memo_body(
     mult_text: Signal<String>,
     ret_text: Signal<String>,
     gro_text: Signal<String>,
+    metric_draft: Signal<String>,
 ) -> View {
     let l = store.lang.get();
     let use_ttm = store.use_ttm_basis.get();
@@ -443,13 +450,146 @@ fn financials_memo_body(
     // 5. Living Research Memo Preview (Summary + ## Human Notes read-only)
     canvas_col = canvas_col.child(living_research_memo_card(store, true));
 
-    // 6. Human Judgment · Feynman Gate
-    if let Some(dossier) = store.selected_dossier.get() {
-        let human = &dossier.human_judgment;
-        let checked_label = human.feynman_checked_at.clone();
-        canvas_col = canvas_col.child(
-            obsidian_card()
-                .p(px(20.0))
+    // 6. Human Judgment · Feynman Gate & Pre-Falsification Metrics CRUD
+    canvas_col = canvas_col.child(human_judgment_card(store, &rep.ticker, metric_draft));
+
+    canvas_col
+}
+
+fn human_judgment_card(store: AppStore, ticker: &str, metric_draft: Signal<String>) -> View {
+    let norm_ticker = ticker.trim().to_ascii_uppercase();
+    let ticker_for_body = norm_ticker.clone();
+    let ticker_for_input = norm_ticker.clone();
+    let ticker_for_btn = norm_ticker;
+
+    obsidian_card()
+        .p(px(20.0))
+        .flex()
+        .flex_col()
+        .gap(px(14.0))
+        .child(dynamic(move || {
+            let l = store.lang.get();
+            let tk = ticker_for_body.clone();
+            let tk_feynman = tk.clone();
+            let dossier_opt = store.selected_dossier.get();
+            let (pending_review, my_stance, weight_rationale, metrics, checked_at) =
+                match dossier_opt.as_ref() {
+                    Some(d) => (
+                        d.human_judgment.pending_human_review,
+                        d.human_judgment.my_stance.clone(),
+                        d.human_judgment.weight_rationale.clone(),
+                        d.human_judgment.falsification_metrics.clone(),
+                        d.human_judgment.feynman_checked_at.clone(),
+                    ),
+                    None => (true, None, None, Vec::new(), None),
+                };
+
+            let mut suggested_from_alan: Vec<String> = Vec::new();
+            store.signal_triages.with(|triages| {
+                for tr in triages {
+                    if !tr.ticker.eq_ignore_ascii_case(&tk) {
+                        continue;
+                    }
+                    for m in &tr.suggested_metrics {
+                        let trimmed = m.trim();
+                        if !trimmed.is_empty()
+                            && !metrics.iter().any(|e| e.trim() == trimmed)
+                            && !suggested_from_alan.iter().any(|s| s == trimmed)
+                        {
+                            suggested_from_alan.push(trimmed.to_owned());
+                        }
+                    }
+                }
+            });
+
+            let status_badge = if let Some(checked) = checked_at.as_deref() {
+                badge_pill(
+                    match l {
+                        UiLang::Zh => format!("已费曼核验 · {checked}"),
+                        UiLang::En => format!("Feynman Checked · {checked}"),
+                    },
+                    EMERALD_FG,
+                    EMERALD_BG,
+                    EMERALD_BORDER,
+                )
+            } else if !pending_review {
+                badge_pill(
+                    l.t("已确认", "Verified").to_owned(),
+                    EMERALD_FG,
+                    EMERALD_BG,
+                    EMERALD_BORDER,
+                )
+            } else {
+                badge_pill(
+                    l.t("待 3 轮费曼答辩", "Pending 3-Round Feynman").to_owned(),
+                    GOLD_FG,
+                    GOLD_BG,
+                    GOLD_BORDER,
+                )
+            };
+
+            let mut metrics_list = view().flex().flex_col().gap(px(6.0));
+            if metrics.is_empty() {
+                metrics_list = metrics_list.child(
+                    text(l.t(
+                        "（尚未设置事前证伪指标；L1.5 巡检将回退至事前验尸与确定性红灯检查）",
+                        "(No falsification metrics yet; L1.5 watchdog falls back to pre-mortem & deterministic warnings)",
+                    ))
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .text_color(rgb(INK_MUTED)),
+                );
+            } else {
+                for (idx, m) in metrics.into_iter().enumerate() {
+                    let tk_rm = tk.clone();
+                    metrics_list = metrics_list.child(
+                        view()
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .rounded_sm()
+                            .bg(rgb(BG_VIEWPORT))
+                            .border_1()
+                            .border_color(rgb(BORDER_HAIRLINE))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(10.0))
+                            .child(
+                                view().flex_1().min_w(px(0.0)).child(
+                                    text(format!("• {m}"))
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_BASE))
+                                        .line_height(px(20.0))
+                                        .text_color(rgb(INK_PRIMARY)),
+                                ),
+                            )
+                            .child(
+                                view()
+                                    .flex_shrink_0()
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded_xs()
+                                    .bg(rgb(BG_WELL))
+                                    .border_1()
+                                    .border_color(rgb(BORDER_SUBTLE))
+                                    .hover(|s| s.bg(rgba(CORAL_BG)))
+                                    .cursor_pointer()
+                                    .on_press(move || {
+                                        store.remove_falsification_metric(&tk_rm, idx);
+                                    })
+                                    .child(
+                                        text(l.t("移除", "Remove"))
+                                            .font_family(FONT_UI)
+                                            .text_size(px(TEXT_2XS))
+                                            .text_color(rgb(INK_MUTED)),
+                                    ),
+                            ),
+                    );
+                }
+            }
+
+            let mut card_col = view()
                 .flex()
                 .flex_col()
                 .gap(px(14.0))
@@ -459,6 +599,8 @@ fn financials_memo_body(
                         .flex_row()
                         .items_center()
                         .justify_between()
+                        .flex_wrap()
+                        .gap(px(8.0))
                         .pb(px(10.0))
                         .border_b_1()
                         .border_color(rgb(BORDER_HAIRLINE))
@@ -487,21 +629,19 @@ fn financials_memo_body(
                                     .text_color(rgb(INK_MUTED)),
                                 ),
                         )
-                        .child(if human.pending_human_review {
-                            badge_pill(
-                                l.t("待答辩", "Pending Review"),
-                                GOLD_FG,
-                                GOLD_BG,
-                                GOLD_BORDER,
-                            )
-                        } else {
-                            badge_pill(
-                                l.t("已确认", "Verified"),
-                                EMERALD_FG,
-                                EMERALD_BG,
-                                EMERALD_BORDER,
-                            )
-                        }),
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(status_badge)
+                                .child(action_button(
+                                    l.t("开启 3 轮费曼答辩", "Start 3-Round Feynman Defense"),
+                                    pending_review || checked_at.is_none(),
+                                    move || store.start_graduation_feynman(&tk_feynman),
+                                )),
+                        ),
                 )
                 .child(
                     view()
@@ -511,8 +651,7 @@ fn financials_memo_body(
                         .child(
                             view().flex_1().min_w(px(0.0)).child(prose_block(
                                 l.t("我的定性判词 (my_stance)", "My Stance (my_stance)"),
-                                human
-                                    .my_stance
+                                my_stance
                                     .as_deref()
                                     .unwrap_or_else(|| l.t("（待填写）", "(pending)")),
                             )),
@@ -523,8 +662,7 @@ fn financials_memo_body(
                                     "分歧权重判断 (weight_rationale)",
                                     "Sizing / Weight Rationale (weight_rationale)",
                                 ),
-                                human
-                                    .weight_rationale
+                                weight_rationale
                                     .as_deref()
                                     .unwrap_or_else(|| l.t("（待填写）", "(pending)")),
                             )),
@@ -536,17 +674,14 @@ fn financials_memo_body(
                         .border_t_1()
                         .border_color(rgb(BORDER_HAIRLINE))
                         .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(16.0))
+                        .flex_col()
+                        .gap(px(8.0))
                         .child(
                             view()
-                                .flex_1()
-                                .min_w(px(0.0))
                                 .flex()
-                                .flex_col()
-                                .gap(px(4.0))
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
                                 .child(
                                     text(l.t(
                                         "事前证伪指标 (falsification_metrics)",
@@ -557,40 +692,121 @@ fn financials_memo_body(
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(rgb(INK_SECONDARY)),
                                 )
-                                .child(if human.falsification_metrics.is_empty() {
+                                .child(if let Some(checked) = checked_at {
                                     view().child(
-                                        text(l.t("（尚未设置）", "(none configured)"))
-                                            .font_family(FONT_UI)
+                                        text(format!("{} {checked}", l.t("核验时间", "Checked")))
+                                            .font_family(FONT_MONO_NUM)
                                             .text_size(px(TEXT_XS))
-                                            .text_color(rgb(INK_MUTED)),
+                                            .text_color(rgb(EMERALD_FG)),
                                     )
                                 } else {
-                                    view().flex().flex_col().gap(px(4.0)).children(
-                                        human.falsification_metrics.iter().map(|m| {
-                                            text(format!("• {m}"))
-                                                .font_family(FONT_UI)
-                                                .text_size(px(TEXT_BASE))
-                                                .line_height(px(20.0))
-                                                .text_color(rgb(INK_PRIMARY))
-                                        }),
-                                    )
+                                    view()
                                 }),
                         )
-                        .child(if let Some(checked) = checked_label {
-                            view().child(
-                                text(format!("{} {checked}", l.t("核验时间", "Checked")))
-                                    .font_family(FONT_MONO_NUM)
-                                    .text_size(px(TEXT_XS))
-                                    .text_color(rgb(EMERALD_FG)),
-                            )
-                        } else {
-                            view()
-                        }),
-                ),
-        );
-    }
+                        .child(metrics_list),
+                );
 
-    canvas_col
+            if !suggested_from_alan.is_empty() {
+                card_col = card_col.child(
+                    view()
+                        .p(px(10.0))
+                        .rounded_sm()
+                        .bg(rgba(VIOLET_BG))
+                        .border_1()
+                        .border_color(rgba(VIOLET_BORDER))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.0))
+                        .child(
+                            text(l.t(
+                                "Alan 巡检建议的事前证伪指标（需本人点击采纳）：",
+                                "Alan Watchdog Suggested Falsification Metrics (human adoption only):",
+                            ))
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_XS))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(VIOLET_FG)),
+                        )
+                        .child(view().flex().flex_col().gap(px(6.0)).children(
+                            suggested_from_alan.into_iter().map(|m| {
+                                let m_adopt = m.clone();
+                                view()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(8.0))
+                                    .child(
+                                        view().flex_1().min_w(px(0.0)).child(
+                                            text(format!("+ {m}"))
+                                                .font_family(FONT_UI)
+                                                .text_size(px(TEXT_XS))
+                                                .text_color(rgb(INK_PRIMARY)),
+                                        ),
+                                    )
+                                    .child(action_button(
+                                        l.t("采纳", "Adopt"),
+                                        false,
+                                        move || store.adopt_suggested_falsification_metric(&m_adopt),
+                                    ))
+                            }),
+                        )),
+                );
+            }
+
+            card_col
+        }))
+        // Inline CRUD add input mounted OUTSIDE dynamic() so IME & focus stay intact
+        .child(
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    styled_input(
+                        move || metric_draft.get(),
+                        move || {
+                            store
+                                .lang
+                                .get()
+                                .t(
+                                    "新增可量化证伪指标（例如：连续两季毛利率 < 62% 或 SBC/OCF > 15%）…",
+                                    "Add testable falsification metric (e.g. Gross margin < 62% for 2Q)…",
+                                )
+                                .to_owned()
+                        },
+                        false,
+                    )
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .on_change(move |val: &str| metric_draft.set(val.to_owned()))
+                    .on_submit(move |val: &str| {
+                        let trimmed = val.trim().to_owned();
+                        if !trimmed.is_empty() {
+                            store.add_falsification_metric(&ticker_for_input, &trimmed);
+                            metric_draft.set(String::new());
+                        }
+                    }),
+                )
+                .child(action_button(
+                    move || {
+                        store
+                            .lang
+                            .get()
+                            .t("添加证伪指标", "Add Metric")
+                            .to_owned()
+                    },
+                    false,
+                    move || {
+                        let trimmed = metric_draft.get_untracked().trim().to_owned();
+                        if !trimmed.is_empty() {
+                            store.add_falsification_metric(&ticker_for_btn, &trimmed);
+                            metric_draft.set(String::new());
+                        }
+                    },
+                )),
+        )
 }
 
 fn kline_and_sandbox_card(
@@ -2108,7 +2324,7 @@ fn properties_rail(store: AppStore) -> Scroll {
                     .gap(px(6.0))
                     .on_press(move || {
                         if !active {
-                            store.move_company_bucket(&t_move, target);
+                            store.request_bucket_change(&t_move, target);
                         }
                     })
                     .child(view().w(px(5.0)).h(px(5.0)).rounded_full().bg(rgb(fg)))

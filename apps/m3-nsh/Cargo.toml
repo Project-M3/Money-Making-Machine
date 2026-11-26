@@ -1,6 +1,6 @@
 [package]
 name = "m3-nsh"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "NSH 0.7.0 cross-platform UI shell for Project M3 (Munger value investing workbench)"

@@ -54,7 +54,23 @@ fn default_output_usd_per_1m_tokens() -> Decimal {
     Decimal::new(1500, 2) // $15.00 / 1M output tokens
 }
 
-/// Persisted L2 Deep Research budget & auto-trigger limits (`workbench/budget.json`).
+fn default_proactive_triage_enabled() -> bool {
+    true
+}
+
+fn default_daily_triage_quota() -> usize {
+    10
+}
+
+fn default_daily_briefing_summary_quota() -> usize {
+    1
+}
+
+fn default_background_refresh_hours() -> u64 {
+    4
+}
+
+/// Persisted L2 Deep Research & Proactive Alan budget limits (`workbench/budget.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetConfig {
     #[serde(default = "default_schema_version")]
@@ -75,6 +91,14 @@ pub struct BudgetConfig {
     pub input_usd_per_1m_tokens: Decimal,
     #[serde(default = "default_output_usd_per_1m_tokens", with = "serde_decimal")]
     pub output_usd_per_1m_tokens: Decimal,
+    #[serde(default = "default_proactive_triage_enabled")]
+    pub proactive_triage_enabled: bool,
+    #[serde(default = "default_daily_triage_quota")]
+    pub daily_triage_quota: usize,
+    #[serde(default = "default_daily_briefing_summary_quota")]
+    pub daily_briefing_summary_quota: usize,
+    #[serde(default = "default_background_refresh_hours")]
+    pub background_refresh_hours: u64,
 }
 
 impl Default for BudgetConfig {
@@ -89,11 +113,15 @@ impl Default for BudgetConfig {
             weekly_auto_quota: 0,
             input_usd_per_1m_tokens: default_input_usd_per_1m_tokens(),
             output_usd_per_1m_tokens: default_output_usd_per_1m_tokens(),
+            proactive_triage_enabled: default_proactive_triage_enabled(),
+            daily_triage_quota: default_daily_triage_quota(),
+            daily_briefing_summary_quota: default_daily_briefing_summary_quota(),
+            background_refresh_hours: default_background_refresh_hours(),
         }
     }
 }
 
-/// Result of pre-flight hard budget gating before booting `EmbeddedAlan` or invoking an LLM.
+/// Result of pre-flight hard budget gating before booting Alan or invoking an LLM.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetDecision {
     pub allowed: bool,
@@ -118,7 +146,6 @@ pub fn load_budget_config(paths: &WorkspacePaths) -> Result<BudgetConfig> {
 }
 
 /// Atomically persists `workbench/budget.json`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn save_budget_config(paths: &WorkspacePaths, cfg: &BudgetConfig) -> Result<()> {
     store::write_json_atomic(&budget_path(paths), cfg)
 }
@@ -143,30 +170,27 @@ pub fn estimate_cost_usd(cfg: &BudgetConfig, input_tokens: u64, output_tokens: u
         .normalize()
 }
 
-/// Evaluates whether a Deep Research run may proceed under monthly, per-run, and auto quotas.
-pub fn evaluate_budget_gate(
+fn evaluate_monthly_ceiling(
     cfg: &BudgetConfig,
     monthly_tokens: u64,
     monthly_usd: Decimal,
-    weekly_auto_runs: usize,
-    is_auto_trigger: bool,
-) -> BudgetDecision {
+) -> std::result::Result<(Decimal, u64), BudgetDecision> {
     let remaining_monthly_usd = (cfg.monthly_budget_usd - monthly_usd)
         .max(Decimal::ZERO)
         .normalize();
     let remaining_monthly_tokens = cfg.monthly_token_limit.saturating_sub(monthly_tokens);
 
     if cfg.monthly_budget_usd <= Decimal::ZERO {
-        return BudgetDecision {
+        return Err(BudgetDecision {
             allowed: false,
             reason: Some("月度 AI 预算上限为 $0.00，已硬拦截".to_owned()),
             remaining_monthly_usd: Decimal::ZERO,
             remaining_monthly_tokens,
-        };
+        });
     }
 
     if monthly_usd >= cfg.monthly_budget_usd {
-        return BudgetDecision {
+        return Err(BudgetDecision {
             allowed: false,
             reason: Some(format!(
                 "本月 AI 预算已用尽（已用 ${} / 上限 ${}）",
@@ -175,20 +199,20 @@ pub fn evaluate_budget_gate(
             )),
             remaining_monthly_usd: Decimal::ZERO,
             remaining_monthly_tokens,
-        };
+        });
     }
 
     if cfg.monthly_token_limit == 0 {
-        return BudgetDecision {
+        return Err(BudgetDecision {
             allowed: false,
             reason: Some("月度 Token 上限为 0，已硬拦截".to_owned()),
             remaining_monthly_usd,
             remaining_monthly_tokens: 0,
-        };
+        });
     }
 
     if monthly_tokens >= cfg.monthly_token_limit {
-        return BudgetDecision {
+        return Err(BudgetDecision {
             allowed: false,
             reason: Some(format!(
                 "本月 Token 配额已用尽（已用 {} / 上限 {}）",
@@ -196,8 +220,25 @@ pub fn evaluate_budget_gate(
             )),
             remaining_monthly_usd,
             remaining_monthly_tokens: 0,
-        };
+        });
     }
+
+    Ok((remaining_monthly_usd, remaining_monthly_tokens))
+}
+
+/// Evaluates whether a Deep Research run may proceed under monthly, per-run, and auto quotas.
+pub fn evaluate_budget_gate(
+    cfg: &BudgetConfig,
+    monthly_tokens: u64,
+    monthly_usd: Decimal,
+    weekly_auto_runs: usize,
+    is_auto_trigger: bool,
+) -> BudgetDecision {
+    let (remaining_monthly_usd, remaining_monthly_tokens) =
+        match evaluate_monthly_ceiling(cfg, monthly_tokens, monthly_usd) {
+            Ok(headroom) => headroom,
+            Err(blocked) => return blocked,
+        };
 
     if cfg.per_run_budget_usd <= Decimal::ZERO {
         return BudgetDecision {
@@ -235,6 +276,87 @@ pub fn evaluate_budget_gate(
             reason: Some(format!(
                 "本周自动触发 Deep Research 配额已用尽（{} / {}）",
                 weekly_auto_runs, cfg.weekly_auto_quota
+            )),
+            remaining_monthly_usd,
+            remaining_monthly_tokens,
+        };
+    }
+
+    BudgetDecision {
+        allowed: true,
+        reason: None,
+        remaining_monthly_usd,
+        remaining_monthly_tokens,
+    }
+}
+
+/// Evaluates whether a proactive L1.5 Circle Filing Watchdog triage call may proceed
+/// under both monthly hard ceilings and the daily triage quota.
+pub fn evaluate_proactive_triage_gate(
+    cfg: &BudgetConfig,
+    monthly_tokens: u64,
+    monthly_usd: Decimal,
+    triages_today: usize,
+) -> BudgetDecision {
+    let (remaining_monthly_usd, remaining_monthly_tokens) =
+        match evaluate_monthly_ceiling(cfg, monthly_tokens, monthly_usd) {
+            Ok(headroom) => headroom,
+            Err(blocked) => return blocked,
+        };
+
+    if !cfg.proactive_triage_enabled {
+        return BudgetDecision {
+            allowed: false,
+            reason: Some(
+                "主动 L1.5 信号初筛已关闭（请在 budget.json 开启 proactive_triage_enabled）"
+                    .to_owned(),
+            ),
+            remaining_monthly_usd,
+            remaining_monthly_tokens,
+        };
+    }
+
+    if cfg.daily_triage_quota == 0 || triages_today >= cfg.daily_triage_quota {
+        return BudgetDecision {
+            allowed: false,
+            reason: Some(format!(
+                "今日 L1.5 信号初筛配额已用尽（{} / {}）",
+                triages_today, cfg.daily_triage_quota
+            )),
+            remaining_monthly_usd,
+            remaining_monthly_tokens,
+        };
+    }
+
+    BudgetDecision {
+        allowed: true,
+        reason: None,
+        remaining_monthly_usd,
+        remaining_monthly_tokens,
+    }
+}
+
+/// Evaluates whether a Calm Briefing Alan executive summary call may proceed
+/// under both monthly hard ceilings and the daily briefing summary quota.
+pub fn evaluate_briefing_summary_gate(
+    cfg: &BudgetConfig,
+    monthly_tokens: u64,
+    monthly_usd: Decimal,
+    summaries_today: usize,
+) -> BudgetDecision {
+    let (remaining_monthly_usd, remaining_monthly_tokens) =
+        match evaluate_monthly_ceiling(cfg, monthly_tokens, monthly_usd) {
+            Ok(headroom) => headroom,
+            Err(blocked) => return blocked,
+        };
+
+    if cfg.daily_briefing_summary_quota == 0 || summaries_today >= cfg.daily_briefing_summary_quota
+    {
+        return BudgetDecision {
+            allowed: false,
+            reason: Some(format!(
+                "今日简报 Alan 摘要配额已用尽（{} / {}）",
+                summaries_today, cfg.daily_briefing_summary_quota
             )),
             remaining_monthly_usd,
             remaining_monthly_tokens,
@@ -1019,17 +1141,106 @@ mod tests {
         assert_eq!(cfg.weekly_auto_quota, 0);
         assert_eq!(cfg.input_usd_per_1m_tokens, Decimal::new(300, 2));
         assert_eq!(cfg.output_usd_per_1m_tokens, Decimal::new(1500, 2));
+        assert!(cfg.proactive_triage_enabled);
+        assert_eq!(cfg.daily_triage_quota, 10);
+        assert_eq!(cfg.daily_briefing_summary_quota, 1);
+        assert_eq!(cfg.background_refresh_hours, 4);
 
         let custom = BudgetConfig {
             monthly_budget_usd: Decimal::new(2550, 2),
             auto_trigger_enabled: true,
             weekly_auto_quota: 3,
+            proactive_triage_enabled: false,
+            daily_triage_quota: 5,
+            daily_briefing_summary_quota: 2,
+            background_refresh_hours: 6,
             ..cfg
         };
         save_budget_config(&paths, &custom).unwrap();
         let reloaded = load_budget_config(&paths).unwrap();
         assert_eq!(reloaded, custom);
         let _ = fs::remove_dir_all(&paths.repo_root);
+    }
+
+    #[test]
+    fn legacy_budget_json_deserializes_with_proactive_defaults() {
+        let legacy_json = r#"{
+            "schema_version": 1,
+            "monthly_budget_usd": "12.50",
+            "per_run_budget_usd": "0.75",
+            "monthly_token_limit": 2000000,
+            "per_run_token_limit": 120000,
+            "auto_trigger_enabled": false,
+            "weekly_auto_quota": 0,
+            "input_usd_per_1m_tokens": "3",
+            "output_usd_per_1m_tokens": "15"
+        }"#;
+        let cfg: BudgetConfig = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(cfg.monthly_budget_usd, Decimal::new(1250, 2));
+        assert!(cfg.proactive_triage_enabled);
+        assert_eq!(cfg.daily_triage_quota, 10);
+        assert_eq!(cfg.daily_briefing_summary_quota, 1);
+        assert_eq!(cfg.background_refresh_hours, 4);
+    }
+
+    #[test]
+    fn proactive_triage_and_briefing_gates_enforce_daily_quotas_and_monthly_ceilings() {
+        let cfg = BudgetConfig::default();
+
+        let triage_ok = evaluate_proactive_triage_gate(&cfg, 50_000, Decimal::new(100, 2), 9);
+        assert!(triage_ok.allowed);
+        assert!(triage_ok.reason.is_none());
+
+        let triage_quota_hit =
+            evaluate_proactive_triage_gate(&cfg, 50_000, Decimal::new(100, 2), 10);
+        assert!(!triage_quota_hit.allowed);
+
+        let triage_disabled = evaluate_proactive_triage_gate(
+            &BudgetConfig {
+                proactive_triage_enabled: false,
+                ..cfg.clone()
+            },
+            0,
+            Decimal::ZERO,
+            0,
+        );
+        assert!(!triage_disabled.allowed);
+
+        let triage_monthly_usd_hit =
+            evaluate_proactive_triage_gate(&cfg, 0, Decimal::new(1000, 2), 0);
+        assert!(!triage_monthly_usd_hit.allowed);
+        assert_eq!(triage_monthly_usd_hit.remaining_monthly_usd, Decimal::ZERO);
+
+        let triage_monthly_tok_hit =
+            evaluate_proactive_triage_gate(&cfg, 2_000_000, Decimal::ZERO, 0);
+        assert!(!triage_monthly_tok_hit.allowed);
+        assert_eq!(triage_monthly_tok_hit.remaining_monthly_tokens, 0);
+
+        let briefing_ok = evaluate_briefing_summary_gate(&cfg, 50_000, Decimal::new(100, 2), 0);
+        assert!(briefing_ok.allowed);
+
+        let briefing_quota_hit =
+            evaluate_briefing_summary_gate(&cfg, 50_000, Decimal::new(100, 2), 1);
+        assert!(!briefing_quota_hit.allowed);
+
+        let briefing_zero_quota = evaluate_briefing_summary_gate(
+            &BudgetConfig {
+                daily_briefing_summary_quota: 0,
+                ..cfg.clone()
+            },
+            0,
+            Decimal::ZERO,
+            0,
+        );
+        assert!(!briefing_zero_quota.allowed);
+
+        let briefing_monthly_usd_hit =
+            evaluate_briefing_summary_gate(&cfg, 0, Decimal::new(1000, 2), 0);
+        assert!(!briefing_monthly_usd_hit.allowed);
+
+        let briefing_monthly_tok_hit =
+            evaluate_briefing_summary_gate(&cfg, 2_000_000, Decimal::ZERO, 0);
+        assert!(!briefing_monthly_tok_hit.allowed);
     }
 
     #[test]

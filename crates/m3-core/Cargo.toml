@@ -1,6 +1,6 @@
 [package]
 name = "m3-core"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Core financial arithmetic, SEC EDGAR/DuckDB lakehouse, Alan integration, and storage abstractions for Project M3"

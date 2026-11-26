@@ -1,9 +1,10 @@
 use crate::{
-    MAX_FILTER_METRIC, MAX_L1_LIST_LIMIT, MAX_MIN_YEARS, MAX_PEERS_LIMIT, MAX_SCREEN_LIMIT,
-    MAX_SIMILAR_LIMIT, MIN_FILTER_METRIC, cmd_budget_status, cmd_doctor_for_workspace, cmd_dossier,
-    cmd_report, cmd_status, cmd_storage_with_updater, cmd_themes_list, cmd_universe_status,
-    execute_inbox_list, execute_industry_list, execute_industry_show, execute_universe_peers,
-    execute_universe_screen, execute_universe_similar,
+    MAX_BRIEFING_LIST_LIMIT, MAX_FILTER_METRIC, MAX_L1_LIST_LIMIT, MAX_MIN_YEARS, MAX_PEERS_LIMIT,
+    MAX_SCREEN_LIMIT, MAX_SIMILAR_LIMIT, MAX_TRIAGE_LIMIT, MIN_FILTER_METRIC, cmd_budget_status,
+    cmd_doctor_for_workspace, cmd_dossier, cmd_report, cmd_status, cmd_storage_with_updater,
+    cmd_themes_list, cmd_universe_status, execute_briefing_latest, execute_briefing_list,
+    execute_inbox_list, execute_industry_list, execute_industry_show, execute_triage_list,
+    execute_universe_peers, execute_universe_screen, execute_universe_similar,
 };
 use anyhow::{Context, Result, ensure};
 use m3_core::{
@@ -11,6 +12,7 @@ use m3_core::{
     lake::{UniverseFilter, UniverseSortBy},
     lake_l1::{SignalKind, SignalStatus, SimilarSearchFilter},
     model::parse_decimal_token,
+    proactive::{BriefingPeriod, TriageVerdict},
     store::{self, WorkspacePaths},
     update,
 };
@@ -507,6 +509,35 @@ impl McpServer {
                     cmd_storage_with_updater(paths, &["status".into()], self.updater_dir.as_deref())
                 }))
             }
+            "m3_briefing_latest" => {
+                reject_unknown_keys(args, &["period"])?;
+                let period = optional_briefing_period(args, "period")?;
+                Ok(self
+                    .require_workspace()
+                    .and_then(|paths| execute_briefing_latest(paths, period)))
+            }
+            "m3_briefing_list" => {
+                reject_unknown_keys(args, &["period", "limit"])?;
+                let period = optional_briefing_period(args, "period")?;
+                let limit =
+                    optional_usize_range(args, "limit", 1, MAX_BRIEFING_LIST_LIMIT)?.unwrap_or(10);
+                Ok(self
+                    .require_workspace()
+                    .and_then(|paths| execute_briefing_list(paths, period, limit)))
+            }
+            "m3_triage_list" => {
+                reject_unknown_keys(args, &["ticker", "verdict", "limit"])?;
+                let ticker =
+                    optional_trimmed_string(args, "ticker")?.map(|t| t.to_ascii_uppercase());
+                let verdict = match optional_trimmed_string(args, "verdict")? {
+                    None => None,
+                    Some(raw) => Some(parse_mcp_triage_verdict(&raw)?),
+                };
+                let limit = optional_usize_range(args, "limit", 1, MAX_TRIAGE_LIMIT)?.unwrap_or(50);
+                Ok(self.require_workspace().and_then(|paths| {
+                    execute_triage_list(paths, ticker.as_deref(), verdict, limit)
+                }))
+            }
             unknown => Err(JsonRpcError::invalid_params(format!(
                 "unknown tool `{unknown}`"
             ))),
@@ -641,7 +672,7 @@ fn empty_object_schema() -> Value {
     })
 }
 
-/// Return the canonical list of 14 deterministic read-only M3 MCP tool definitions.
+/// Return the canonical list of 17 deterministic read-only M3 MCP tool definitions.
 pub fn tool_definitions() -> Vec<Value> {
     vec![
         tool_def(
@@ -917,6 +948,69 @@ pub fn tool_definitions() -> Vec<Value> {
             "Inspect local disk usage across M3's 5 storage buckets (including protected personal_workbench). Read-only; never deletes personal_workbench.",
             empty_object_schema(),
         ),
+        tool_def(
+            "m3_briefing_latest",
+            "Fetch the latest persisted calm Circle briefing (Strike Radar, Filing & Red-Flag Delta, Alan L1.5 Watchdog Hits) from DuckDB (read-only).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "period": {
+                        "type": "string",
+                        "enum": ["daily", "weekly"],
+                        "description": "Optional briefing cadence filter (daily or weekly)."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        tool_def(
+            "m3_briefing_list",
+            "List persisted calm Circle briefings newest-first from DuckDB (read-only).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "period": {
+                        "type": "string",
+                        "enum": ["daily", "weekly"],
+                        "description": "Optional briefing cadence filter (daily or weekly)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10,
+                        "description": "Maximum briefings returned (1..=50, default: 10)."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        tool_def(
+            "m3_triage_list",
+            "List persisted L1.5 Circle Filing Watchdog triage evaluations and daily triage quota status from DuckDB (read-only).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Optional stock ticker symbol filter (e.g. MCO)."
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["noise", "material", "falsification_alert"],
+                        "description": "Optional Watchdog triage verdict filter."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 50,
+                        "description": "Maximum triage records returned (1..=100, default: 50)."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -1055,6 +1149,33 @@ fn optional_decimal_range(
     Ok(Some(parsed))
 }
 
+fn optional_briefing_period(
+    map: &Map<String, Value>,
+    key: &str,
+) -> std::result::Result<Option<BriefingPeriod>, JsonRpcError> {
+    match optional_trimmed_string(map, key)? {
+        None => Ok(None),
+        Some(raw) => match raw.to_ascii_lowercase().as_str() {
+            "daily" => Ok(Some(BriefingPeriod::Daily)),
+            "weekly" => Ok(Some(BriefingPeriod::Weekly)),
+            _ => Err(JsonRpcError::invalid_params(format!(
+                "invalid `{key}`: expected `daily` or `weekly`, got `{raw}`"
+            ))),
+        },
+    }
+}
+
+fn parse_mcp_triage_verdict(raw: &str) -> std::result::Result<TriageVerdict, JsonRpcError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "noise" => Ok(TriageVerdict::Noise),
+        "material" => Ok(TriageVerdict::Material),
+        "falsification_alert" => Ok(TriageVerdict::FalsificationAlert),
+        _ => Err(JsonRpcError::invalid_params(format!(
+            "invalid `verdict`: expected noise|material|falsification_alert, got `{raw}`"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1073,6 +1194,10 @@ mod tests {
         model::{
             Bucket, CompanyEntry, DataSource, DecisionJournal, Dossier, HumanJudgment, Latticework,
             ValuationAssumptions, WarningFlag, WarningSeverity, WatchlistFile,
+        },
+        proactive::{
+            BriefingPeriod, CircleBriefing, SignalTriageRecord, TriageQuote, TriageVerdict,
+            WatchdogHitItem,
         },
     };
     use std::fs;
@@ -1428,6 +1553,9 @@ mod tests {
             "m3_budget_status",
             "m3_themes_list",
             "m3_storage_status",
+            "m3_briefing_latest",
+            "m3_briefing_list",
+            "m3_triage_list",
         ];
         assert_eq!(tools.len(), expected_names.len());
         let actual_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -1690,7 +1818,7 @@ mod tests {
 
         let r3: Value = serde_json::from_str(lines[2]).unwrap();
         assert_eq!(r3["id"], 3);
-        assert_eq!(r3["result"]["tools"].as_array().unwrap().len(), 14);
+        assert_eq!(r3["result"]["tools"].as_array().unwrap().len(), 17);
 
         let r4: Value = serde_json::from_str(lines[3]).unwrap();
         assert_eq!(r4["id"], 4);
@@ -1698,6 +1826,154 @@ mod tests {
         let status_body: Value =
             serde_json::from_str(r4["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(status_body["data"]["companies"][0]["ticker"], "MCO");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_proactive_tools_handle_empty_and_seeded_workspaces_read_only() {
+        let dir = temp_workspace_dir("proactive-tools");
+        let paths = WorkspacePaths::from_root(dir.clone());
+        let mut empty_server = McpServer::with_workspace(paths.clone());
+
+        // Workspace without m3.duckdb returns None / empty lists gracefully without crashing.
+        let (err, pre_latest) = parse_tool_payload(&call_tool(
+            &mut empty_server,
+            100,
+            "m3_briefing_latest",
+            json!({"period": "daily"}),
+        ));
+        assert!(!err);
+        assert_eq!(pre_latest["data"]["briefing"], Value::Null);
+
+        let (err, pre_list) = parse_tool_payload(&call_tool(
+            &mut empty_server,
+            101,
+            "m3_briefing_list",
+            json!({}),
+        ));
+        assert!(!err);
+        assert_eq!(pre_list["data"]["count"], 0);
+
+        let (err, pre_triage) = parse_tool_payload(&call_tool(
+            &mut empty_server,
+            102,
+            "m3_triage_list",
+            json!({}),
+        ));
+        assert!(!err);
+        assert_eq!(pre_triage["data"]["count"], 0);
+        assert_eq!(pre_triage["data"]["daily_quota"], 10);
+        assert!(!paths.lake_db_path().exists());
+
+        let paths = seed_synthetic_workspace(&dir);
+        let mut server = McpServer::with_workspace(paths.clone());
+
+        // Seed proactive briefing & triage records using LakeDb wrappers.
+        let now = store::now_ms();
+        {
+            let db = LakeDb::open(&paths).unwrap();
+            db.upsert_signal_triage(&SignalTriageRecord {
+                signal_id: "sig-mco-strike".into(),
+                ticker: "MCO".into(),
+                verdict: TriageVerdict::Material,
+                headline: "MIS issuance acceleration".into(),
+                rationale: "Debt issuance rebounded cleanly.".into(),
+                matched_metrics: vec!["Operating margin < 35%".into()],
+                suggested_metrics: vec![],
+                quotes: vec![TriageQuote {
+                    section: "item_7".into(),
+                    filing_date: Some("2026-02-15".into()),
+                    quote: "Corporate issuance grew 18% YoY.".into(),
+                    source_url: "https://www.sec.gov/mco".into(),
+                }],
+                fallback_no_metrics_warning: false,
+                model_used: "test-model".into(),
+                tokens_used: 1200,
+                cost_usd: Decimal::new(1, 2),
+                created_at_ms: now,
+            })
+            .unwrap();
+
+            db.upsert_circle_briefing(&CircleBriefing {
+                briefing_id: "briefing-daily-2026-11-26".into(),
+                period: BriefingPeriod::Daily,
+                period_key: "2026-11-26".into(),
+                generated_at_ms: now,
+                lang: m3_core::UiLang::En,
+                is_quiet: false,
+                headline: "Circle Daily Briefing · 1 Watchdog Hits".into(),
+                executive_summary: Some("Watchdog flagged MIS issuance acceleration.".into()),
+                summary_tokens_used: 300,
+                summary_cost_usd: Decimal::new(2, 3),
+                strike_radar: vec![],
+                filing_deltas: vec![],
+                watchdog_hits: vec![WatchdogHitItem {
+                    signal_id: "sig-mco-strike".into(),
+                    ticker: "MCO".into(),
+                    verdict: TriageVerdict::Material,
+                    headline: "MIS issuance acceleration".into(),
+                    rationale: "Debt issuance rebounded cleanly.".into(),
+                    fallback_no_metrics_warning: false,
+                    quotes: vec![],
+                    created_at_ms: now,
+                }],
+            })
+            .unwrap();
+        }
+
+        let (err, latest) = parse_tool_payload(&call_tool(
+            &mut server,
+            103,
+            "m3_briefing_latest",
+            json!({"period": "daily"}),
+        ));
+        assert!(!err);
+        assert_eq!(
+            latest["data"]["briefing"]["briefing_id"],
+            "briefing-daily-2026-11-26"
+        );
+
+        let (err, list) = parse_tool_payload(&call_tool(
+            &mut server,
+            104,
+            "m3_briefing_list",
+            json!({"period": "daily", "limit": 5}),
+        ));
+        assert!(!err);
+        assert_eq!(list["data"]["count"], 1);
+
+        let (err, triage) = parse_tool_payload(&call_tool(
+            &mut server,
+            105,
+            "m3_triage_list",
+            json!({"ticker": "mco", "verdict": "material", "limit": 10}),
+        ));
+        assert!(!err);
+        assert_eq!(triage["data"]["count"], 1);
+        assert_eq!(triage["data"]["triages_today"], 1);
+        assert_eq!(triage["data"]["remaining_today"], 9);
+        assert_eq!(triage["data"]["triages"][0]["signal_id"], "sig-mco-strike");
+
+        // Invalid params yield JSON-RPC -32602.
+        let bad_period = call_tool(
+            &mut server,
+            106,
+            "m3_briefing_latest",
+            json!({"period": "monthly"}),
+        );
+        assert_eq!(bad_period["error"]["code"], JSONRPC_INVALID_PARAMS);
+
+        let bad_verdict = call_tool(
+            &mut server,
+            107,
+            "m3_triage_list",
+            json!({"verdict": "bogus"}),
+        );
+        assert_eq!(bad_verdict["error"]["code"], JSONRPC_INVALID_PARAMS);
+
+        let bad_limit = call_tool(&mut server, 108, "m3_briefing_list", json!({"limit": 999}));
+        assert_eq!(bad_limit["error"]["code"], JSONRPC_INVALID_PARAMS);
 
         let _ = fs::remove_dir_all(&dir);
     }

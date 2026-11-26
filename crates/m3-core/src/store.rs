@@ -142,9 +142,12 @@ impl WorkspacePaths {
         self.industries_dir().join(format!("{slug}.md"))
     }
 
+    pub fn dossiers_dir(&self) -> PathBuf {
+        self.workbench_dir.join("dossiers")
+    }
+
     pub fn dossier_path(&self, ticker: &str) -> PathBuf {
-        self.workbench_dir
-            .join("dossiers")
+        self.dossiers_dir()
             .join(format!("{}.json", market::safe_symbol_filename(ticker)))
     }
 
@@ -371,6 +374,158 @@ pub fn load_dossier(paths: &WorkspacePaths, ticker: &str) -> Result<Option<Dossi
         return Ok(None);
     }
     read_json(&path).map(Some)
+}
+
+fn normalize_dossier_ticker(raw: &str) -> Result<String> {
+    let upper = raw.trim().to_ascii_uppercase();
+    anyhow::ensure!(
+        !upper.is_empty()
+            && upper != "."
+            && upper != ".."
+            && !upper.contains('/')
+            && !upper.contains('\\'),
+        "公司代码不能为空或包含非法路径字符"
+    );
+    Ok(upper)
+}
+
+fn normalize_falsification_metrics(metrics: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for item in metrics {
+        let trimmed = item.trim();
+        if !trimmed.is_empty() && seen.insert(trimmed.to_owned()) {
+            out.push(trimmed.to_owned());
+        }
+    }
+    out
+}
+
+pub fn save_dossier(paths: &WorkspacePaths, dossier: &Dossier) -> Result<()> {
+    let upper = normalize_dossier_ticker(&dossier.ticker)?;
+    let mut normalized = dossier.clone();
+    normalized.ticker = upper.clone();
+    write_json_atomic(&paths.dossier_path(&upper), &normalized)
+}
+
+pub fn load_or_init_dossier(paths: &WorkspacePaths, ticker: &str) -> Result<Dossier> {
+    let upper = normalize_dossier_ticker(ticker)?;
+    if let Some(mut existing) = load_dossier(paths, &upper)? {
+        existing.ticker = upper;
+        return Ok(existing);
+    }
+    let raw_trimmed = ticker.trim();
+    if !raw_trimmed.is_empty()
+        && raw_trimmed != upper
+        && let Some(mut existing) = load_dossier(paths, raw_trimmed)?
+    {
+        existing.ticker = upper;
+        return Ok(existing);
+    }
+
+    let resolved_name = load_watchlist(paths)
+        .ok()
+        .and_then(|wl| {
+            wl.companies
+                .into_iter()
+                .find(|c| c.ticker.eq_ignore_ascii_case(&upper))
+                .map(|c| c.name)
+        })
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| upper.clone());
+
+    Ok(Dossier {
+        schema_version: 1,
+        ticker: upper,
+        name: resolved_name,
+        updated_at: civil_today_iso(),
+        draft_source: "human_init".to_owned(),
+        three_sentence_business: String::new(),
+        latticework: Latticework {
+            microeconomics: String::new(),
+            ecology: String::new(),
+            psychology_incentives: String::new(),
+            capital_allocation: String::new(),
+        },
+        premortem: Vec::new(),
+        open_questions: Vec::new(),
+        human_judgment: HumanJudgment {
+            pending_human_review: true,
+            my_stance: None,
+            weight_rationale: None,
+            falsification_metrics: Vec::new(),
+            feynman_checked_at: None,
+        },
+    })
+}
+
+pub fn update_falsification_metrics(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    metrics: Vec<String>,
+) -> Result<Dossier> {
+    let mut dossier = load_or_init_dossier(paths, ticker)?;
+    dossier.human_judgment.falsification_metrics = normalize_falsification_metrics(metrics);
+    dossier.updated_at = civil_today_iso();
+    save_dossier(paths, &dossier)?;
+    Ok(dossier)
+}
+
+pub fn add_falsification_metric(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    metric: &str,
+) -> Result<Dossier> {
+    let trimmed = metric.trim();
+    let mut dossier = load_or_init_dossier(paths, ticker)?;
+    if trimmed.is_empty() {
+        return Ok(dossier);
+    }
+    let mut metrics = dossier.human_judgment.falsification_metrics.clone();
+    metrics.push(trimmed.to_owned());
+    dossier.human_judgment.falsification_metrics = normalize_falsification_metrics(metrics);
+    dossier.updated_at = civil_today_iso();
+    save_dossier(paths, &dossier)?;
+    Ok(dossier)
+}
+
+pub fn remove_falsification_metric(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    index: usize,
+) -> Result<Dossier> {
+    let mut dossier = load_or_init_dossier(paths, ticker)?;
+    if index < dossier.human_judgment.falsification_metrics.len() {
+        dossier.human_judgment.falsification_metrics.remove(index);
+        dossier.updated_at = civil_today_iso();
+        save_dossier(paths, &dossier)?;
+    }
+    Ok(dossier)
+}
+
+pub fn apply_feynman_sign_off(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    my_stance: String,
+    falsification_metrics: Vec<String>,
+    checked_at_iso: String,
+) -> Result<Dossier> {
+    let mut dossier = load_or_init_dossier(paths, ticker)?;
+    let stance_trimmed = my_stance.trim().to_owned();
+    dossier.human_judgment.my_stance = (!stance_trimmed.is_empty()).then_some(stance_trimmed);
+    dossier.human_judgment.falsification_metrics =
+        normalize_falsification_metrics(falsification_metrics);
+    let checked_trimmed = checked_at_iso.trim();
+    let checked = if checked_trimmed.is_empty() {
+        civil_today_iso()
+    } else {
+        checked_trimmed.to_owned()
+    };
+    dossier.human_judgment.feynman_checked_at = Some(checked);
+    dossier.human_judgment.pending_human_review = false;
+    dossier.updated_at = civil_today_iso();
+    save_dossier(paths, &dossier)?;
+    Ok(dossier)
 }
 
 pub fn load_cached_price(paths: &WorkspacePaths, symbol: &str) -> Option<PriceSnapshot> {
@@ -3978,6 +4133,97 @@ mod tests {
         assert_eq!(after.companies[0].ticker, "COST");
         assert!(memo_path.exists());
         assert!(dossier_path.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dossier_human_judgment_helpers_save_deduplicate_and_sign_off_atomically() {
+        let dir = std::env::temp_dir().join(format!(
+            "m3-dossier-helpers-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let paths = WorkspacePaths::from_root(dir.clone());
+
+        let init = load_or_init_dossier(&paths, " hrmy ").unwrap();
+        assert_eq!(init.ticker, "HRMY");
+        assert!(init.human_judgment.pending_human_review);
+        assert!(init.human_judgment.falsification_metrics.is_empty());
+        assert_eq!(init.human_judgment.feynman_checked_at, None);
+
+        let updated = update_falsification_metrics(
+            &paths,
+            "hrmy",
+            vec![
+                "  Gross margin < 75% ".into(),
+                "".into(),
+                "Gross margin < 75%".into(),
+                "ROIC < 15%".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            updated.human_judgment.falsification_metrics,
+            vec!["Gross margin < 75%", "ROIC < 15%"]
+        );
+        assert!(paths.dossiers_dir().join("HRMY.json").exists());
+
+        let added = add_falsification_metric(&paths, "HRMY", "  Net debt / OE > 2x  ").unwrap();
+        assert_eq!(
+            added.human_judgment.falsification_metrics,
+            vec!["Gross margin < 75%", "ROIC < 15%", "Net debt / OE > 2x"]
+        );
+        // Adding duplicate or blank preserves order and does not duplicate.
+        let deduped = add_falsification_metric(&paths, "HRMY", "ROIC < 15%").unwrap();
+        assert_eq!(deduped.human_judgment.falsification_metrics.len(), 3);
+        let blank_noop = add_falsification_metric(&paths, "HRMY", "   ").unwrap();
+        assert_eq!(blank_noop.human_judgment.falsification_metrics.len(), 3);
+
+        let removed = remove_falsification_metric(&paths, "HRMY", 1).unwrap();
+        assert_eq!(
+            removed.human_judgment.falsification_metrics,
+            vec!["Gross margin < 75%", "Net debt / OE > 2x"]
+        );
+        // Out-of-bounds index is a safe no-op.
+        let oob = remove_falsification_metric(&paths, "HRMY", 99).unwrap();
+        assert_eq!(oob.human_judgment.falsification_metrics.len(), 2);
+
+        let signed = apply_feynman_sign_off(
+            &paths,
+            "hrmy",
+            "  Core compounder at <= 15x owner earnings  ".into(),
+            vec![
+                "WAKIX Rx < 5%".into(),
+                "WAKIX Rx < 5%".into(),
+                "  ".into(),
+                "Gross margin < 75%".into(),
+            ],
+            "2026-11-26T04:30:00Z".into(),
+        )
+        .unwrap();
+        assert!(!signed.human_judgment.pending_human_review);
+        assert_eq!(
+            signed.human_judgment.my_stance.as_deref(),
+            Some("Core compounder at <= 15x owner earnings")
+        );
+        assert_eq!(
+            signed.human_judgment.falsification_metrics,
+            vec!["WAKIX Rx < 5%", "Gross margin < 75%"]
+        );
+        assert_eq!(
+            signed.human_judgment.feynman_checked_at.as_deref(),
+            Some("2026-11-26T04:30:00Z")
+        );
+
+        let reloaded = load_or_init_dossier(&paths, "HRMY").unwrap();
+        assert!(!reloaded.human_judgment.pending_human_review);
+        assert_eq!(
+            reloaded.human_judgment.feynman_checked_at.as_deref(),
+            Some("2026-11-26T04:30:00Z")
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -1449,7 +1449,7 @@ fn quick_move_strip(store: AppStore, ticker: &str, current: Bucket) -> View {
                 .cursor_pointer()
                 .on_press(move || {
                     if !active {
-                        store.move_company_bucket(&tk, target);
+                        store.request_bucket_change(&tk, target);
                     }
                 })
                 .child(

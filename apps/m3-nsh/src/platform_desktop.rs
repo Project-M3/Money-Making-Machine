@@ -3,17 +3,22 @@
 //!
 //! Isolated here so `stores/*` and `views/*` remain iOS-ready via `os()` branching.
 
-use crate::stores::{AppStore, CompanyViewTab, WorkspaceTab};
+use crate::stores::{AppStore, CompanyViewTab, SignalTriageRecord, TriageVerdict, WorkspaceTab};
+use crate::theme::{CORAL_FG, EMERALD_FG};
 use m3_core::i18n::UiLang;
-use m3_core::model::Bucket;
+use m3_core::lake_l1::{SignalInboxRow, SignalStatus};
+use m3_core::model::{Bucket, MungerReport, StrikeZoneStatus};
 use m3_core::update::{self, ReleaseChannel};
-use nsh_core::desktop::{Backdrop, MenuRole, TitleBarOptions, TitleBarStyle, WindowAttributes};
+use nsh_core::desktop::{
+    Backdrop, MenuRole, TitleBarOptions, TitleBarStyle, TrayTitleRun, WindowAttributes,
+};
 use nsh_core::element::desktop::{
-    MenuItem, popup_menu_at, restart, set_application_menu, title_bar,
+    MenuItem, popup_menu_at, quit, restart, set_application_menu, set_tray, title_bar, tray,
 };
 use nsh_core::file_dialog::OpenDialog;
 use nsh_core::platform::Os;
 use nsh_core::prelude::*;
+use std::collections::HashSet;
 use std::path::Path;
 
 pub const M3_WEBSITE_URL: &str = "https://m3.thinksmart.systems";
@@ -245,6 +250,137 @@ pub fn bind_live_application_menu(store: AppStore) {
         let lang = store.lang.get();
         let channel = store.update_channel.get();
         set_application_menu(Some(build_app_menus(lang, channel, store)));
+    });
+}
+
+/// Counts active Circle `WATCH + IN` `FalsificationAlert`s and Strike Zone companies.
+pub fn count_circle_tray_badges(
+    reports: &[MungerReport],
+    inbox_signals: &[SignalInboxRow],
+    signal_triages: &[SignalTriageRecord],
+) -> (usize, usize) {
+    let mut circle_tickers = HashSet::new();
+    let mut strike_hits = 0usize;
+
+    for rep in reports {
+        if !matches!(rep.bucket, Bucket::Watch | Bucket::Core) {
+            continue;
+        }
+        circle_tickers.insert(rep.ticker.trim().to_ascii_uppercase());
+        let latest_price = rep.price.as_ref().map(|p| p.price);
+        let strike_price = rep
+            .ttm_valuation
+            .as_ref()
+            .or(rep.fy_valuation.as_ref())
+            .and_then(|v| v.strike_price);
+        let price_in_zone = matches!((latest_price, strike_price), (Some(p), Some(s)) if p <= s);
+        if rep.status == StrikeZoneStatus::InStrikeZone || price_in_zone {
+            strike_hits += 1;
+        }
+    }
+
+    let unread_signal_ids: Option<HashSet<&str>> = (!inbox_signals.is_empty()).then(|| {
+        inbox_signals
+            .iter()
+            .filter(|s| s.status == SignalStatus::Unread)
+            .map(|s| s.signal_id.as_str())
+            .collect()
+    });
+
+    let active_alerts = signal_triages
+        .iter()
+        .filter(|t| t.verdict == TriageVerdict::FalsificationAlert)
+        .filter(|t| circle_tickers.contains(&t.ticker.trim().to_ascii_uppercase()))
+        .filter(|t| match &unread_signal_ids {
+            Some(unread) => unread.contains(t.signal_id.as_str()),
+            None => true,
+        })
+        .count();
+
+    (active_alerts, strike_hits)
+}
+
+/// Installs a reactive macOS Menu Bar tray (`set_tray`) that stays quiet by default (`"M3"`)
+/// and only shows colored status dots when active Circle `WATCH+IN` alerts or Strike Zone hits exist.
+pub fn bind_live_system_tray(store: AppStore, main_open: Signal<bool>) {
+    if !os().is_desktop() {
+        return;
+    }
+    effect(move || {
+        let lang = store.lang.get();
+        let proactive_running = store.proactive_running.get();
+        let syncing = store.sync_running.get()
+            || store.universe_syncing.get()
+            || store.inbox_catching_up.get();
+
+        let (alerts, strike_hits) = store.reports.with(|reports| {
+            store.inbox_signals.with(|signals| {
+                store
+                    .signal_triages
+                    .with(|triages| count_circle_tray_badges(reports, signals, triages))
+            })
+        });
+
+        let latest_headline = store
+            .briefings
+            .with(|list| list.first().map(|b| b.headline.clone()));
+
+        let mut runs = vec![TrayTitleRun::new("M3")];
+        if alerts > 0 {
+            runs.push(TrayTitleRun::new(" ●").color(rgb(CORAL_FG)));
+        }
+        if strike_hits > 0 {
+            runs.push(TrayTitleRun::new(" ●").color(rgb(EMERALD_FG)));
+        }
+
+        let tooltip = if alerts > 0 || strike_hits > 0 {
+            match lang {
+                UiLang::Zh => format!("M3 · 证伪预警 {alerts} · 能力圈击球区 {strike_hits}"),
+                UiLang::En => {
+                    format!("M3 · {alerts} Falsification Alerts · {strike_hits} Strike Zone")
+                }
+            }
+        } else {
+            lang.t("Project M3 · 静默巡检中", "Project M3 · Calm Watch")
+                .to_owned()
+        };
+
+        let status_summary = if proactive_running || syncing {
+            lang.t("状态：正在巡检能力圈…", "Status: Catching up Circle…")
+                .to_owned()
+        } else if alerts > 0 || strike_hits > 0 {
+            match lang {
+                UiLang::Zh => format!("预警 {alerts} 条 · 击球区 {strike_hits} 家"),
+                UiLang::En => format!("{alerts} alerts · {strike_hits} in Strike Zone"),
+            }
+        } else if let Some(headline) = latest_headline {
+            let clipped: String = headline.chars().take(42).collect();
+            if headline.chars().count() > 42 {
+                format!("{clipped}…")
+            } else {
+                clipped
+            }
+        } else {
+            lang.t(
+                "静默巡检中 · 暂无待处理异动",
+                "Quiet · No pending Circle alerts",
+            )
+            .to_owned()
+        };
+
+        set_tray(
+            tray().tooltip(tooltip).title(runs).menu([
+                MenuItem::new(lang.t("打开 M3", "Open M3")).on_select(move || {
+                    main_open.set(true);
+                }),
+                MenuItem::new(status_summary).disabled(true),
+                MenuItem::new(lang.t("立即巡检能力圈", "Catch Up Now"))
+                    .disabled(proactive_running)
+                    .on_select(move || store.run_proactive_catchup()),
+                MenuItem::separator(),
+                MenuItem::new(lang.t("退出 M3", "Quit M3")).on_select(quit),
+            ]),
+        );
     });
 }
 
@@ -542,13 +678,13 @@ pub fn show_company_context_menu(store: AppStore, ticker: String, at: Point<Poin
             l.t("调整能力圈分桶", "Move Circle Tier"),
             [
                 MenuItem::new("WATCH")
-                    .on_select(move || store.move_company_bucket(&t_watch, Bucket::Watch)),
+                    .on_select(move || store.request_bucket_change(&t_watch, Bucket::Watch)),
                 MenuItem::new("CORE")
-                    .on_select(move || store.move_company_bucket(&t_core, Bucket::Core)),
+                    .on_select(move || store.request_bucket_change(&t_core, Bucket::Core)),
                 MenuItem::new("OUT")
-                    .on_select(move || store.move_company_bucket(&t_out, Bucket::Out)),
+                    .on_select(move || store.request_bucket_change(&t_out, Bucket::Out)),
                 MenuItem::new("TOO HARD")
-                    .on_select(move || store.move_company_bucket(&t_hard, Bucket::TooHard)),
+                    .on_select(move || store.request_bucket_change(&t_hard, Bucket::TooHard)),
             ],
         ),
         MenuItem::new(l.t("移出能力圈", "Remove from Circle"))

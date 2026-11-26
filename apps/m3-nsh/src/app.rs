@@ -1,7 +1,8 @@
 //! Root M3 shell: Antigravity-style unified topbar, Message Box, collapsible sidebar, shortcuts, and viewport.
 
 use crate::components::{
-    animate_shell_spring, cmd_kbd_bottom_corner, cmd_kbd_right_overlay, pixel_m3_mark, progress_bar,
+    action_button, animate_shell_spring, badge_pill, cmd_kbd_bottom_corner, cmd_kbd_right_overlay,
+    icon_button, pixel_m3_mark, progress_bar,
 };
 use crate::format::{
     TopbarMessageInputs, budget_watermark_summary_for, build_topbar_messages,
@@ -17,8 +18,8 @@ use crate::palette::{
     visible_palette_items_for,
 };
 use crate::platform_desktop::{
-    bind_live_application_menu, install_smoked_black_glass_backdrop, main_window_attributes,
-    restart_after_update, show_company_context_menu, titlebar_left_inset,
+    bind_live_application_menu, bind_live_system_tray, install_smoked_black_glass_backdrop,
+    main_window_attributes, restart_after_update, show_company_context_menu, titlebar_left_inset,
 };
 use crate::stores::{
     AppStore, CompanyViewTab, TopbarMessage, TopbarMessageAction, TopbarMessageStatus, WorkspaceTab,
@@ -143,6 +144,7 @@ pub fn render_app_root() -> impl IntoElement {
     register_keyboard_shortcuts(store);
 
     let main_open = signal(true);
+    bind_live_system_tray(store, main_open);
     on_reopen(move || {
         if !main_open.get_untracked() {
             main_open.set(true);
@@ -244,6 +246,10 @@ pub fn render_app_root() -> impl IntoElement {
                     move || store.settings_open.get(),
                     move || settings_modal_overlay(store),
                 ))
+                .child(when(
+                    move || store.pending_graduation_ticker.get().is_some(),
+                    move || render_graduation_soft_gate_modal(store),
+                ))
                 .child(morphing_topbar_command_box(store, breadcrumb));
 
             if os().is_desktop() {
@@ -252,6 +258,162 @@ pub fn render_app_root() -> impl IntoElement {
                 root.p_safe_area()
             }
         })
+}
+
+/// Renders the calm WATCH -> IN Feynman Graduation Soft Gate modal overlay.
+fn render_graduation_soft_gate_modal(store: AppStore) -> impl IntoElement {
+    overlay()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .p(px(24.0))
+        .child(
+            view()
+                .absolute()
+                .inset_0()
+                .bg(rgba(SCRIM_BACKDROP))
+                .on_press(move || {
+                    animate_shell_spring();
+                    store.cancel_graduation_gate();
+                }),
+        )
+        .child(dynamic(move || {
+            let l = store.lang.get();
+            let ticker = store
+                .pending_graduation_ticker
+                .get()
+                .unwrap_or_default();
+            let t_feynman = ticker.clone();
+            let t_direct = ticker.clone();
+
+            view()
+                .w(px(520.0))
+                .max_w(percentage(92.0))
+                .rounded_xl()
+                .bg(rgb(BG_VIEWPORT))
+                .border_1()
+                .border_color(rgba(BORDER_GLASS_STRONG))
+                .shadow_xl()
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .child(
+                    view()
+                        .px(px(20.0))
+                        .py(px(14.0))
+                        .bg(rgb(BG_TOOLBAR))
+                        .border_b_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(10.0))
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(icon(ICON_ALERT, 16.0).text_color(rgb(GOLD_FG)))
+                                .child(
+                                    text(match l {
+                                        UiLang::Zh => format!("毕业前置检查 · {ticker}"),
+                                        UiLang::En => format!("Graduation Check · {ticker}"),
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_MD))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_HERO)),
+                                )
+                                .child(badge_pill("WATCH → IN", GOLD_FG, GOLD_BG, GOLD_BORDER)),
+                        )
+                        .child(icon_button(ICON_CLOSE, 14.0, move || {
+                            animate_shell_spring();
+                            store.cancel_graduation_gate();
+                        })),
+                )
+                .child(
+                    view()
+                        .px(px(20.0))
+                        .py(px(18.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .child(
+                            text(match l {
+                                UiLang::Zh => format!(
+                                    "{ticker} 尚未完成 3 轮费曼答辩签字。Munger 纪律建议先通过「护城河、五年死法与可证伪指标、安全边际」三轮反刍，再移入核心击球区 (IN / CORE)。"
+                                ),
+                                UiLang::En => format!(
+                                    "{ticker} has not completed a 3-round Feynman Defense sign-off yet. Before moving it into Core Circle (IN / CORE), a 3-round Socratic defense and testable falsification criteria are recommended."
+                                ),
+                            })
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_SM))
+                            .line_height(px(19.0))
+                            .text_color(rgb(INK_PRIMARY)),
+                        )
+                        .child(
+                            view()
+                                .px(px(12.0))
+                                .py(px(10.0))
+                                .rounded_md()
+                                .bg(rgb(BG_SURFACE))
+                                .border_1()
+                                .border_color(rgb(BORDER_SUBTLE))
+                                .child(
+                                    text(l.t(
+                                        "主权说明：这是冷静的软提醒而非硬锁定，最终能力圈归属始终由你决定。",
+                                        "Human Sovereignty: this is a calm soft gate, never a hard lock — your Circle tier remains solely your decision.",
+                                    ))
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .line_height(px(16.0))
+                                    .text_color(rgb(INK_MUTED)),
+                                ),
+                        ),
+                )
+                .child(
+                    view()
+                        .px(px(20.0))
+                        .py(px(14.0))
+                        .bg(rgb(BG_TOOLBAR))
+                        .border_t_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(action_button(
+                            l.t("取消", "Cancel"),
+                            false,
+                            move || {
+                                animate_shell_spring();
+                                store.cancel_graduation_gate();
+                            },
+                        ))
+                        .child(action_button(
+                            l.t("已知风险，仍直接移入 IN", "Move to IN Anyway"),
+                            false,
+                            move || {
+                                animate_shell_spring();
+                                store.confirm_direct_graduation(&t_direct);
+                            },
+                        ))
+                        .child(action_button(
+                            l.t("开始 3 轮费曼答辩", "Start 3-Round Feynman Defense"),
+                            true,
+                            move || {
+                                animate_shell_spring();
+                                store.start_graduation_feynman(&t_feynman);
+                            },
+                        )),
+                )
+        }))
 }
 
 fn render_main_viewport(store: AppStore) -> impl IntoElement {
@@ -1573,6 +1735,11 @@ fn register_keyboard_shortcuts(store: AppStore) {
             if store.settings_open.get_untracked() {
                 animate_shell_spring();
                 store.close_settings();
+                return;
+            }
+            if store.pending_graduation_ticker.get_untracked().is_some() {
+                animate_shell_spring();
+                store.cancel_graduation_gate();
                 return;
             }
             if store.company_open.get_untracked() {

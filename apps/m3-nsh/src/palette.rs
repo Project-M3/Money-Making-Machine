@@ -643,7 +643,7 @@ pub fn execute_palette_action(store: AppStore, action: PaletteAction) {
             store.toggle_baskets_view();
         }
         PaletteAction::MoveCompanyBucket(ticker, target) => {
-            store.move_company_bucket(&ticker, target);
+            store.request_bucket_change(&ticker, target);
         }
         PaletteAction::FilterCircle(tag) => {
             store.circle_filter.set(tag);

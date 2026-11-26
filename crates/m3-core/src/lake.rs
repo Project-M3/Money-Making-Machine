@@ -4,6 +4,7 @@ use crate::{
         AnnualMetricRow, Bucket, FieldProvenance, ValuationAssumptions, WarningFlag, serde_decimal,
         serde_decimal_opt,
     },
+    proactive::{BriefingPeriod, CircleBriefing, SignalTriageRecord, TriageVerdict},
     store::{self, WorkspacePaths},
 };
 use anyhow::{Context, Result, ensure};
@@ -969,6 +970,9 @@ impl LakeDb {
                 return Ok(true);
             }
         }
+        if !crate::proactive::has_proactive_tables(&self.conn)? {
+            return Ok(true);
+        }
         Ok(false)
     }
 
@@ -1152,6 +1156,7 @@ impl LakeDb {
         self.refresh_parquet_views(paths)?;
         self.ensure_l1_schema(paths)?;
         self.ensure_l2_schema()?;
+        crate::proactive::ensure_proactive_schema(&self.conn)?;
         Ok(())
     }
 
@@ -1713,6 +1718,82 @@ impl LakeDb {
             last_price_sync_ms,
         };
         Ok((summary, strike_zone_ciks))
+    }
+
+    /// Inserts or replaces an L1.5 Circle Filing Watchdog triage record.
+    pub fn upsert_signal_triage(&self, record: &SignalTriageRecord) -> Result<()> {
+        crate::proactive::upsert_signal_triage(&self.conn, record)
+    }
+
+    /// Lists persisted L1.5 triage records newest-first, optionally filtered by ticker or verdict.
+    pub fn list_signal_triages(
+        &self,
+        ticker: Option<&str>,
+        verdict: Option<TriageVerdict>,
+        limit: usize,
+    ) -> Result<Vec<SignalTriageRecord>> {
+        crate::proactive::list_signal_triages(&self.conn, ticker, verdict, limit)
+    }
+
+    /// Fetches a single persisted L1.5 triage record by `signal_id`.
+    pub fn get_signal_triage(&self, signal_id: &str) -> Result<Option<SignalTriageRecord>> {
+        crate::proactive::get_signal_triage(&self.conn, signal_id)
+    }
+
+    /// Inserts or replaces a calm daily/weekly [`CircleBriefing`].
+    pub fn upsert_circle_briefing(&self, briefing: &CircleBriefing) -> Result<()> {
+        crate::proactive::upsert_circle_briefing(&self.conn, briefing)
+    }
+
+    /// Lists persisted calm briefings newest-first, optionally filtered by period.
+    pub fn list_circle_briefings(
+        &self,
+        period: Option<BriefingPeriod>,
+        limit: usize,
+    ) -> Result<Vec<CircleBriefing>> {
+        crate::proactive::list_circle_briefings(&self.conn, period, limit)
+    }
+
+    /// Returns the most recent persisted calm briefing, optionally filtered by period.
+    pub fn latest_circle_briefing(
+        &self,
+        period: Option<BriefingPeriod>,
+    ) -> Result<Option<CircleBriefing>> {
+        crate::proactive::latest_circle_briefing(&self.conn, period)
+    }
+
+    /// Counts non-dry-run L1.5 triage evaluations recorded during the UTC day containing `now_ms`.
+    pub fn count_triages_today(&self, now_ms: u64) -> Result<usize> {
+        crate::proactive::count_triages_since(
+            &self.conn,
+            crate::proactive::utc_day_start_ms(now_ms),
+        )
+    }
+
+    /// Counts LLM-generated briefing summaries recorded during the UTC day containing `now_ms`.
+    pub fn count_briefing_summaries_today(&self, now_ms: u64) -> Result<usize> {
+        crate::proactive::count_briefing_summaries_since(
+            &self.conn,
+            crate::proactive::utc_day_start_ms(now_ms),
+        )
+    }
+
+    /// Sums proactive Alan tokens and USD cost since `month_start_ms`.
+    pub fn monthly_proactive_usage(&self, month_start_ms: u64) -> Result<(u64, Decimal)> {
+        crate::proactive::monthly_proactive_usage(&self.conn, month_start_ms)
+    }
+
+    /// Sums combined AI tokens and USD cost across L2 Deep Research and Proactive Alan for the UTC
+    /// month starting at `month_start_ms`.
+    pub fn monthly_total_ai_usage(&self, month_start_ms: u64) -> Result<(u64, Decimal)> {
+        let research = self.monthly_budget_usage(month_start_ms)?;
+        let (proactive_tokens, proactive_usd) = self.monthly_proactive_usage(month_start_ms)?;
+        let total_tokens = research
+            .total_input_tokens
+            .saturating_add(research.total_output_tokens)
+            .saturating_add(proactive_tokens);
+        let total_usd = (research.total_cost_usd + proactive_usd).normalize();
+        Ok((total_tokens, total_usd))
     }
 
     #[cfg(test)]
@@ -10098,6 +10179,113 @@ mod tests {
             )
             .unwrap();
         assert!(db.read_sec_input_generation().is_err());
+
+        drop(db);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn proactive_lake_wrappers_migration_and_combined_monthly_usage_work() {
+        let paths = temp_paths("proactive_wrappers");
+        let dir = paths.repo_root.clone();
+        let db = LakeDb::open(&paths).unwrap();
+        assert!(!db.needs_schema_migration().unwrap());
+
+        db.conn
+            .execute_batch("DROP TABLE signal_triage; DROP TABLE circle_briefings;")
+            .unwrap();
+        assert!(db.needs_schema_migration().unwrap());
+        db.ensure_schema(&paths).unwrap();
+        assert!(!db.needs_schema_migration().unwrap());
+
+        // 2026-11-15T12:00:00Z
+        let nov_mid = 1_794_744_000_000u64;
+        let month_start = crate::proactive::utc_month_start_ms(nov_mid);
+
+        db.insert_research_run(&crate::lake_l2::ResearchRunRow {
+            run_id: "run-nov-1".into(),
+            ticker: "MCO".into(),
+            trigger: "manual".into(),
+            focus: None,
+            model: "test".into(),
+            input_tokens: 1_000,
+            output_tokens: 500,
+            cost_usd: Decimal::new(15, 2),
+            started_at_ms: nov_mid,
+            finished_at_ms: Some(nov_mid + 1_000),
+            status: crate::lake_l2::ResearchRunStatus::Completed,
+            error: None,
+            memo_path: None,
+            perspectives_json: "[]".into(),
+            citations_json: "[]".into(),
+        })
+        .unwrap();
+
+        let rec = SignalTriageRecord {
+            signal_id: "sig-nov-1".into(),
+            ticker: "mco".into(),
+            verdict: TriageVerdict::Material,
+            headline: "Material filing".into(),
+            rationale: "Issuance rose.".into(),
+            matched_metrics: vec!["margin".into()],
+            suggested_metrics: vec![],
+            quotes: vec![],
+            fallback_no_metrics_warning: false,
+            model_used: "test-model".into(),
+            tokens_used: 400,
+            cost_usd: Decimal::new(4, 2),
+            created_at_ms: nov_mid,
+        };
+        db.upsert_signal_triage(&rec).unwrap();
+        assert!(db.get_signal_triage("sig-nov-1").unwrap().is_some());
+        assert_eq!(
+            db.list_signal_triages(Some("MCO"), Some(TriageVerdict::Material), 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(db.count_triages_today(nov_mid + 60_000).unwrap(), 1);
+
+        let briefing = CircleBriefing {
+            briefing_id: "brief-nov-1".into(),
+            period: BriefingPeriod::Daily,
+            period_key: "2026-11-15".into(),
+            generated_at_ms: nov_mid,
+            lang: crate::UiLang::En,
+            is_quiet: false,
+            headline: "1 Watchdog Hit".into(),
+            executive_summary: Some("Calm summary".into()),
+            summary_tokens_used: 200,
+            summary_cost_usd: Decimal::new(2, 2),
+            strike_radar: vec![],
+            filing_deltas: vec![],
+            watchdog_hits: vec![],
+        };
+        db.upsert_circle_briefing(&briefing).unwrap();
+        assert_eq!(
+            db.latest_circle_briefing(Some(BriefingPeriod::Daily))
+                .unwrap()
+                .map(|b| b.briefing_id),
+            Some("brief-nov-1".into())
+        );
+        assert_eq!(
+            db.list_circle_briefings(Some(BriefingPeriod::Daily), 5)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            db.count_briefing_summaries_today(nov_mid + 60_000).unwrap(),
+            1
+        );
+
+        let (pro_tok, pro_usd) = db.monthly_proactive_usage(month_start).unwrap();
+        assert_eq!(pro_tok, 600);
+        assert_eq!(pro_usd, Decimal::new(6, 2));
+
+        let (tot_tok, tot_usd) = db.monthly_total_ai_usage(month_start).unwrap();
+        assert_eq!(tot_tok, 2_100);
+        assert_eq!(tot_usd, Decimal::new(21, 2));
 
         drop(db);
         let _ = fs::remove_dir_all(&dir);

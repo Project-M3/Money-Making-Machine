@@ -11,6 +11,7 @@ use m3_core::{
     lake_l1::{L1Summary, SignalKind, SignalStatus, SimilarSearchFilter},
     lake_l2,
     model::{Bucket, JournalAction, SyncStatusFile, parse_decimal_token},
+    proactive::{self, BriefingPeriod, TriageVerdict},
     research::{self, DeepResearchRequest},
     storage::{self, StorageCategory, StorageReport},
     store::{self, WorkspacePaths},
@@ -74,6 +75,8 @@ fn flag_takes_value(args: &[String], flag_idx: usize) -> bool {
             | "--bin-dir"
             | "--manifest-url"
             | "--workspace"
+            | "--period"
+            | "--verdict"
     )
 }
 
@@ -237,6 +240,9 @@ pub fn run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
         "inbox" => cmd_inbox(paths, rest),
         "research" => cmd_research(paths, rest),
         "budget" => cmd_budget(paths, rest),
+        "briefing" => cmd_briefing(paths, rest),
+        "triage" => cmd_triage(paths, rest),
+        "falsification" => cmd_falsification(paths, rest),
         "themes" => cmd_themes(paths, rest),
         "storage" => cmd_storage(paths, rest),
         "start" => cmd_start(paths),
@@ -1090,6 +1096,8 @@ fn cmd_inbox_triage(paths: &WorkspacePaths, args: &[String]) -> Result<serde_jso
 }
 
 const MAX_RESEARCH_STATUS_LIMIT: usize = 500;
+pub(crate) const MAX_BRIEFING_LIST_LIMIT: usize = 50;
+pub(crate) const MAX_TRIAGE_LIMIT: usize = 100;
 
 fn cmd_research(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
     let sub = args.first().map(String::as_str).unwrap_or("status");
@@ -1240,6 +1248,334 @@ pub(crate) fn cmd_budget_status(
         "schema_version": 1,
         "ok": true,
         "data": report
+    }))
+}
+
+fn cmd_briefing(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let (sub, rest) = match args.first().map(String::as_str) {
+        Some(first) if !first.starts_with('-') => (first, &args[1..]),
+        _ => ("show", args),
+    };
+    match sub {
+        "show" => cmd_briefing_show(paths, rest),
+        "run" => cmd_briefing_run(paths, rest),
+        "list" => cmd_briefing_list(paths, rest),
+        _ => anyhow::bail!(
+            "usage: m3 briefing [show|run|list] [--period daily|weekly] [--no-llm] [--limit N]"
+        ),
+    }
+}
+
+fn parse_briefing_period_flag(args: &[String], index: &mut usize) -> Result<BriefingPeriod> {
+    *index += 1;
+    let raw = args
+        .get(*index)
+        .context("--period requires `daily` or `weekly`")?;
+    BriefingPeriod::from_str(raw)
+}
+
+fn cmd_briefing_show(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut period: Option<BriefingPeriod> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--period" => period = Some(parse_briefing_period_flag(args, &mut i)?),
+            other => anyhow::bail!("unknown briefing show flag: {other}"),
+        }
+        i += 1;
+    }
+
+    if let Some(db) = LakeDb::open_read_only_if_exists(paths)? {
+        if let Some(saved) = db.latest_circle_briefing(period)? {
+            return Ok(json!({
+                "schema_version": 1,
+                "ok": true,
+                "data": {
+                    "source": "persisted",
+                    "briefing": saved,
+                }
+            }));
+        }
+        let lang = app_config::read_ui_language();
+        let preview = proactive::build_deterministic_briefing(
+            paths,
+            &db,
+            period.unwrap_or(BriefingPeriod::Daily),
+            lang,
+        )?;
+        return Ok(json!({
+            "schema_version": 1,
+            "ok": true,
+            "data": {
+                "source": "preview",
+                "briefing": preview,
+            }
+        }));
+    }
+
+    let db = LakeDb::open(paths)?;
+    let lang = app_config::read_ui_language();
+    let preview = proactive::build_deterministic_briefing(
+        paths,
+        &db,
+        period.unwrap_or(BriefingPeriod::Daily),
+        lang,
+    )?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "source": "preview",
+            "briefing": preview,
+        }
+    }))
+}
+
+fn cmd_briefing_run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut period = BriefingPeriod::Daily;
+    let mut no_llm = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--period" => period = parse_briefing_period_flag(args, &mut i)?,
+            "--no-llm" => no_llm = true,
+            other => anyhow::bail!("unknown briefing run flag: {other}"),
+        }
+        i += 1;
+    }
+
+    let db = LakeDb::open(paths)?;
+    let lang = app_config::read_ui_language();
+    let briefing =
+        proactive::generate_and_save_briefing_blocking(paths, &db, period, lang, !no_llm)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "source": "generated",
+            "briefing": briefing,
+        }
+    }))
+}
+
+fn cmd_briefing_list(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut period: Option<BriefingPeriod> = None;
+    let mut limit: usize = 10;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--period" => period = Some(parse_briefing_period_flag(args, &mut i)?),
+            "--limit" => {
+                limit = parse_usize_flag(args, &mut i, "--limit", 1, MAX_BRIEFING_LIST_LIMIT)?;
+            }
+            other => anyhow::bail!("unknown briefing list flag: {other}"),
+        }
+        i += 1;
+    }
+    execute_briefing_list(paths, period, limit)
+}
+
+pub(crate) fn execute_briefing_latest(
+    paths: &WorkspacePaths,
+    period: Option<BriefingPeriod>,
+) -> Result<serde_json::Value> {
+    let briefing = match LakeDb::open_read_only_if_exists(paths)? {
+        Some(db) => db.latest_circle_briefing(period)?,
+        None => None,
+    };
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "period_filter": period.map(|p| p.as_str()),
+            "briefing": briefing,
+        }
+    }))
+}
+
+pub(crate) fn execute_briefing_list(
+    paths: &WorkspacePaths,
+    period: Option<BriefingPeriod>,
+    limit: usize,
+) -> Result<serde_json::Value> {
+    let briefings = match LakeDb::open_read_only_if_exists(paths)? {
+        Some(db) => db.list_circle_briefings(period, limit)?,
+        None => Vec::new(),
+    };
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "period_filter": period.map(|p| p.as_str()),
+            "count": briefings.len(),
+            "briefings": briefings,
+        }
+    }))
+}
+
+fn cmd_triage(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let (sub, rest) = match args.first().map(String::as_str) {
+        Some(first) if !first.starts_with('-') => (first, &args[1..]),
+        _ => ("status", args),
+    };
+    match sub {
+        "status" => cmd_triage_status(paths, rest),
+        "run" => cmd_triage_run(paths, rest),
+        _ => anyhow::bail!(
+            "usage: m3 triage [status|run] [--ticker TICKER] [--verdict noise|material|falsification_alert] [--limit N] [--dry-run]"
+        ),
+    }
+}
+
+fn cmd_triage_status(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut ticker: Option<String> = None;
+    let mut verdict: Option<TriageVerdict> = None;
+    let mut limit: usize = 50;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--ticker" => {
+                i += 1;
+                let raw = args.get(i).context("--ticker requires symbol")?.trim();
+                ensure!(!raw.is_empty(), "--ticker cannot be empty");
+                ticker = Some(raw.to_ascii_uppercase());
+            }
+            "--verdict" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .context("--verdict requires noise|material|falsification_alert")?;
+                verdict = Some(TriageVerdict::from_str(raw)?);
+            }
+            "--limit" => {
+                limit = parse_usize_flag(args, &mut i, "--limit", 1, MAX_TRIAGE_LIMIT)?;
+            }
+            other => anyhow::bail!("unknown triage status flag: {other}"),
+        }
+        i += 1;
+    }
+    execute_triage_list(paths, ticker.as_deref(), verdict, limit)
+}
+
+fn cmd_triage_run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut limit: usize = 10;
+    let mut dry_run = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--limit" => {
+                limit = parse_usize_flag(args, &mut i, "--limit", 1, MAX_TRIAGE_LIMIT)?;
+            }
+            "--dry-run" => dry_run = true,
+            other => anyhow::bail!("unknown triage run flag: {other}"),
+        }
+        i += 1;
+    }
+
+    let db = LakeDb::open(paths)?;
+    let summary = proactive::run_l15_circle_triage_blocking(paths, &db, limit, dry_run)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": summary,
+    }))
+}
+
+pub(crate) fn execute_triage_list(
+    paths: &WorkspacePaths,
+    ticker: Option<&str>,
+    verdict: Option<TriageVerdict>,
+    limit: usize,
+) -> Result<serde_json::Value> {
+    let now_ms = store::now_ms();
+    let (triages, triages_today) = match LakeDb::open_read_only_if_exists(paths)? {
+        Some(db) => (
+            db.list_signal_triages(ticker, verdict, limit)?,
+            db.count_triages_today(now_ms)?,
+        ),
+        None => (Vec::new(), 0),
+    };
+    let budget_cfg = budget::load_budget_config(paths)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "ticker_filter": ticker,
+            "verdict_filter": verdict.map(|v| v.as_str()),
+            "daily_quota": budget_cfg.daily_triage_quota,
+            "triages_today": triages_today,
+            "remaining_today": budget_cfg.daily_triage_quota.saturating_sub(triages_today),
+            "proactive_triage_enabled": budget_cfg.proactive_triage_enabled,
+            "count": triages.len(),
+            "triages": triages,
+        }
+    }))
+}
+
+fn cmd_falsification(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let raw_ticker = args
+        .first()
+        .filter(|s| !s.starts_with('-'))
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .context("usage: m3 falsification <TICKER> [list|add <TEXT>|remove <INDEX>]")?;
+    let ticker = raw_ticker.to_ascii_uppercase();
+    let action = args.get(1).map(String::as_str).unwrap_or("list");
+    let rest = args.get(2..).unwrap_or(&[]);
+
+    let dossier = match action {
+        "list" => {
+            if let Some(unexpected) = rest.first() {
+                anyhow::bail!("unexpected extra argument for falsification list: {unexpected}");
+            }
+            store::load_or_init_dossier(paths, &ticker)?
+        }
+        "add" => {
+            let text = rest
+                .first()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .context("usage: m3 falsification <TICKER> add <TEXT>")?;
+            if let Some(unexpected) = rest.get(1) {
+                anyhow::bail!(
+                    "unexpected extra argument `{unexpected}`; quote multi-word metric text"
+                );
+            }
+            store::add_falsification_metric(paths, &ticker, text)?
+        }
+        "remove" => {
+            let idx_raw = rest
+                .first()
+                .context("usage: m3 falsification <TICKER> remove <INDEX>")?;
+            if let Some(unexpected) = rest.get(1) {
+                anyhow::bail!("unexpected extra argument for falsification remove: {unexpected}");
+            }
+            let index = idx_raw
+                .trim()
+                .parse::<usize>()
+                .with_context(|| format!("invalid falsification metric index: {idx_raw}"))?;
+            let existing = store::load_or_init_dossier(paths, &ticker)?;
+            let count = existing.human_judgment.falsification_metrics.len();
+            ensure!(
+                index < count,
+                "falsification metric index {index} out of range (count: {count})"
+            );
+            store::remove_falsification_metric(paths, &ticker, index)?
+        }
+        other => anyhow::bail!(
+            "unknown falsification action `{other}`; expected list | add <TEXT> | remove <INDEX>"
+        ),
+    };
+
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "ticker": dossier.ticker,
+            "name": dossier.name,
+            "count": dossier.human_judgment.falsification_metrics.len(),
+            "falsification_metrics": dossier.human_judgment.falsification_metrics,
+        }
     }))
 }
 
@@ -3462,6 +3798,9 @@ mod tests {
             "themes",
             "research",
             "budget",
+            "briefing",
+            "triage",
+            "falsification",
             "mcp",
             "storage",
             "doctor",
@@ -3521,6 +3860,42 @@ mod tests {
                 "similar".to_string(),
                 "AAPL".to_string(),
                 "--ticker".to_string(),
+            ]
+        );
+
+        let (fmt_period, stripped_period) = extract_global_format(&[
+            "briefing".into(),
+            "show".into(),
+            "--period".into(),
+            "weekly".into(),
+            "--json".into(),
+        ]);
+        assert_eq!(fmt_period, OutputFormat::Compact);
+        assert_eq!(
+            stripped_period,
+            vec![
+                "briefing".to_string(),
+                "show".to_string(),
+                "--period".to_string(),
+                "weekly".to_string(),
+            ]
+        );
+
+        let (fmt_verdict, stripped_verdict) = extract_global_format(&[
+            "triage".into(),
+            "status".into(),
+            "--verdict".into(),
+            "material".into(),
+            "--pretty".into(),
+        ]);
+        assert_eq!(fmt_verdict, OutputFormat::Pretty);
+        assert_eq!(
+            stripped_verdict,
+            vec![
+                "triage".to_string(),
+                "status".to_string(),
+                "--verdict".to_string(),
+                "material".to_string(),
             ]
         );
     }
@@ -3656,6 +4031,239 @@ mod tests {
         assert_eq!(report["data"]["healthy"], true);
         assert!(report["data"]["checks"].as_array().unwrap().len() >= 4);
         assert_eq!(report["data"]["workspace"]["exists"], true);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_falsification_crud_preserves_human_sovereignty() {
+        let dir = std::env::temp_dir().join(format!(
+            "m3-cli-falsification-{}-{}",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workbench/dossiers")).unwrap();
+        let paths = WorkspacePaths::from_root(dir.clone());
+
+        let initial_dossier = m3_core::model::Dossier {
+            schema_version: 1,
+            ticker: "MCO".into(),
+            name: "Moody's Corporation".into(),
+            updated_at: "2026-11-25".into(),
+            draft_source: "human_verified".into(),
+            three_sentence_business: "Credit ratings toll bridge.".into(),
+            latticework: m3_core::model::Latticework {
+                microeconomics: "Duopoly pricing power".into(),
+                ecology: "Debt capital markets".into(),
+                psychology_incentives: "Institutional credential".into(),
+                capital_allocation: "Buybacks".into(),
+            },
+            premortem: vec!["Private credit bypasses public ratings".into()],
+            open_questions: vec![],
+            human_judgment: m3_core::model::HumanJudgment {
+                pending_human_review: false,
+                my_stance: Some("Long-term compounder".into()),
+                weight_rationale: Some("Toll bridge".into()),
+                falsification_metrics: vec!["Operating margin < 35%".into()],
+                feynman_checked_at: Some("2026-11-20".into()),
+            },
+        };
+        store::save_dossier(&paths, &initial_dossier).unwrap();
+
+        let listed = run(&paths, &["falsification".into(), "mco".into()]).unwrap();
+        assert_eq!(listed["ok"], true);
+        assert_eq!(listed["data"]["ticker"], "MCO");
+        assert_eq!(listed["data"]["count"], 1);
+        assert_eq!(
+            listed["data"]["falsification_metrics"][0],
+            "Operating margin < 35%"
+        );
+
+        let added = run(
+            &paths,
+            &[
+                "falsification".into(),
+                "MCO".into(),
+                "add".into(),
+                "MIS revenue share < 45%".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(added["data"]["count"], 2);
+        assert_eq!(
+            added["data"]["falsification_metrics"],
+            json!(["Operating margin < 35%", "MIS revenue share < 45%"])
+        );
+
+        let removed = run(
+            &paths,
+            &[
+                "falsification".into(),
+                "MCO".into(),
+                "remove".into(),
+                "0".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(removed["data"]["count"], 1);
+        assert_eq!(
+            removed["data"]["falsification_metrics"],
+            json!(["MIS revenue share < 45%"])
+        );
+
+        let out_of_range = run(
+            &paths,
+            &[
+                "falsification".into(),
+                "MCO".into(),
+                "remove".into(),
+                "9".into(),
+            ],
+        );
+        assert!(out_of_range.is_err());
+
+        let reloaded = store::load_dossier(&paths, "MCO").unwrap().unwrap();
+        assert_eq!(
+            reloaded.human_judgment.my_stance.as_deref(),
+            Some("Long-term compounder")
+        );
+        assert_eq!(
+            reloaded.human_judgment.feynman_checked_at.as_deref(),
+            Some("2026-11-20")
+        );
+        assert_eq!(
+            reloaded.human_judgment.falsification_metrics,
+            vec!["MIS revenue share < 45%".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_briefing_and_triage_commands_execute_cleanly() {
+        let dir = std::env::temp_dir().join(format!(
+            "m3-cli-proactive-{}-{}",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workbench")).unwrap();
+        let paths = WorkspacePaths::from_root(dir.clone());
+
+        store::save_watchlist(
+            &paths,
+            &WatchlistFile {
+                schema_version: 1,
+                benchmark_symbol: "^GSPC".into(),
+                default_target_return_pct: Decimal::from(10),
+                companies: vec![CompanyEntry {
+                    ticker: "MCO".into(),
+                    name: "Moody's Corporation".into(),
+                    bucket: Bucket::Core,
+                    source: DataSource::Manual,
+                    cik: Some("0001059556".into()),
+                    currency: "USD".into(),
+                    circle: "Ratings".into(),
+                    too_hard_reason: None,
+                    assumptions: ValuationAssumptions {
+                        multiple_low: Decimal::from(20),
+                        multiple_high: Decimal::from(24),
+                        target_return_pct: Decimal::from(10),
+                        expected_growth_pct: Decimal::from(8),
+                        strike_price_override: None,
+                    },
+                }],
+            },
+        )
+        .unwrap();
+
+        let preview = run(
+            &paths,
+            &[
+                "briefing".into(),
+                "show".into(),
+                "--period".into(),
+                "daily".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(preview["ok"], true);
+        assert_eq!(preview["data"]["source"], "preview");
+        assert_eq!(preview["data"]["briefing"]["period"], "daily");
+        assert_eq!(preview["data"]["briefing"]["is_quiet"], true);
+
+        let generated = run(
+            &paths,
+            &[
+                "briefing".into(),
+                "run".into(),
+                "--period".into(),
+                "weekly".into(),
+                "--no-llm".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(generated["ok"], true);
+        assert_eq!(generated["data"]["source"], "generated");
+        assert_eq!(generated["data"]["briefing"]["period"], "weekly");
+        assert_eq!(generated["data"]["briefing"]["summary_tokens_used"], 0);
+
+        let shown_weekly = run(
+            &paths,
+            &["briefing".into(), "--period".into(), "weekly".into()],
+        )
+        .unwrap();
+        assert_eq!(shown_weekly["ok"], true);
+        assert_eq!(shown_weekly["data"]["source"], "persisted");
+        assert_eq!(shown_weekly["data"]["briefing"]["period"], "weekly");
+
+        let listed = run(
+            &paths,
+            &[
+                "briefing".into(),
+                "list".into(),
+                "--period".into(),
+                "weekly".into(),
+                "--limit".into(),
+                "5".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(listed["ok"], true);
+        assert_eq!(listed["data"]["count"], 1);
+
+        let triage_status = run(
+            &paths,
+            &[
+                "triage".into(),
+                "--ticker".into(),
+                "MCO".into(),
+                "--verdict".into(),
+                "material".into(),
+                "--limit".into(),
+                "10".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(triage_status["ok"], true);
+        assert_eq!(triage_status["data"]["count"], 0);
+        assert_eq!(triage_status["data"]["daily_quota"], 10);
+
+        let triage_dry = run(
+            &paths,
+            &[
+                "triage".into(),
+                "run".into(),
+                "--dry-run".into(),
+                "--limit".into(),
+                "5".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(triage_dry["ok"], true);
+        assert_eq!(triage_dry["data"]["dry_run"], true);
+        assert_eq!(triage_dry["data"]["evaluated"], 0);
 
         let _ = fs::remove_dir_all(&dir);
     }
