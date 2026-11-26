@@ -12,6 +12,7 @@ use m3_core::update::{self, ReleaseChannel};
 use nsh_core::desktop::{
     Backdrop, MenuRole, TitleBarOptions, TitleBarStyle, TrayTitleRun, WindowAttributes,
 };
+use nsh_core::element::ImageSrc;
 use nsh_core::element::desktop::{
     MenuItem, popup_menu_at, quit, restart, set_application_menu, set_tray, title_bar, tray,
 };
@@ -300,8 +301,56 @@ pub fn count_circle_tray_badges(
     (active_alerts, strike_hits)
 }
 
-/// Installs a reactive macOS Menu Bar tray (`set_tray`) that stays quiet by default (`"M3"`)
-/// and only shows colored status dots when active Circle `WATCH+IN` alerts or Strike Zone hits exist.
+/// Shows (`Regular`) or hides (`Accessory`) the macOS Dock icon while keeping the tray-resident app alive.
+pub fn set_macos_dock_visible(visible: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        drop(run_on_main_thread(move || {
+            use nsh_platform_macos::objc2::MainThreadMarker;
+            use nsh_platform_macos::objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let app = NSApplication::sharedApplication(mtm);
+            let target = if visible {
+                NSApplicationActivationPolicy::Regular
+            } else {
+                NSApplicationActivationPolicy::Accessory
+            };
+            if app.activationPolicy() != target {
+                app.setActivationPolicy(target);
+            }
+            if visible {
+                #[allow(deprecated)]
+                app.activateIgnoringOtherApps(true);
+            }
+        }));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = visible;
+    }
+}
+
+/// Builds minimal Menu Bar status dots shown beside the monochrome M3 tray icon.
+/// Returns empty when quiet so the tray displays only the crisp template icon.
+pub fn tray_status_runs(alerts: usize, strike_hits: usize) -> Vec<TrayTitleRun> {
+    let mut runs = Vec::new();
+    if alerts > 0 {
+        runs.push(TrayTitleRun::new("●").color(rgb(CORAL_FG)));
+    }
+    if strike_hits > 0 {
+        if !runs.is_empty() {
+            runs.push(TrayTitleRun::new(" "));
+        }
+        runs.push(TrayTitleRun::new("●").color(rgb(EMERALD_FG)));
+    }
+    runs
+}
+
+/// Installs a reactive macOS Menu Bar tray (`set_tray`) with a monochrome template M3 SVG icon
+/// that stays quiet by default and appends status dots only when Circle alerts or Strike hits exist.
 pub fn bind_live_system_tray(store: AppStore, main_open: Signal<bool>) {
     if !os().is_desktop() {
         return;
@@ -325,13 +374,7 @@ pub fn bind_live_system_tray(store: AppStore, main_open: Signal<bool>) {
             .briefings
             .with(|list| list.first().map(|b| b.headline.clone()));
 
-        let mut runs = vec![TrayTitleRun::new("M3")];
-        if alerts > 0 {
-            runs.push(TrayTitleRun::new(" ●").color(rgb(CORAL_FG)));
-        }
-        if strike_hits > 0 {
-            runs.push(TrayTitleRun::new(" ●").color(rgb(EMERALD_FG)));
-        }
+        let runs = tray_status_runs(alerts, strike_hits);
 
         let tooltip = if alerts > 0 || strike_hits > 0 {
             match lang {
@@ -369,17 +412,22 @@ pub fn bind_live_system_tray(store: AppStore, main_open: Signal<bool>) {
         };
 
         set_tray(
-            tray().tooltip(tooltip).title(runs).menu([
-                MenuItem::new(lang.t("打开 M3", "Open M3")).on_select(move || {
-                    main_open.set(true);
-                }),
-                MenuItem::new(status_summary).disabled(true),
-                MenuItem::new(lang.t("立即巡检能力圈", "Catch Up Now"))
-                    .disabled(proactive_running)
-                    .on_select(move || store.run_proactive_catchup()),
-                MenuItem::separator(),
-                MenuItem::new(lang.t("退出 M3", "Quit M3")).on_select(quit),
-            ]),
+            tray()
+                .icon(ImageSrc::svg_markup(crate::icons::ICON_TRAY_M3))
+                .tooltip(tooltip)
+                .title(runs)
+                .menu([
+                    MenuItem::new(lang.t("打开 M3", "Open M3")).on_select(move || {
+                        set_macos_dock_visible(true);
+                        main_open.set(true);
+                    }),
+                    MenuItem::new(status_summary).disabled(true),
+                    MenuItem::new(lang.t("立即巡检能力圈", "Catch Up Now"))
+                        .disabled(proactive_running)
+                        .on_select(move || store.run_proactive_catchup()),
+                    MenuItem::separator(),
+                    MenuItem::new(lang.t("退出 M3", "Quit M3")).on_select(quit),
+                ]),
         );
     });
 }

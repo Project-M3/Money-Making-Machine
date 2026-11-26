@@ -19,7 +19,8 @@ use crate::palette::{
 };
 use crate::platform_desktop::{
     bind_live_application_menu, bind_live_system_tray, install_smoked_black_glass_backdrop,
-    main_window_attributes, restart_after_update, show_company_context_menu, titlebar_left_inset,
+    main_window_attributes, restart_after_update, set_macos_dock_visible,
+    show_company_context_menu, titlebar_left_inset,
 };
 use crate::stores::{
     AppStore, CompanyViewTab, TopbarMessage, TopbarMessageAction, TopbarMessageStatus, WorkspaceTab,
@@ -145,7 +146,11 @@ pub fn render_app_root() -> impl IntoElement {
 
     let main_open = signal(true);
     bind_live_system_tray(store, main_open);
+    effect(move || {
+        set_macos_dock_visible(main_open.get());
+    });
     on_reopen(move || {
+        set_macos_dock_visible(true);
         if !main_open.get_untracked() {
             main_open.set(true);
         }

@@ -51,6 +51,9 @@ pub const ICON_CHEVRON_RIGHT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" 
 
 pub const ICON_CHEVRON_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g transform="rotate(180 8 8)"><path d="M5.875 3.75 L10.125 8 L5.875 12.25"/></g></svg>"#;
 
+/// Crisp monochrome `18x18` macOS Menu Bar template icon matching `PIXEL_M3` (transparent background).
+pub const ICON_TRAY_M3: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" shape-rendering="crispEdges"><g fill="#000000"><rect x="1" y="4" width="2" height="10"/><rect x="7" y="4" width="2" height="10"/><rect x="3" y="5" width="1" height="2"/><rect x="6" y="5" width="1" height="2"/><rect x="4" y="6" width="2" height="3"/><rect x="11" y="4" width="5" height="1"/><rect x="11" y="5" width="6" height="1"/><rect x="15" y="6" width="2" height="2"/><rect x="13" y="8" width="3" height="2"/><rect x="15" y="10" width="2" height="2"/><rect x="11" y="12" width="6" height="1"/><rect x="11" y="13" width="5" height="1"/></g></svg>"##;
+
 /// Renders a crisp outline SVG icon from IconMCP, inheriting `currentColor` from `.text_color(...)`.
 pub fn icon(markup: &'static str, size_px: f32) -> Svg {
     svg(ImageSrc::svg_markup(markup))

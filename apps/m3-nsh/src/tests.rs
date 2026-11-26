@@ -2939,3 +2939,18 @@ fn save_proactive_settings_persists_to_budget_json() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn tray_template_icon_and_quiet_status_runs_match_spec() {
+    use crate::icons::ICON_TRAY_M3;
+    use crate::platform_desktop::tray_status_runs;
+
+    assert!(ICON_TRAY_M3.contains("viewBox=\"0 0 18 18\""));
+    assert!(ICON_TRAY_M3.contains("fill=\"#000000\""));
+    assert!(!ICON_TRAY_M3.contains("#0B0B0E"));
+
+    assert!(tray_status_runs(0, 0).is_empty());
+    assert_eq!(tray_status_runs(1, 0).len(), 1);
+    assert_eq!(tray_status_runs(0, 1).len(), 1);
+    assert_eq!(tray_status_runs(2, 3).len(), 3);
+}
