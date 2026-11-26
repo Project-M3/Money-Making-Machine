@@ -84,7 +84,7 @@ When invoked interactively in a terminal, `m3` pretty-prints JSON automatically;
 | [`crates/m3-core`](./crates/m3-core) | Zero-UI deterministic engine: SEC EDGAR sync, `rust_decimal` Charlie Calculator, DuckDB/Parquet lakehouse (`L0`/`L1`/`L2`), Industry Studio, storage manager, bilingual i18n, self-updater |
 | [`crates/m3-cli`](./crates/m3-cli) | Scriptable schema-v1 JSON CLI (`m3`) with structured help, `doctor`, `storage`, `industry`, and TTY progress bar for updates |
 | [`apps/m3-nsh`](./apps/m3-nsh) | Native macOS desktop application powered by Longbridge NSH `0.7.0` and bundled with `m3` |
-| [`website`](./website) | Public Vite + TypeScript landing page & interactive static workbench showcase (`m3.thinksmart.systems`) |
+| [`website`](./website) | Public Solid + Vite landing page (build-time prerendered, en/zh) & interactive workbench showcase (`m3.thinksmart.systems`) |
 | [`docs`](./docs) | Architecture specs, Munger human-agent workflow, and CLI/file contract documentation |
 | [`scripts`](./scripts) | macOS bundle assembly, local installer (`install.sh`), release tooling, and manifest generator |
 
