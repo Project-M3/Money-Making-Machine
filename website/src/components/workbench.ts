@@ -406,8 +406,8 @@ export function mountWorkbench(container: HTMLElement): void {
 
   function renderSidebar(unreadCount: number): string {
     const buckets: Array<{ key: CompanyRecord['bucket']; code: string; dot: string }> = [
-      { key: 'Core', code: 'CORE', dot: 'var(--emerald)' },
       { key: 'Watch', code: 'WATCH', dot: 'var(--sky)' },
+      { key: 'Core', code: 'CORE', dot: 'var(--emerald)' },
       { key: 'Too Hard', code: 'TOO HARD', dot: 'var(--slate)' },
     ];
 

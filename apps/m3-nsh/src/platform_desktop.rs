@@ -398,10 +398,10 @@ pub fn build_app_menus(lang: UiLang, channel: ReleaseChannel, store: AppStore) -
                     [
                         MenuItem::new(lang.t("全部能力圈", "All Tiers"))
                             .on_select(move || store.focus_basket(None)),
-                        MenuItem::new(lang.t("CORE · 核心重仓候补", "CORE · Strike Candidates"))
-                            .on_select(move || store.focus_basket(Some(Bucket::Core))),
                         MenuItem::new(lang.t("WATCH · 持续跟踪", "WATCH · Tracking"))
                             .on_select(move || store.focus_basket(Some(Bucket::Watch))),
+                        MenuItem::new(lang.t("CORE · 核心重仓候补", "CORE · Strike Candidates"))
+                            .on_select(move || store.focus_basket(Some(Bucket::Core))),
                         MenuItem::new(lang.t("OUT · 超出能力圈", "OUT · Outside Circle"))
                             .on_select(move || store.focus_basket(Some(Bucket::Out))),
                         MenuItem::new(lang.t("TOO HARD · 暂不碰", "TOO HARD · Archived"))
@@ -520,10 +520,11 @@ pub fn show_company_context_menu(store: AppStore, ticker: String, at: Point<Poin
     let t_alan = ticker.clone();
     let t_dr = ticker.clone();
     let t_cli = ticker.clone();
-    let t_core = ticker.clone();
     let t_watch = ticker.clone();
+    let t_core = ticker.clone();
     let t_out = ticker.clone();
-    let t_hard = ticker;
+    let t_hard = ticker.clone();
+    let t_remove = ticker;
 
     let items = vec![
         MenuItem::new(l.t("打开财报与活研报", "Open Financials & Memo"))
@@ -540,16 +541,18 @@ pub fn show_company_context_menu(store: AppStore, ticker: String, at: Point<Poin
         MenuItem::submenu(
             l.t("调整能力圈分桶", "Move Circle Tier"),
             [
-                MenuItem::new("CORE")
-                    .on_select(move || store.move_company_bucket(&t_core, Bucket::Core)),
                 MenuItem::new("WATCH")
                     .on_select(move || store.move_company_bucket(&t_watch, Bucket::Watch)),
+                MenuItem::new("CORE")
+                    .on_select(move || store.move_company_bucket(&t_core, Bucket::Core)),
                 MenuItem::new("OUT")
                     .on_select(move || store.move_company_bucket(&t_out, Bucket::Out)),
                 MenuItem::new("TOO HARD")
                     .on_select(move || store.move_company_bucket(&t_hard, Bucket::TooHard)),
             ],
         ),
+        MenuItem::new(l.t("移出能力圈", "Remove from Circle"))
+            .on_select(move || store.remove_company_from_circle(&t_remove)),
         MenuItem::separator(),
         MenuItem::new(l.t("复制 `m3 report` CLI", "Copy `m3 report` CLI")).on_select(move || {
             copy_text_with_notice(

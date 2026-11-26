@@ -1354,6 +1354,21 @@ pub fn update_company_bucket(
     recompute_ticker(paths, ticker)
 }
 
+/// Removes a ticker from `workbench/watchlist.json` without deleting human-authored
+/// dossiers, research memos, or decision journal entries.
+/// Returns `Ok(true)` if an entry was removed, `Ok(false)` if not found.
+pub fn remove_company_from_watchlist(paths: &WorkspacePaths, ticker: &str) -> Result<bool> {
+    let mut wl = load_watchlist(paths)?;
+    let before = wl.companies.len();
+    wl.companies
+        .retain(|c| !c.ticker.eq_ignore_ascii_case(ticker.trim()));
+    if wl.companies.len() == before {
+        return Ok(false);
+    }
+    save_watchlist(paths, &wl)?;
+    Ok(true)
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn sync_v1_sec_company_with_url(
     paths: &WorkspacePaths,
@@ -3902,6 +3917,67 @@ mod tests {
                 None
             );
         }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_company_from_watchlist_preserves_other_entries_and_human_artifacts() {
+        let dir = std::env::temp_dir().join(format!("m3-remove-wl-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workbench/dossiers")).unwrap();
+        let paths = WorkspacePaths::from_root(dir.clone());
+        let default_assumptions = ValuationAssumptions {
+            multiple_low: Decimal::from(18),
+            multiple_high: Decimal::from(22),
+            target_return_pct: Decimal::from(10),
+            expected_growth_pct: Decimal::from(8),
+            strike_price_override: None,
+        };
+        let wl = WatchlistFile {
+            schema_version: 1,
+            benchmark_symbol: "^GSPC".to_owned(),
+            default_target_return_pct: Decimal::from(10),
+            companies: vec![
+                CompanyEntry {
+                    ticker: "HRMY".to_owned(),
+                    name: "Harmony Biosciences".to_owned(),
+                    bucket: Bucket::Watch,
+                    source: DataSource::SecEdgar,
+                    cik: Some("0001802665".to_owned()),
+                    currency: "USD".to_owned(),
+                    circle: "Pharma".to_owned(),
+                    too_hard_reason: None,
+                    assumptions: default_assumptions.clone(),
+                },
+                CompanyEntry {
+                    ticker: "COST".to_owned(),
+                    name: "Costco".to_owned(),
+                    bucket: Bucket::Core,
+                    source: DataSource::SecEdgar,
+                    cik: Some("0000909832".to_owned()),
+                    currency: "USD".to_owned(),
+                    circle: "Retail".to_owned(),
+                    too_hard_reason: None,
+                    assumptions: default_assumptions,
+                },
+            ],
+        };
+        save_watchlist(&paths, &wl).unwrap();
+        let memo_path = paths.workbench_dir.join("memos").join("HRMY.md");
+        fs::create_dir_all(memo_path.parent().unwrap()).unwrap();
+        fs::write(&memo_path, "# Human Notes\nKeep this memo.").unwrap();
+        let dossier_path = paths.dossier_path("HRMY");
+        fs::create_dir_all(dossier_path.parent().unwrap()).unwrap();
+        fs::write(&dossier_path, "{}").unwrap();
+
+        assert!(remove_company_from_watchlist(&paths, "hrmy").unwrap());
+        assert!(!remove_company_from_watchlist(&paths, "HRMY").unwrap());
+        let after = load_watchlist(&paths).unwrap();
+        assert_eq!(after.companies.len(), 1);
+        assert_eq!(after.companies[0].ticker, "COST");
+        assert!(memo_path.exists());
+        assert!(dossier_path.exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

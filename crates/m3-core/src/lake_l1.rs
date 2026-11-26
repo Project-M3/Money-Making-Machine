@@ -5,8 +5,9 @@ use crate::{
         read_universe_row, round_for_sql,
     },
     latent::{
-        self, Embedder, PreparedBm25Query, cosine_similarity, decode_embedding_json,
-        extract_verbatim_snippet, hybrid_score, l2_normalize, local_embed,
+        self, Embedder, PreparedBm25Query, cosine_similarity_embedding_json, decode_embedding_json,
+        extract_verbatim_snippet_with_terms, hybrid_score, l2_normalize, local_embed,
+        tokenize_query_term_set,
     },
     model::serde_decimal_opt,
     store::WorkspacePaths,
@@ -1300,14 +1301,27 @@ impl LakeDb {
              WHERE {where_sql}"
         );
 
-        struct ScoredChunk {
+        struct RawScoredChunk {
             hybrid: f32,
             semantic: f32,
             lexical: f32,
-            evidence: SignalEvidence,
+            chunk_id: String,
+            ticker: String,
+            doc_type: String,
+            section: String,
+            filing_date: Option<String>,
+            title: String,
+            content: String,
+            source_url: String,
         }
 
-        let mut per_cik: HashMap<String, Vec<ScoredChunk>> = HashMap::new();
+        #[derive(Default)]
+        struct CikAccumulator {
+            matched_chunk_count: usize,
+            top_chunks: Vec<RawScoredChunk>,
+        }
+
+        let mut per_cik: HashMap<String, CikAccumulator> = HashMap::new();
         {
             let mut stmt = self.conn.prepare(&chunks_sql)?;
             let refs = owned_params.iter().map(|b| b.as_ref());
@@ -1347,82 +1361,121 @@ impl LakeDb {
                 let semantic = if usize::try_from(dim_i32).ok() == Some(query_vec.len())
                     && !query_vec.is_empty()
                 {
-                    decode_embedding_json(&emb_json)
-                        .filter(|v| v.len() == query_vec.len())
-                        .map(|v| cosine_similarity(query_vec, &v).max(0.0))
+                    cosine_similarity_embedding_json(query_vec, &emb_json)
+                        .map(|v| v.max(0.0))
                         .unwrap_or(0.0)
                 } else {
                     0.0
                 };
                 let lexical = prepared_bm25.score(&content, 180.0);
                 let score = hybrid_score(semantic, lexical);
-                let quote = extract_verbatim_snippet(&content, query_text, 280);
-                per_cik.entry(cik).or_default().push(ScoredChunk {
-                    hybrid: score,
-                    semantic,
-                    lexical,
-                    evidence: SignalEvidence {
-                        chunk_id: Some(chunk_id),
+                let acc = per_cik.entry(cik).or_default();
+                if score > 0.05 {
+                    acc.matched_chunk_count += 1;
+                }
+                if acc.top_chunks.len() < 3
+                    || acc
+                        .top_chunks
+                        .last()
+                        .is_some_and(|worst| score > worst.hybrid)
+                {
+                    acc.top_chunks.push(RawScoredChunk {
+                        hybrid: score,
+                        semantic,
+                        lexical,
+                        chunk_id,
                         ticker,
                         doc_type,
                         section,
                         filing_date,
                         title,
-                        quote,
+                        content,
                         source_url,
-                        similarity: score,
-                    },
-                });
+                    });
+                    acc.top_chunks.sort_by(|a, b| {
+                        b.hybrid
+                            .partial_cmp(&a.hybrid)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    if acc.top_chunks.len() > 3 {
+                        acc.top_chunks.truncate(3);
+                    }
+                }
             }
         }
 
-        let mut hits: Vec<SimilarCompanyHit> = Vec::with_capacity(per_cik.len());
-        for (cik, mut scored_chunks) in per_cik {
+        struct CandidateHit {
+            company: UniverseRow,
+            score: f32,
+            semantic_score: f32,
+            lexical_score: f32,
+            matched_chunk_count: usize,
+            top_chunks: Vec<RawScoredChunk>,
+        }
+
+        let mut candidates: Vec<CandidateHit> = Vec::with_capacity(per_cik.len());
+        for (cik, acc) in per_cik {
             let Some(company) = companies_by_cik.remove(&cik) else {
                 continue;
             };
-            scored_chunks.sort_by(|a, b| {
-                b.hybrid
-                    .partial_cmp(&a.hybrid)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let matched_chunk_count = scored_chunks.iter().filter(|c| c.hybrid > 0.05).count();
-            let top_k = scored_chunks.len().min(3);
-            if top_k == 0 {
+            if acc.top_chunks.is_empty() {
                 continue;
             }
-            let max_score = scored_chunks[0].hybrid;
-            let top3_avg =
-                scored_chunks[..top_k].iter().map(|c| c.hybrid).sum::<f32>() / (top_k as f32);
+            let max_score = acc.top_chunks[0].hybrid;
+            let top3_avg = acc.top_chunks.iter().map(|c| c.hybrid).sum::<f32>()
+                / (acc.top_chunks.len() as f32);
             let agg_score = (0.70 * max_score + 0.30 * top3_avg).clamp(0.0, 1.0);
             if agg_score < min_score {
                 continue;
             }
-            let top_sem = scored_chunks[0].semantic;
-            let top_lex = scored_chunks[0].lexical;
-            let evidence: Vec<SignalEvidence> = scored_chunks
-                .into_iter()
-                .take(3)
-                .map(|c| c.evidence)
-                .collect();
-            hits.push(SimilarCompanyHit {
+            candidates.push(CandidateHit {
                 company,
                 score: agg_score,
-                semantic_score: top_sem,
-                lexical_score: top_lex,
-                matched_chunk_count,
-                evidence,
+                semantic_score: acc.top_chunks[0].semantic,
+                lexical_score: acc.top_chunks[0].lexical,
+                matched_chunk_count: acc.matched_chunk_count,
+                top_chunks: acc.top_chunks,
             });
         }
 
-        hits.sort_by(|a, b| {
+        candidates.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.company.quality_score.cmp(&a.company.quality_score))
                 .then_with(|| a.company.ticker.cmp(&b.company.ticker))
         });
-        hits.truncate(limit);
+        candidates.truncate(limit);
+
+        let q_terms = tokenize_query_term_set(query_text);
+        let hits: Vec<SimilarCompanyHit> = candidates
+            .into_iter()
+            .map(|c| {
+                let evidence = c
+                    .top_chunks
+                    .into_iter()
+                    .map(|ch| SignalEvidence {
+                        chunk_id: Some(ch.chunk_id),
+                        ticker: ch.ticker,
+                        doc_type: ch.doc_type,
+                        section: ch.section,
+                        filing_date: ch.filing_date,
+                        title: ch.title,
+                        quote: extract_verbatim_snippet_with_terms(&ch.content, &q_terms, 280),
+                        source_url: ch.source_url,
+                        similarity: ch.hybrid,
+                    })
+                    .collect();
+                SimilarCompanyHit {
+                    company: c.company,
+                    score: c.score,
+                    semantic_score: c.semantic_score,
+                    lexical_score: c.lexical_score,
+                    matched_chunk_count: c.matched_chunk_count,
+                    evidence,
+                }
+            })
+            .collect();
         Ok(hits)
     }
 }

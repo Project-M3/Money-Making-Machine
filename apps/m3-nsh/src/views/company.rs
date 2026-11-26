@@ -12,7 +12,7 @@ use crate::format::{
     civil_ym_from_ms, currency_prefix, fmt_money_compact, fmt_money_compact_opt, fmt_pct_clean,
     fmt_price, fmt_shares_compact, primary_row, primary_val,
 };
-use crate::icons::{ICON_ARROW_LEFT, ICON_CHEVRON_LEFT, ICON_CHEVRON_RIGHT};
+use crate::icons::{ICON_ARROW_LEFT, ICON_CHEVRON_LEFT, ICON_CHEVRON_RIGHT, ICON_CLOSE, icon};
 use crate::platform_desktop::{copy_text_with_notice, open_external_url};
 use crate::stores::{AppStore, ChartTimeframe, CompanyViewTab, WorkspaceTab};
 use crate::theme::*;
@@ -2281,15 +2281,16 @@ fn properties_rail(store: AppStore) -> Scroll {
                         ),
                 )
                 // 3. Circle 2x2 Switcher
-                .child(
+                .child({
+                    let tk_remove = rep.ticker.clone();
                     prop_section(l.t("CIRCLE · 能力圈分层", "CIRCLE · TIER"))
                         .child(
                             view()
                                 .flex()
                                 .flex_row()
                                 .gap(px(6.0))
-                                .child(bucket_btn(Bucket::Core))
-                                .child(bucket_btn(Bucket::Watch)),
+                                .child(bucket_btn(Bucket::Watch))
+                                .child(bucket_btn(Bucket::Core)),
                         )
                         .child(
                             view()
@@ -2298,8 +2299,34 @@ fn properties_rail(store: AppStore) -> Scroll {
                                 .gap(px(6.0))
                                 .child(bucket_btn(Bucket::Out))
                                 .child(bucket_btn(Bucket::TooHard)),
-                        ),
-                )
+                        )
+                        .child(
+                            view()
+                                .w_full()
+                                .px(px(8.0))
+                                .py(px(5.0))
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(rgb(BG_WELL))
+                                .border_1()
+                                .border_color(rgb(BORDER_SUBTLE))
+                                .hover(|s| s.bg(rgba(CORAL_BG)))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(5.0))
+                                .on_press(move || store.remove_company_from_circle(&tk_remove))
+                                .child(icon(ICON_CLOSE, 11.0).text_color(rgb(INK_MUTED)))
+                                .child(
+                                    text(l.t("移出能力圈", "Remove from Circle"))
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_XS))
+                                        .text_color(rgb(INK_MUTED))
+                                        .number_of_lines(1),
+                                ),
+                        )
+                })
                 // 4. Circle Tag Linkage
                 .child(
                     prop_section(l.t("LABELS · 能力圈", "LABELS · CIRCLE")).child(

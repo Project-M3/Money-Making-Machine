@@ -58,12 +58,28 @@ use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-fn run_with_reactive_runtime<T>(setup: impl FnOnce() -> T, check: impl FnOnce(T)) {
-    let runtime = Runtime::default();
-    let _entered = runtime.enter();
-    let (owner, made) = create_root(setup);
-    check(made);
-    owner.dispose();
+fn run_with_reactive_runtime<T>(
+    setup: impl FnOnce() -> T + 'static,
+    check: impl FnOnce(T) + 'static,
+) {
+    use nsh_core::element::{RustCall, RustOp, ToJs};
+    use nsh_core::{ApproxTextEngine, Core, Op};
+    use std::cell::RefCell;
+
+    let mut core = Core::new(ApproxTextEngine, size(px(800.0), px(600.0)));
+    let payload = RefCell::new(Some((setup, check)));
+    core.apply(Op::Rust(RustOp {
+        call: 1,
+        run: RustCall::Op(Box::new(move |_| {
+            if let Some((setup_fn, check_fn)) = payload.borrow_mut().take() {
+                let (owner, made) = create_root(setup_fn);
+                check_fn(made);
+                owner.dispose();
+            }
+            Ok(Box::new(()) as Box<dyn ToJs>)
+        })),
+    }))
+    .unwrap();
 }
 
 fn temp_workspace(tag: &str) -> PathBuf {
@@ -1851,7 +1867,7 @@ fn onboarding_visibility_and_starter_helpers() {
 
     run_with_reactive_runtime(
         move || AppStore::new(paths),
-        |store| {
+        move |store| {
             assert!(store.startup_hydrated.get_untracked());
             assert!(store.should_show_onboarding());
 
@@ -2686,4 +2702,62 @@ fn mcp_config_snippets_and_progressive_universe_format_work() {
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].tag, "LAKE SYNC");
     assert_eq!(msgs[0].progress, Some(0.72));
+}
+
+#[test]
+fn bucket_display_order_and_remove_company_from_circle_work() {
+    use m3_core::model::{CompanyEntry, WatchlistFile};
+    use m3_core::store::save_watchlist;
+
+    assert_eq!(
+        Bucket::display_order(),
+        [Bucket::Watch, Bucket::Core, Bucket::Out, Bucket::TooHard]
+    );
+
+    let root = temp_workspace("remove_circle");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+    let wl = WatchlistFile {
+        schema_version: 1,
+        benchmark_symbol: "^GSPC".into(),
+        default_target_return_pct: Decimal::from(10),
+        companies: vec![CompanyEntry {
+            ticker: "HRMY".into(),
+            name: "Harmony Biosciences".into(),
+            bucket: Bucket::Watch,
+            source: DataSource::SecEdgar,
+            cik: Some("0001802665".into()),
+            currency: "USD".into(),
+            circle: "Pharma".into(),
+            too_hard_reason: None,
+            assumptions: ValuationAssumptions {
+                multiple_low: Decimal::from(18),
+                multiple_high: Decimal::from(22),
+                target_return_pct: Decimal::from(10),
+                expected_growth_pct: Decimal::from(8),
+                strike_price_override: None,
+            },
+        }],
+    };
+    save_watchlist(&paths, &wl).expect("save watchlist");
+    let dossier_path = paths.dossier_path("HRMY");
+    std::fs::create_dir_all(dossier_path.parent().unwrap()).unwrap();
+    std::fs::write(&dossier_path, "{}").unwrap();
+    let dossier_check = dossier_path.clone();
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            assert_eq!(store.reports.with_untracked(|r| r.len()), 1);
+            store.open_company("HRMY", CompanyViewTab::FinancialsMemo);
+            assert!(store.company_open.get_untracked());
+
+            store.remove_company_from_circle("HRMY");
+            assert!(!store.company_open.get_untracked());
+            assert!(store.reports.with_untracked(|r| r.is_empty()));
+            assert!(dossier_check.exists());
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

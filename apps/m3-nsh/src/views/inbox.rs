@@ -279,6 +279,10 @@ fn render_inbox_body(store: AppStore) -> View {
     let signals = store.inbox_signals.get();
     let st = store.inbox_state.get();
 
+    if !store.startup_hydrated.get() && signals.is_empty() {
+        return view().flex_1().min_h(px(0.0)).bg(rgb(BG_VIEWPORT));
+    }
+
     if lake_empty && signals.is_empty() {
         let mut content = view().p(px(20.0)).flex().flex_col().gap(px(16.0));
         if show_onboarding {

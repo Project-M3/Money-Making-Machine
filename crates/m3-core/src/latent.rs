@@ -1082,6 +1082,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[derive(Debug, Clone)]
 pub struct PreparedBm25Query {
     weighted_terms: Vec<(String, f32)>,
+    term_index: HashMap<String, usize>,
     total_weight: f32,
 }
 
@@ -1091,6 +1092,7 @@ impl PreparedBm25Query {
         if query_tokens.is_empty() {
             return Self {
                 weighted_terms: Vec::new(),
+                term_index: HashMap::new(),
                 total_weight: 0.0,
             };
         }
@@ -1111,9 +1113,15 @@ impl PreparedBm25Query {
                 .then_with(|| a.0.cmp(&b.0))
         });
         weighted_terms.truncate(32);
+        let term_index: HashMap<String, usize> = weighted_terms
+            .iter()
+            .enumerate()
+            .map(|(idx, (term, _))| (term.clone(), idx))
+            .collect();
         let total_weight = weighted_terms.iter().map(|(_, w)| *w).sum();
         Self {
             weighted_terms,
+            term_index,
             total_weight,
         }
     }
@@ -1127,24 +1135,69 @@ impl PreparedBm25Query {
         if self.weighted_terms.is_empty() || self.total_weight <= 1e-12 {
             return 0.0;
         }
-        let doc_tokens = tokenize_terms(doc_text);
-        if doc_tokens.is_empty() {
+        let mut tf = [0u32; 32];
+        let mut dl = 0u32;
+        let mut buf = [0u8; 40];
+        let mut len = 0usize;
+        let mut overflow = false;
+
+        let flush_token = |buf: &[u8],
+                           len: usize,
+                           overflow: bool,
+                           term_index: &HashMap<String, usize>,
+                           dl: &mut u32,
+                           tf: &mut [u32; 32]| {
+            if overflow || !(2..=40).contains(&len) {
+                return;
+            }
+            let slice = &buf[..len];
+            if len < 4 && slice.iter().all(|c| c.is_ascii_digit()) {
+                return;
+            }
+            if let Ok(tok) = std::str::from_utf8(slice)
+                && !is_stopword(tok)
+            {
+                *dl += 1;
+                if let Some(&idx) = term_index.get(tok) {
+                    tf[idx] += 1;
+                }
+            }
+        };
+
+        for b in doc_text.bytes() {
+            if b.is_ascii_alphanumeric() {
+                if !overflow {
+                    if len < buf.len() {
+                        buf[len] = b.to_ascii_lowercase();
+                        len += 1;
+                    } else {
+                        overflow = true;
+                    }
+                }
+            } else if len > 0 || overflow {
+                flush_token(&buf, len, overflow, &self.term_index, &mut dl, &mut tf);
+                len = 0;
+                overflow = false;
+            }
+        }
+        if len > 0 || overflow {
+            flush_token(&buf, len, overflow, &self.term_index, &mut dl, &mut tf);
+        }
+
+        if dl == 0 {
             return 0.0;
         }
-        let mut d_tf: HashMap<&str, f32> = HashMap::new();
-        for dt in &doc_tokens {
-            *d_tf.entry(dt.as_str()).or_insert(0.0) += 1.0;
-        }
-        let dl = doc_tokens.len() as f32;
         let avg_dl = avg_doc_len.max(20.0);
         let k1 = 1.5f32;
         let b = 0.75f32;
-        let dl_norm = (1.0 - b + b * (dl / avg_dl)).max(0.25);
+        let dl_norm = (1.0 - b + b * (dl as f32 / avg_dl)).max(0.25);
 
         let mut matched_score = 0.0f32;
-        for (term, q_weight) in &self.weighted_terms {
-            if let Some(&tf) = d_tf.get(term.as_str()) {
-                let bm25_sat = tf / (tf + k1 * dl_norm);
+        for (idx, (_, q_weight)) in self.weighted_terms.iter().enumerate() {
+            let count = tf[idx];
+            if count > 0 {
+                let tf_f = count as f32;
+                let bm25_sat = tf_f / (tf_f + k1 * dl_norm);
                 matched_score += q_weight * bm25_sat;
             }
         }
@@ -1336,14 +1389,61 @@ pub fn decode_embedding_json(raw: &str) -> Option<Vec<f32>> {
     Some(out)
 }
 
+/// Computes cosine similarity directly from a JSON array string without allocating a `Vec<f32>`.
+pub fn cosine_similarity_embedding_json(query_vec: &[f32], raw: &str) -> Option<f32> {
+    if query_vec.is_empty() {
+        return Some(0.0);
+    }
+    let trimmed = raw.trim();
+    let inner = trimmed.strip_prefix('[')?.strip_suffix(']')?.trim();
+    if inner.is_empty() {
+        return None;
+    }
+    let mut idx = 0usize;
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+    for part in inner.split(',') {
+        if idx >= query_vec.len() {
+            return None;
+        }
+        let val = part.trim().parse::<f32>().ok()?;
+        if !val.is_finite() {
+            return None;
+        }
+        let q = query_vec[idx];
+        dot += q * val;
+        norm_a += q * q;
+        norm_b += val * val;
+        idx += 1;
+    }
+    if idx != query_vec.len() {
+        return None;
+    }
+    let denom = (norm_a * norm_b).sqrt();
+    if denom <= 1e-12 {
+        Some(0.0)
+    } else {
+        Some((dot / denom).clamp(-1.0, 1.0))
+    }
+}
+
+/// Pre-tokenizes a query string into a lowercase term set for repeated snippet extraction.
+pub fn tokenize_query_term_set(query: &str) -> HashSet<String> {
+    tokenize_terms(query).into_iter().collect()
+}
+
 /// Extracts a verbatim quote from `content` centered on the sentence/line with
-/// highest overlap against `query`.
-pub fn extract_verbatim_snippet(content: &str, query: &str, max_chars: usize) -> String {
+/// highest overlap against pre-tokenized `q_terms`.
+pub fn extract_verbatim_snippet_with_terms(
+    content: &str,
+    q_terms: &HashSet<String>,
+    max_chars: usize,
+) -> String {
     let clean = content.trim();
     if clean.is_empty() || max_chars == 0 {
         return String::new();
     }
-    let q_terms: HashSet<String> = tokenize_terms(query).into_iter().collect();
     if q_terms.is_empty() || clean.chars().count() <= max_chars {
         return truncate_verbatim_chars(clean, max_chars);
     }
@@ -1371,6 +1471,13 @@ pub fn extract_verbatim_snippet(content: &str, query: &str, max_chars: usize) ->
     } else {
         truncate_verbatim_chars(clean, max_chars)
     }
+}
+
+/// Extracts a verbatim quote from `content` centered on the sentence/line with
+/// highest overlap against `query`.
+pub fn extract_verbatim_snippet(content: &str, query: &str, max_chars: usize) -> String {
+    let q_terms = tokenize_query_term_set(query);
+    extract_verbatim_snippet_with_terms(content, &q_terms, max_chars)
 }
 
 fn truncate_verbatim_chars(s: &str, max_chars: usize) -> String {
@@ -1580,5 +1687,33 @@ mod tests {
         assert_eq!(empty_q.score(doc_match, 100.0), 0.0);
 
         assert!(Embedder::with_remote("".into(), "k".into(), "m".into()).is_err());
+    }
+
+    #[test]
+    fn streaming_json_cosine_and_bm25_filters_match_reference() {
+        let q = "enterprise cloud cad 2025 design software";
+        let doc = "In 2025 and 12 our enterprise cloud CAD design software platform supercalifragilisticexpialidociousvalueinvestor expanded.";
+        let prepared = PreparedBm25Query::new(q);
+        let score = prepared.score(doc, 100.0);
+        // Verify exact reference BM25 calculation with the same token filters:
+        // "2025" kept (len >= 4 digits), "12" skipped (short digits), "our"/"and"/"in" stopwords,
+        // >40 char token skipped, repeated queries handled consistently.
+        assert!(score > 0.65 && score <= 1.0);
+        assert_eq!(
+            prepared.score("the and of 123 x", 100.0),
+            0.0,
+            "stopwords, short digits, and 1-char tokens must be ignored"
+        );
+
+        let q_vec = local_embed(q);
+        let doc_vec = local_embed(doc);
+        let json = encode_embedding_json(&doc_vec);
+        let fast = cosine_similarity_embedding_json(&q_vec, &json).unwrap();
+        let ref_sim = cosine_similarity(&q_vec, &decode_embedding_json(&json).unwrap());
+        assert!((fast - ref_sim).abs() < 1e-5, "fast={fast} ref={ref_sim}");
+
+        assert!(cosine_similarity_embedding_json(&q_vec, "[0.1, 0.2]").is_none());
+        assert!(cosine_similarity_embedding_json(&q_vec, "[0.1, NaN]").is_none());
+        assert!(cosine_similarity_embedding_json(&q_vec, "not_json").is_none());
     }
 }

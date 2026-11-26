@@ -72,6 +72,13 @@ pub fn universe_view(store: AppStore) -> impl IntoElement {
                 .flex_col()
                 .overflow_hidden()
                 .child(dynamic(move || {
+                    if !store.startup_hydrated.get() && !store.universe_lake_present.get() {
+                        return view()
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .bg(rgb(BG_VIEWPORT))
+                            .into_element();
+                    }
                     let lake_empty = is_lake_empty(
                         store.universe_lake_present.get(),
                         store.universe_summary.with(|s| s.clone()).as_ref(),
@@ -2316,6 +2323,7 @@ fn render_universe_drawer_content(
 
     let ticker_dossier = row.ticker.clone();
     let ticker_similar = row.ticker.clone();
+    let ticker_remove = row.ticker.clone();
     let row_watch = row.clone();
     let row_research = row.clone();
     let row_ind_tk = row.ticker.clone();
@@ -2429,34 +2437,42 @@ fn render_universe_drawer_content(
         .child({
             let mut actions = view().flex().flex_col().gap(px(6.0));
             if live_bkt.is_some() {
-                actions = actions.child(
-                    view()
-                        .flex()
-                        .flex_row()
-                        .gap(px(6.0))
-                        .child(
-                            drawer_button(
-                                l.t("打开研报 Dossier →", "Open Dossier →"),
-                                CTA_INK,
-                                CTA_BG,
-                                CTA_BG,
-                                move || {
-                                    store.open_company(
-                                        &ticker_dossier,
-                                        CompanyViewTab::FinancialsMemo,
-                                    );
-                                },
+                actions = actions
+                    .child(
+                        view()
+                            .flex()
+                            .flex_row()
+                            .gap(px(6.0))
+                            .child(
+                                drawer_button(
+                                    l.t("打开研报 Dossier →", "Open Dossier →"),
+                                    CTA_INK,
+                                    CTA_BG,
+                                    CTA_BG,
+                                    move || {
+                                        store.open_company(
+                                            &ticker_dossier,
+                                            CompanyViewTab::FinancialsMemo,
+                                        );
+                                    },
+                                )
+                                .flex_1(),
                             )
-                            .flex_1(),
-                        )
-                        .child(drawer_button(
-                            l.t("Deep Research", "Deep Research"),
-                            VIOLET_FG,
-                            VIOLET_BG,
-                            VIOLET_BORDER,
-                            move || store.dispatch_universe_company_research(&row_research),
-                        )),
-                );
+                            .child(drawer_button(
+                                l.t("Deep Research", "Deep Research"),
+                                VIOLET_FG,
+                                VIOLET_BG,
+                                VIOLET_BORDER,
+                                move || store.dispatch_universe_company_research(&row_research),
+                            )),
+                    )
+                    .child(drawer_button(
+                        l.t("移出能力圈 · Remove from Circle", "Remove from Circle"),
+                        SLATE_FG,
+                        SLATE_BG,
+                        SLATE_BORDER,
+                        move || store.remove_company_from_circle(&ticker_remove),
+                    ));
             } else {
                 actions = actions
                     .child(drawer_button(

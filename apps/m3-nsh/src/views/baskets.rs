@@ -464,6 +464,9 @@ fn render_filter_bar(store: AppStore) -> View {
 fn render_baskets_body(store: AppStore) -> View {
     let l = store.lang.get();
     let reports = store.reports.get();
+    if !store.startup_hydrated.get() && reports.is_empty() {
+        return view().flex_1().min_h(px(0.0));
+    }
     let tags = collect_circle_tags(&reports);
     let basket_filter = store.basket_filter.get();
     let circle_filter = store.circle_filter.get();
@@ -649,7 +652,7 @@ fn render_baskets_list(
         ),
         (nd_label, 74.0, true, Some(SortCol::NetDebt)),
         (status_label, 96.0, false, None),
-        (l.t("分桶", "Move"), 138.0, false, None),
+        (l.t("分桶", "Move"), 162.0, false, None),
     ];
 
     let mut linear_idx: usize = 0;
@@ -1419,13 +1422,14 @@ fn render_baskets_board(store: AppStore, reports: &[MungerReport], l: UiLang) ->
 
 fn quick_move_strip(store: AppStore, ticker: &str, current: Bucket) -> View {
     let targets = [
-        (Bucket::Core, "IN"),
         (Bucket::Watch, "W"),
+        (Bucket::Core, "IN"),
         (Bucket::Out, "OUT"),
         (Bucket::TooHard, "TH"),
     ];
+    let tk_remove = ticker.to_owned();
     view()
-        .w(px(138.0))
+        .w(px(162.0))
         .flex_shrink_0()
         .px(px(4.0))
         .flex()
@@ -1469,4 +1473,17 @@ fn quick_move_strip(store: AppStore, ticker: &str, current: Bucket) -> View {
             }
             pill
         }))
+        .child(
+            view()
+                .px(px(4.0))
+                .py(px(3.0))
+                .rounded_xs()
+                .border_1()
+                .border_color(rgb(BORDER_SUBTLE))
+                .bg(rgb(BG_WELL))
+                .hover(|s| s.bg(rgba(CORAL_BG)))
+                .cursor_pointer()
+                .on_press(move || store.remove_company_from_circle(&tk_remove))
+                .child(icon(ICON_CLOSE, 10.0).text_color(rgb(INK_MUTED))),
+        )
 }

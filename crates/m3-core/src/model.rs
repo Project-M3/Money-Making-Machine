@@ -240,7 +240,7 @@ impl Bucket {
     }
 
     pub fn display_order() -> [Bucket; 4] {
-        [Bucket::Core, Bucket::Watch, Bucket::Out, Bucket::TooHard]
+        [Bucket::Watch, Bucket::Core, Bucket::Out, Bucket::TooHard]
     }
 }
 

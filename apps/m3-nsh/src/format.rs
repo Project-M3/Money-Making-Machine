@@ -325,8 +325,8 @@ pub fn sort_reports(rows: &mut [&MungerReport], col: SortCol, asc: bool) {
         let ord = match col {
             SortCol::Default => {
                 let rank = |bkt: Bucket| match bkt {
-                    Bucket::Core => 0,
-                    Bucket::Watch => 1,
+                    Bucket::Watch => 0,
+                    Bucket::Core => 1,
                     Bucket::Out => 2,
                     Bucket::TooHard => 3,
                 };
