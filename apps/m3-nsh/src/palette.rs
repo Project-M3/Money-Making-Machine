@@ -919,7 +919,7 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
                 .child(
                     view()
                         .w(move || px(if store.palette_open.get() { 560.0 } else { 400.0 }))
-                        .max_h(px(460.0))
+                        .max_h(px(480.0))
                         .rounded_lg()
                         .bg(move || {
                             if store.palette_open.get() {
@@ -1106,15 +1106,16 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
                                                         .text_color(rgb(INK_MUTED)),
                                                     );
                                             }
-                                            let h = ((filtered.len() as f32) * 46.0 + 12.0)
-                                                .min(390.0);
+                                            let h = ((filtered.len() as f32) * 52.0 + 16.0)
+                                                .min(416.0);
                                             return view().w_full().h(px(h)).child(
                                                 scroll().w_full().h_full().child(
                                                     view()
                                                         .w_full()
                                                         .flex()
                                                         .flex_col()
-                                                        .py(px(6.0))
+                                                        .pt(px(6.0))
+                                                        .pb(px(10.0))
                                                         .children(
                                                             filtered.into_iter().enumerate().map(
                                                                 |(idx, item)| {
@@ -1157,7 +1158,7 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
                                             .min(visible_len.saturating_sub(1));
 
                                         let mut list_col =
-                                            view().w_full().flex().flex_col().pb(px(6.0));
+                                            view().w_full().flex().flex_col().pb(px(10.0));
                                         let mut flat_idx = 0usize;
 
                                         if !views.is_empty() {
@@ -1205,7 +1206,7 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
                                             }
                                         }
 
-                                        let est_h = (visible_len as f32 * 45.0 + 96.0).min(440.0);
+                                        let est_h = (visible_len as f32 * 52.0 + 104.0).min(416.0);
                                         view()
                                             .w_full()
                                             .h(px(est_h))
