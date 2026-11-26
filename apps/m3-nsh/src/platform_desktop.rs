@@ -38,9 +38,10 @@ mod smoked_glass {
         runtime::{AnyObject, Bool},
     };
     use nsh_platform_macos::objc2_app_kit::{
-        NSApplication, NSAutoresizingMaskOptions, NSUserInterfaceItemIdentification as _, NSView,
-        NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-        NSVisualEffectView, NSWindowOrderingMode,
+        NSApplication, NSAutoresizingMaskOptions, NSNormalWindowLevel,
+        NSUserInterfaceItemIdentification as _, NSView, NSVisualEffectBlendingMode,
+        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
+        NSWindowStyleMask,
     };
     use nsh_platform_macos::objc2_foundation::{
         NSArray, NSNumber, NSPoint, NSRect, NSString, ns_string,
@@ -171,6 +172,13 @@ mod smoked_glass {
         };
         let app = NSApplication::sharedApplication(mtm);
         for win in app.windows().iter() {
+            let mask = win.styleMask();
+            if win.level() != NSNormalWindowLevel
+                || !mask.contains(NSWindowStyleMask::Titled)
+                || mask.contains(NSWindowStyleMask::NonactivatingPanel)
+            {
+                continue;
+            }
             let Some(content_view) = win.contentView() else {
                 continue;
             };
