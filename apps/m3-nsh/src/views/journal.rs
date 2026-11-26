@@ -2,7 +2,7 @@
 
 use crate::components::{
     action_button, badge_pill, cmd_kbd_corner, concept_hint_static, mono_left, mono_right,
-    obsidian_card, v_divider,
+    obsidian_card, v_divider, view_header_strip,
 };
 use crate::format::{
     fmt_pct_clean, fmt_price, fmt_time_cn_for, format_theme_member_distance,
@@ -19,14 +19,93 @@ use rust_decimal::Decimal;
 
 /// Renders Theme Archetype Clusters above the Append-Only Decision Journal (`⌘5`).
 pub fn journal_view(store: AppStore) -> impl IntoElement {
-    scroll().flex_1().min_h(px(0.0)).w_full().child(
-        view()
-            .w_full()
-            .flex()
-            .flex_col()
-            .child(render_themes_section(store))
-            .child(render_journal_section(store)),
-    )
+    view()
+        .flex_1()
+        .min_h(px(0.0))
+        .w_full()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(render_themes_header_strip(store))
+        .child(
+            scroll().flex_1().min_h(px(0.0)).w_full().child(
+                view()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(render_themes_section(store))
+                    .child(render_journal_section(store)),
+            ),
+        )
+}
+
+fn render_themes_header_strip(store: AppStore) -> View {
+    view_header_strip()
+        .child(dynamic(move || {
+            let l = store.lang.get();
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .child(badge_pill(
+                    l.t("THEMES · 商业原型图谱", "THEMES · Business Archetypes"),
+                    SKY_FG,
+                    SKY_BG,
+                    SKY_BORDER,
+                ))
+                .child(concept_hint_static(l.t(
+                    "基于 SIC 与财报隐空间聚类生成的商业原型，保留人类批注。",
+                    "Business archetypes clustered from SIC and 10-K disclosures; human notes are preserved.",
+                )))
+        }))
+        .child(dynamic(move || {
+            let l = store.lang.get();
+            let tf = store.themes_file.get();
+            let syncing = store.themes_syncing.get();
+            let updated_label = if tf.updated_at_ms > 0 {
+                fmt_time_cn_for(Some(tf.updated_at_ms), l)
+            } else {
+                l.t("未同步", "Unsynced").to_owned()
+            };
+
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(12.0))
+                .child(stat_inline(
+                    l.t("原型簇", "Clusters"),
+                    format!("{}", tf.clusters.len()),
+                    INK_HERO,
+                ))
+                .child(v_divider())
+                .child(stat_inline(
+                    l.t("索引公司", "Indexed"),
+                    format!("{}", tf.total_indexed_companies),
+                    SKY_FG,
+                ))
+                .child(v_divider())
+                .child(stat_inline(
+                    l.t("更新时间", "Updated"),
+                    updated_label,
+                    INK_SECONDARY,
+                ))
+                .child(
+                    view()
+                        .relative()
+                        .child(action_button(
+                            if syncing {
+                                l.t("同步中…", "Syncing…").to_owned()
+                            } else {
+                                l.t("同步主题图谱", "Sync Themes").to_owned()
+                            },
+                            !syncing,
+                            move || store.start_themes_sync(),
+                        ))
+                        .child(cmd_kbd_corner(store, "s")),
+                )
+        }))
 }
 
 fn render_themes_section(store: AppStore) -> View {
@@ -34,84 +113,6 @@ fn render_themes_section(store: AppStore) -> View {
         .w_full()
         .flex()
         .flex_col()
-        .child(
-            view()
-                .px(px(20.0))
-                .py(px(12.0))
-                .bg(rgb(BG_SURFACE))
-                .border_b_1()
-                .border_color(rgb(BORDER_HAIRLINE))
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap(px(16.0))
-                .child(dynamic(move || {
-                    let l = store.lang.get();
-                    view()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(10.0))
-                        .child(badge_pill(
-                            l.t("THEMES · 商业原型图谱", "THEMES · Business Archetypes"),
-                            SKY_FG,
-                            SKY_BG,
-                            SKY_BORDER,
-                        ))
-                        .child(concept_hint_static(l.t(
-                            "基于 SIC 与财报隐空间聚类生成的商业原型，保留人类批注。",
-                            "Business archetypes clustered from SIC and 10-K disclosures; human notes are preserved.",
-                        )))
-                }))
-                .child(dynamic(move || {
-                    let l = store.lang.get();
-                    let tf = store.themes_file.get();
-                    let syncing = store.themes_syncing.get();
-                    let updated_label = if tf.updated_at_ms > 0 {
-                        fmt_time_cn_for(Some(tf.updated_at_ms), l)
-                    } else {
-                        l.t("未同步", "Unsynced").to_owned()
-                    };
-
-                    view()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(12.0))
-                        .child(stat_inline(
-                            l.t("原型簇", "Clusters"),
-                            format!("{}", tf.clusters.len()),
-                            INK_HERO,
-                        ))
-                        .child(v_divider())
-                        .child(stat_inline(
-                            l.t("索引公司", "Indexed"),
-                            format!("{}", tf.total_indexed_companies),
-                            SKY_FG,
-                        ))
-                        .child(v_divider())
-                        .child(stat_inline(
-                            l.t("更新时间", "Updated"),
-                            updated_label,
-                            INK_SECONDARY,
-                        ))
-                        .child(
-                            view()
-                                .relative()
-                                .child(action_button(
-                                    if syncing {
-                                        l.t("同步中…", "Syncing…").to_owned()
-                                    } else {
-                                        l.t("同步主题图谱", "Sync Themes").to_owned()
-                                    },
-                                    !syncing,
-                                    move || store.start_themes_sync(),
-                                ))
-                                .child(cmd_kbd_corner(store, "s")),
-                        )
-                })),
-        )
         .child(dynamic(move || {
             let l = store.lang.get();
             let tf = store.themes_file.get();
@@ -119,7 +120,7 @@ fn render_themes_section(store: AppStore) -> View {
             let err_opt = store.themes_error.get();
 
             let mut body = view()
-                .px(px(20.0))
+                .px(px(18.0))
                 .pt(px(16.0))
                 .pb(px(8.0))
                 .flex()
@@ -508,8 +509,8 @@ fn render_journal_section(store: AppStore) -> View {
 
         let header = view()
             .mt(px(8.0))
-            .px(px(20.0))
-            .py(px(12.0))
+            .px(px(18.0))
+            .py(px(10.0))
             .bg(rgb(BG_SURFACE))
             .border_t_1()
             .border_b_1()
@@ -588,7 +589,8 @@ fn render_journal_section(store: AppStore) -> View {
 
         view().flex().flex_col().child(header).child(
             view()
-                .p(px(20.0))
+                .px(px(18.0))
+                .py(px(18.0))
                 .flex()
                 .flex_col()
                 .gap(px(16.0))

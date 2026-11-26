@@ -6,12 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-26
+
 ### Added
+- In-app **Alan** model connection setup & live connectivity verification in Settings across all 5 first-party providers (`OpenRouter`, `OpenAI Responses`, `ChatGPT` browser OAuth, `Google Vertex AI` ADC/Express, `Magpie`).
+- Guided first-run onboarding card with curated Berkshire × Munger non-financial classics starter pack and 2-phase progressive `L0` lakehouse bootstrap (`64 KiB` byte-streaming download progress and early `lake_ready` activation before Top-400 quotes).
+- Read-only stdio MCP server (`m3 mcp`, 14 deterministic tools), first-party M3 Agent Skill, and one-click MCP setup copy (`Claude Code` / `Codex` / `Cursor / JSON`) in Settings.
+- Smoked-black macOS glass shell (`M3SmokedGlassView`), morphing topbar Command Box, compact topbar Message Box with determinate sync progress, centered Settings Modal (`⌘,` with `General` / `AI` / `Data` tabs), IconMCP SVG icon language, and zero-layout-shift hold-`⌘` shortcut overlays.
 - Structured CLI help (`m3 --help`, `m3 help <command>`, `m3 <command> --help`) with grouped command discovery and examples.
 - TTY-aware JSON formatting in `m3` (auto-pretty on interactive terminals, compact single-line JSON when piped) with `--pretty` and `--compact` overrides.
 - Live `stderr` staged progress bar during interactive `m3 update`.
 - `m3 storage [status|clean <category|all>]`, `m3 industry [list|show <slug>]`, and `m3 doctor` subcommands.
 - Repository open-source documentation (`README.md`, `README.zh-CN.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`) and GitHub issue/PR/Dependabot templates.
+
+### Changed
+- Cross-view UI consistency polish across all 6 desktop views (`Inbox`, `Universe`, `Industry`, `Circle`, `Themes & Journal`, `Company Desk`): unified `42px` pinned top telemetry ribbons, consistent filter strips, and IconMCP vector icons replacing raw text glyphs.
+- Direct public GitHub Releases updater (removing `gh` auth and REST API quota dependency) and unified **Alan** branding across app, CLI, docs, and website.
+
+### Fixed
+- Fixed Google Vertex AI connectivity probe (`v1beta1/publishers/google/models?pageSize=1` with regional host resolution and `x-goog-user-project` for ADC, and `:countTokens` for Express API keys).
+- Detached `async_bridge` NSH tasks from transient view owners, bounded update-check timeouts, guarded worker panics, and resolved update-check state machine races.
 
 ## [0.4.2] - 2026-11-25
 
@@ -51,7 +65,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial **Munger Focus Value Research & Decision Workbench** (`v1`), deterministic SEC EDGAR XBRL & Yahoo Finance Charlie Calculator, built-in **Alan** interrogator with `M3ToolPolicyHook`, and `m3` JSON CLI.
 
-[Unreleased]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.2...main
+[Unreleased]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.5.0...main
+[0.5.0]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.3.0...v0.4.0

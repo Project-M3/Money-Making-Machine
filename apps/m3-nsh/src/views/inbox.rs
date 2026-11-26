@@ -2,6 +2,7 @@
 
 use crate::components::{
     action_button, badge_pill, cmd_kbd_corner, kbd, obsidian_card, section_header, v_divider,
+    view_filter_strip, view_header_strip,
 };
 use crate::format::{
     budget_watermark_summary_for, count_inbox_filter, filter_inbox_signals, fmt_money_compact,
@@ -61,18 +62,7 @@ pub fn inbox_view(store: AppStore) -> impl IntoElement {
 }
 
 fn render_inbox_kpi_ribbon(store: AppStore) -> View {
-    view()
-        .h(px(44.0))
-        .flex_shrink_0()
-        .px(px(20.0))
-        .bg(rgb(BG_SURFACE))
-        .border_b_1()
-        .border_color(rgb(BORDER_HAIRLINE))
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap(px(12.0))
+    view_header_strip()
         .child(
             view()
                 .flex_1()
@@ -202,18 +192,7 @@ fn kpi_stat_inline(label: &str, value: String, color: u32) -> View {
 }
 
 fn render_inbox_filter_bar(store: AppStore) -> View {
-    view()
-        .flex_shrink_0()
-        .px(px(20.0))
-        .py(px(8.0))
-        .bg(rgb(BG_ROW_ALT))
-        .border_b_1()
-        .border_color(rgb(BORDER_HAIRLINE))
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap(px(12.0))
+    view_filter_strip()
         .child(dynamic(move || {
             let l = store.lang.get();
             let active_filter = store.inbox_state.with(|st| st.filter);
@@ -301,7 +280,7 @@ fn render_inbox_body(store: AppStore) -> View {
     let st = store.inbox_state.get();
 
     if lake_empty && signals.is_empty() {
-        let mut content = view().p(px(24.0)).flex().flex_col().gap(px(16.0));
+        let mut content = view().p(px(20.0)).flex().flex_col().gap(px(16.0));
         if show_onboarding {
             content = content.child(onboarding_card(store));
         }

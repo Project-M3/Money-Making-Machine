@@ -6,10 +6,11 @@
 //! - Right inspection drawer with Circle-gated Strike Zone status, 5Y annuals, SIC peers & actions
 
 use crate::components::{
-    action_button, badge_pill, kbd, kv_line, obsidian_card, prop_section, section_header,
-    seg_group, styled_input, v_divider,
+    action_button, badge_pill, kv_line, obsidian_card, prop_section, section_header, seg_group,
+    styled_input, v_divider, view_filter_strip, view_header_strip,
 };
 use crate::format::{dec_to_f64, fmt_money_compact, fmt_pct_clean, fmt_price, fmt_time_cn_for};
+use crate::icons::{ICON_CLOSE, icon};
 use crate::platform_desktop::{copy_text_with_notice, open_external_url};
 use crate::stores::{
     AppStore, CompanyViewTab, ScatterPlotModel, ScatterPoint, UniversePreset, UniverseSearchMode,
@@ -135,18 +136,7 @@ fn render_universe_workspace(store: AppStore) -> View {
 // ── Top Telemetry Header & Sync Controls ─────────────────────────────────────
 
 fn render_universe_summary_strip(store: AppStore) -> View {
-    view()
-        .h(px(40.0))
-        .flex_shrink_0()
-        .px(px(16.0))
-        .bg(rgb(BG_SURFACE))
-        .border_b_1()
-        .border_color(rgb(BORDER_HAIRLINE))
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap(px(12.0))
+    view_header_strip()
         .child(
             view()
                 .flex()
@@ -402,17 +392,7 @@ fn render_universe_error_banner(store: AppStore) -> View {
 // ── Screening Presets, Boolean Filters & IME-Safe Dual-Mode Search ───────────
 
 fn render_universe_filter_strip(store: AppStore) -> View {
-    view()
-        .flex_shrink_0()
-        .px(px(16.0))
-        .py(px(8.0))
-        .bg(rgb(BG_ROW_ALT))
-        .border_b_1()
-        .border_color(rgb(BORDER_HAIRLINE))
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
+    view_filter_strip()
         .gap(px(10.0))
         .child(
             view()
@@ -502,12 +482,17 @@ fn render_universe_filter_strip(store: AppStore) -> View {
                             .border_color(rgba(GOLD_BORDER))
                             .hover(|s| s.bg(rgb(BG_HOVER)))
                             .cursor_pointer()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
                             .on_press(move || {
                                 store.universe_state.update(|s| s.reset());
                                 store.reload_universe_from_lake();
                             })
+                            .child(icon(ICON_CLOSE, 11.0).text_color(rgb(GOLD_FG)))
                             .child(
-                                text(move || store.lang.get().t("× 重置", "× Reset").to_owned())
+                                text(move || store.lang.get().t("重置", "Reset").to_owned())
                                     .font_family(FONT_UI)
                                     .text_size(px(TEXT_XS))
                                     .text_color(rgb(GOLD_FG))
@@ -727,12 +712,7 @@ fn render_universe_search_box(store: AppStore) -> View {
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(BG_HOVER)))
                     .on_press(move || store.set_universe_query(String::new()))
-                    .child(
-                        text("×")
-                            .font_family(FONT_MONO_TERM)
-                            .text_size(px(TEXT_SM))
-                            .text_color(rgb(INK_MUTED)),
-                    )
+                    .child(icon(ICON_CLOSE, 11.0).text_color(rgb(INK_MUTED)))
             },
         ))
 }
@@ -3170,7 +3150,21 @@ fn render_universe_empty_state(store: AppStore) -> View {
                                 .text_size(px(TEXT_XS))
                                 .text_color(rgb(INK_PRIMARY)),
                         )
-                        .child(kbd(move || store.lang.get().t("复制", "Copy").to_owned())),
+                        .child(
+                            view()
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .rounded_xs()
+                                .bg(rgb(BG_WELL))
+                                .border_1()
+                                .border_color(rgb(BORDER_PILL))
+                                .child(
+                                    text(move || store.lang.get().t("复制", "Copy").to_owned())
+                                        .font_family(FONT_MONO_TERM)
+                                        .text_size(px(TEXT_2XS))
+                                        .text_color(rgb(INK_MUTED)),
+                                ),
+                        ),
                 ),
         )
 }

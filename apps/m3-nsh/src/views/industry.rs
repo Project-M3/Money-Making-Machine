@@ -6,12 +6,14 @@
 //!   panel (valuation multiple presets + low/high inputs, clickable peer chips,
 //!   Feynman mastery checklist, protected `## Human Notes` editor), L0 Peer Matrix
 //!   with 10-K batch fetch, Living Industry Primer with strict `SEC 10-K` vs `Web`
-//!   source separation, and Embedded Alan 4-Lens streaming + Feynman Quiz tutor.
+//!   source separation, and Alan 4-Lens streaming + Feynman Quiz tutor.
 
 use crate::components::{
-    action_button, badge_pill, concept_hint, obsidian_card, seg_group, styled_input,
+    action_button, badge_pill, concept_hint, obsidian_card, seg_group, styled_input, v_divider,
+    view_header_strip,
 };
 use crate::format::{fmt_pct_clean, fmt_price};
+use crate::icons::{ICON_CHECK, ICON_CLOSE, ICON_LAYERS, ICON_PLUS, icon};
 use crate::platform_desktop::{copy_text_with_notice, reveal_workspace_dir};
 use crate::stores::{AgentMessageRole, AppStore, INDUSTRY_VALUATION_PRESETS};
 use crate::theme::*;
@@ -47,32 +49,160 @@ pub fn industry_view(store: AppStore) -> impl IntoElement {
         .min_h(px(0.0))
         .w_full()
         .flex()
-        .flex_row()
+        .flex_col()
         .overflow_hidden()
-        .child(render_left_rail(store))
+        .child(render_industry_header_strip(store))
         .child(
-            scroll().flex_1().min_w(px(0.0)).h_full().child(
+            view()
+                .flex_1()
+                .min_h(px(0.0))
+                .w_full()
+                .flex()
+                .flex_row()
+                .overflow_hidden()
+                .child(render_left_rail(store))
+                .child(
+                    scroll().flex_1().min_w(px(0.0)).h_full().child(
+                        view()
+                            .w_full()
+                            .p(px(20.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.0))
+                            .child(dynamic(move || {
+                                let slug = store.selected_industry_slug.get();
+                                let profile_opt = slug.as_deref().and_then(|s| {
+                                    store
+                                        .industries
+                                        .with(|list| list.iter().find(|p| p.slug == s).cloned())
+                                });
+                                match profile_opt {
+                                    Some(profile) => {
+                                        render_industry_workspace(store, profile).into_element()
+                                    }
+                                    None => render_industry_empty_guide(store).into_element(),
+                                }
+                            })),
+                    ),
+                ),
+        )
+}
+
+fn render_industry_header_strip(store: AppStore) -> View {
+    view_header_strip().child(dynamic(move || {
+        let l = store.lang.get();
+        let (total, graduated, studying, selected_meta) = store.industries.with(|list| {
+            let total = list.len();
+            let graduated = list
+                .iter()
+                .filter(|p| p.status == IndustryStatus::InsideCircle)
+                .count();
+            let studying = list
+                .iter()
+                .filter(|p| p.status == IndustryStatus::Studying)
+                .count();
+            let slug = store.selected_industry_slug.get();
+            let selected = slug
+                .as_deref()
+                .and_then(|s| list.iter().find(|p| p.slug == s))
+                .map(|p| (p.title.clone(), p.status));
+            (total, graduated, studying, selected)
+        });
+
+        let left = view()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .min_w(px(0.0))
+            .child(icon(ICON_LAYERS, 13.0).text_color(rgb(INK_MUTED)))
+            .child(
+                text(l.t("行业研究工作室", "Industry Studio"))
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(INK_HERO))
+                    .number_of_lines(1),
+            )
+            .child(v_divider())
+            .child(industry_stat_inline(
+                l.t("研究", "Studies"),
+                total,
+                INK_HERO,
+            ))
+            .child(v_divider())
+            .child(industry_stat_inline(
+                l.t("已毕业", "Graduated"),
+                graduated,
+                if graduated > 0 { EMERALD_FG } else { INK_MUTED },
+            ))
+            .child(v_divider())
+            .child(industry_stat_inline(
+                l.t("进行中", "Active"),
+                studying,
+                if studying > 0 { SKY_FG } else { INK_MUTED },
+            ));
+
+        let right = match selected_meta {
+            Some((title, status)) => {
+                let (fg, bg, br) = industry_status_colors(status);
                 view()
-                    .w_full()
-                    .p(px(20.0))
                     .flex()
-                    .flex_col()
-                    .gap(px(16.0))
-                    .child(dynamic(move || {
-                        let slug = store.selected_industry_slug.get();
-                        let profile_opt = slug.as_deref().and_then(|s| {
-                            store
-                                .industries
-                                .with(|list| list.iter().find(|p| p.slug == s).cloned())
-                        });
-                        match profile_opt {
-                            Some(profile) => {
-                                render_industry_workspace(store, profile).into_element()
-                            }
-                            None => render_industry_empty_guide(store).into_element(),
-                        }
-                    })),
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .min_w(px(0.0))
+                    .child(
+                        text(title)
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_XS))
+                            .text_color(rgb(INK_SECONDARY))
+                            .truncate()
+                            .number_of_lines(1),
+                    )
+                    .child(badge_pill(status.label_for(l).to_owned(), fg, bg, br))
+            }
+            None => view().child(
+                text(l.t("选择或新建行业主题", "Select or create a study"))
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .text_color(rgb(INK_MUTED))
+                    .number_of_lines(1),
             ),
+        };
+
+        view()
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(12.0))
+            .child(left)
+            .child(right)
+    }))
+}
+
+fn industry_stat_inline(label: &str, value: usize, color: u32) -> View {
+    view()
+        .flex()
+        .flex_row()
+        .items_baseline()
+        .gap(px(5.0))
+        .child(
+            text(label.to_owned())
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_XS))
+                .text_color(rgb(INK_MUTED))
+                .number_of_lines(1),
+        )
+        .child(
+            text(format!("{value}"))
+                .font_family(FONT_MONO_NUM)
+                .text_size(px(TEXT_XS))
+                .font_weight(FontWeight::BOLD)
+                .text_color(rgb(color))
+                .number_of_lines(1),
         )
 }
 
@@ -113,17 +243,25 @@ fn render_topic_composer(store: AppStore) -> View {
         .flex_col()
         .gap(px(8.0))
         .child(
-            text(move || {
-                store
-                    .lang
-                    .get()
-                    .t("+ 新建行业研究（自由主题）", "+ New Industry Study (Topic)")
-                    .to_owned()
-            })
-            .font_family(FONT_UI)
-            .text_size(px(TEXT_XS))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(INK_HERO)),
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.0))
+                .child(icon(ICON_PLUS, 12.0).text_color(rgb(SKY_FG)))
+                .child(
+                    text(move || {
+                        store
+                            .lang
+                            .get()
+                            .t("新建行业研究（自由主题）", "New Industry Study (Topic)")
+                            .to_owned()
+                    })
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(INK_HERO)),
+                ),
         )
         .child(
             styled_input(
@@ -169,17 +307,25 @@ fn render_company_bind_composer(store: AppStore) -> View {
         .flex_col()
         .gap(px(8.0))
         .child(
-            text(move || {
-                store
-                    .lang
-                    .get()
-                    .t("+ 按标的快速定位/建组", "+ Quick Bind by Company Ticker")
-                    .to_owned()
-            })
-            .font_family(FONT_UI)
-            .text_size(px(TEXT_XS))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(INK_HERO)),
+            view()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.0))
+                .child(icon(ICON_PLUS, 12.0).text_color(rgb(SKY_FG)))
+                .child(
+                    text(move || {
+                        store
+                            .lang
+                            .get()
+                            .t("按标的快速定位/建组", "Quick Bind by Company Ticker")
+                            .to_owned()
+                    })
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(INK_HERO)),
+                ),
         )
         .child(
             view()
@@ -1221,12 +1367,7 @@ fn render_sovereignty_card(store: AppStore, profile: &IndustryProfile) -> View {
                                         .on_press(move || {
                                             store.remove_ticker_from_selected_industry(&tk_rm);
                                         })
-                                        .child(
-                                            text("×")
-                                                .font_family(FONT_MONO_TERM)
-                                                .text_size(px(TEXT_XS))
-                                                .text_color(rgb(INK_MUTED)),
-                                        ),
+                                        .child(icon(ICON_CLOSE, 10.0).text_color(rgb(INK_MUTED))),
                                 )
                         }))
                         .child(
@@ -1379,17 +1520,30 @@ fn render_sovereignty_card(store: AppStore, profile: &IndustryProfile) -> View {
                                 .items_center()
                                 .gap(px(8.0))
                                 .on_press(move || store.toggle_selected_industry_feynman(idx))
-                                .child(
-                                    text(if checked { "[✓]" } else { "[ ]" })
-                                        .font_family(FONT_MONO_NUM)
-                                        .text_size(px(TEXT_XS))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(if checked {
-                                            EMERALD_FG
-                                        } else {
-                                            INK_MUTED
-                                        })),
-                                )
+                                .child({
+                                    let mut box_el = view()
+                                        .w(px(15.0))
+                                        .h(px(15.0))
+                                        .flex_shrink_0()
+                                        .rounded_xs()
+                                        .border_1()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center();
+                                    if checked {
+                                        box_el = box_el
+                                            .bg(rgba(EMERALD_BG))
+                                            .border_color(rgba(EMERALD_BORDER))
+                                            .child(
+                                                icon(ICON_CHECK, 10.0).text_color(rgb(EMERALD_FG)),
+                                            );
+                                    } else {
+                                        box_el = box_el
+                                            .bg(rgb(BG_SURFACE))
+                                            .border_color(rgb(BORDER_PILL));
+                                    }
+                                    box_el
+                                })
                                 .child(
                                     view().flex_1().min_w(px(0.0)).child(
                                         text(q)

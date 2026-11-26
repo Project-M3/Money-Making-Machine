@@ -47,6 +47,38 @@ pub fn obsidian_card() -> View {
         .overflow_hidden()
 }
 
+/// Uniform 42px pinned top telemetry/header strip shared across all workspace views.
+pub fn view_header_strip() -> View {
+    view()
+        .h(px(42.0))
+        .flex_shrink_0()
+        .px(px(18.0))
+        .bg(rgb(BG_SURFACE))
+        .border_b_1()
+        .border_color(rgb(BORDER_HAIRLINE))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+}
+
+/// Uniform secondary filter bar below [`view_header_strip`].
+pub fn view_filter_strip() -> View {
+    view()
+        .flex_shrink_0()
+        .px(px(18.0))
+        .py(px(8.0))
+        .bg(rgb(BG_ROW_ALT))
+        .border_b_1()
+        .border_color(rgb(BORDER_HAIRLINE))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+}
+
 /// Segmented control container.
 pub fn seg_group() -> View {
     view()
@@ -324,6 +356,67 @@ pub fn action_button<M>(
         .hover(move |s| s.bg(rgb(hover_bg)))
         .active(move |s| s.bg(rgb(active_bg)))
         .on_press(on_press)
+        .child(
+            text(label)
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_SM))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(fg_col))
+                .number_of_lines(1),
+        )
+}
+
+/// Compact clickable icon-only button in Obsidian style.
+pub fn icon_button<M>(
+    icon_svg: &'static str,
+    size_px: f32,
+    on_press: impl IntoListener<PressEvent, M>,
+) -> View {
+    view()
+        .px(px(7.0))
+        .py(px(5.0))
+        .rounded_sm()
+        .cursor_pointer()
+        .bg(rgb(BG_WELL))
+        .border_1()
+        .border_color(rgb(BORDER_PILL))
+        .hover(|s| s.bg(rgb(BG_HOVER)))
+        .active(|s| s.bg(rgb(BG_ACTIVE)))
+        .flex()
+        .items_center()
+        .justify_center()
+        .on_press(on_press)
+        .child(crate::icons::icon(icon_svg, size_px).text_color(rgb(INK_PRIMARY)))
+}
+
+/// Compact clickable action button with a leading IconMCP SVG icon.
+pub fn icon_label_button<M>(
+    icon_svg: &'static str,
+    label: impl IntoReactive<SharedString>,
+    primary: bool,
+    on_press: impl IntoListener<PressEvent, M>,
+) -> View {
+    let (bg_col, fg_col, br_col, hover_bg, active_bg) = if primary {
+        (CTA_BG, CTA_INK, CTA_BG, CTA_BG_HOVER, CTA_BG_ACTIVE)
+    } else {
+        (BG_WELL, INK_PRIMARY, BORDER_PILL, BG_HOVER, BG_ACTIVE)
+    };
+    view()
+        .px(px(10.0))
+        .py(px(4.0))
+        .rounded_sm()
+        .cursor_pointer()
+        .bg(rgb(bg_col))
+        .border_1()
+        .border_color(rgb(br_col))
+        .hover(move |s| s.bg(rgb(hover_bg)))
+        .active(move |s| s.bg(rgb(active_bg)))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(5.0))
+        .on_press(on_press)
+        .child(crate::icons::icon(icon_svg, 12.0).text_color(rgb(fg_col)))
         .child(
             text(label)
                 .font_family(FONT_UI)

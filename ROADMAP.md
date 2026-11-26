@@ -10,17 +10,17 @@
 
 ---
 
-## Where We Are Today (`v0.2.0 – v0.4.2`, Shipped)
+## Where We Are Today (`v0.2.0 – v0.5.0`, Shipped)
 
-Project M3 has completed its local-first research foundation across `v0.2`–`v0.4.2`:
+Project M3 has completed its local-first research & zero-friction onboarding foundation across `v0.2`–`v0.5.0`:
 
 - **Deterministic Financial Kernel (`m3-core`)**: Fixed-point `rust_decimal` Charlie Calculator (ROIC, Strict Owner Earnings `OCF - CapEx - SBC`, 3Y share dilution, reverse-implied growth, Strike Price, accounting red flags) with SEC EDGAR XBRL SHA-256 provenance.
-- **L0 Full-US Lakehouse**: Bulk `companyfacts.zip` & `submissions.zip` ingestion into immutable ZSTD Parquet generations and embedded `m3.duckdb` (`6,000+` issuers), sub-second screening, and SIC peer percentiles.
+- **L0 Full-US Lakehouse & Progressive Bootstrap**: Bulk `companyfacts.zip` & `submissions.zip` ingestion into immutable ZSTD Parquet generations and embedded `m3.duckdb` (`6,000+` issuers), sub-second screening, SIC peer percentiles, and non-blocking 2-phase progressive L0 onboarding.
 - **L1 Event Inbox & Latent Search**: Zero-LLM-token filing watcher (`8-K`, `10-K`, `10-Q`, RSS news) and local 256d cosine + BM25 hybrid retrieval with verbatim primary-source evidence cards.
-- **L2 Alan Deep Research & Industry Studio**: Four-perspective adversarial interrogation by built-in **Alan** (*Moat*, *Accounting*, *Latent Peers*, *5Y Pre-Mortem*) behind hard monthly USD/token and weekly quotas, preserving `human_judgment` and `## Human Notes`.
-- **Native macOS Desktop (`apps/m3-nsh`) & Agent CLI (`m3`)**: Longbridge NSH `0.7.0` bilingual Zh/En workbench, Canvas K-line & scatter charts, `⌘K` Command Palette, macOS-style Storage Manager, SHA-256 atomic updater, and structured `m3` CLI (`doctor`, `storage`, `industry`, `--help`, TTY formatting).
+- **L2 Alan Deep Research, 5-Provider Setup & Industry Studio**: In-app **Alan** setup across OpenRouter, OpenAI Responses, ChatGPT OAuth, Google Vertex AI & Magpie, four-perspective adversarial interrogation (*Moat*, *Accounting*, *Latent Peers*, *5Y Pre-Mortem*) behind hard monthly USD/token and weekly quotas, preserving `human_judgment` and `## Human Notes`.
+- **Native macOS Desktop (`apps/m3-nsh`), Agent CLI (`m3`) & `m3 mcp`**: Smoked-black glass Longbridge NSH `0.7.0` bilingual Zh/En workbench, Canvas K-line & scatter charts, `⌘K` Command Palette, Settings Modal (`⌘,`), macOS-style Storage Manager, SHA-256 atomic updater, structured `m3` CLI, and read-only `m3 mcp` server (14 tools) + Agent Skill.
 
-> **Honest `0.x` Boundary**: As of `v0.4.2`, M3 is strictly a **research & paper-journaling instrument** (`PAPER RESEARCH`). It does not yet connect to brokerage accounts or execute live trades. Milestones `v0.5 → v1.0` close that loop deliberately and safely.
+> **Honest `0.x` Boundary**: As of `v0.5.0`, M3 is strictly a **research & paper-journaling instrument** (`PAPER RESEARCH`). It does not yet connect to brokerage accounts or execute live trades. Milestones `v0.6 → v1.0` close that loop deliberately and safely.
 
 ---
 
@@ -29,8 +29,8 @@ Project M3 has completed its local-first research foundation across `v0.2`–`v0
 | Version | Milestone | Focus | Status |
 | :--- | :--- | :--- | :--- |
 | **`v0.4.x`** | **Munger Research Workbench** | Full-US Lakehouse (`L0`/`L1`/`L2`), Industry Studio, NSH 0.7 macOS UI, Storage Manager, `m3` CLI | **Shipped** |
-| **`v0.5`** | **Zero-Friction Onboarding & Alan Setup** | In-app Alan connection setup, guided starter workspace, progressive L0 bootstrap, `m3 mcp` server & Agent Skills | **Next** |
-| **`v0.6`** | **Proactive Alan & Multi-Market** | Event-driven Alan auto-triage, falsification watchdog, scheduled Circle briefings, interactive Feynman tutor, HK equities | **Planned** |
+| **`v0.5`** | **Zero-Friction Onboarding & Alan Setup** | In-app 5-provider Alan setup, guided starter workspace, progressive L0 bootstrap, `m3 mcp` server & Agent Skills, smoked-glass UI | **Shipped** |
+| **`v0.6`** | **Proactive Alan & Multi-Market** | Event-driven Alan auto-triage, falsification watchdog, scheduled Circle briefings, interactive Feynman tutor, HK equities | **Next** |
 | **`v0.7`** | **Programmable Strategy Engine & Paper Broker** | Declarative/scriptable value strategies, point-in-time historical backtesting on DuckDB/Parquet, built-in Paper Broker | **Planned** |
 | **`v0.8`** | **Deterministic RiskEngine & Brokerage Adapters** | Hardcoded Rust `RiskEngine` guardrails + unified `BrokerAdapter` (**Longbridge OpenAPI** US/HK + **Alpaca** US) | **Planned** |
 | **`v0.9 – v1.0`** | **Autonomous Alan Portfolio Sleeves** | Owner-defined capital sleeves & investment mandates driven by built-in Alan (`Research Only` / `Approval` / `Autonomous`) | **Planned** |
@@ -39,7 +39,7 @@ Project M3 has completed its local-first research foundation across `v0.2`–`v0
 
 ## Detailed Milestones
 
-### `v0.5` — Zero-Friction Onboarding & Agent Foundation (`Next`)
+### `v0.5` — Zero-Friction Onboarding & Agent Foundation (`Shipped`)
 
 Make M3 immediately useful within two minutes of installation—both for first-time desktop users (without external CLI prerequisites) and for external AI agents:
 
@@ -51,7 +51,7 @@ Make M3 immediately useful within two minutes of installation—both for first-t
 
 ---
 
-### `v0.6` — Proactive Alan & Multi-Market Foundation
+### `v0.6` — Proactive Alan & Multi-Market Foundation (`Next`)
 
 Turn M3's built-in **Alan** runtime from an on-demand responder into a calm, proactive Munger-style analyst:
 

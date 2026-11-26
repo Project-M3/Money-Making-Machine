@@ -1,9 +1,10 @@
-//! EmbeddedAlan & 4-Perspective Deep Research view (`Tab 2: DeepResearchAlan`).
+//! Alan & 4-Perspective Deep Research view (`Tab 2: DeepResearchAlan`).
 
 use crate::components::{
     action_button, badge_pill, card_title, obsidian_card, prose_block, section_header, styled_input,
 };
 use crate::format::{build_alan_interrogation_prompt_for, fmt_time_cn_for};
+use crate::icons::{ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, icon};
 use crate::platform_desktop::copy_text_with_notice;
 use crate::stores::{
     AgentMessageRole, AppStore, CompanyViewTab, DeepResearchPerspectiveUi, MemoSection,
@@ -1440,13 +1441,28 @@ fn embedded_alan_console(store: AppStore, tape_drawer_open: Signal<bool>) -> Vie
                         .cursor_pointer()
                         .on_press(move || tape_drawer_open.update(|v| *v = !*v))
                         .child(
-                            text(format!(
-                                "{} TURING TAPE · DETERMINISTIC TRACE ({len})",
-                                if open { "▾" } else { "▸" }
-                            ))
-                            .font_family(FONT_MONO_TERM)
-                            .text_size(px(TEXT_2XS))
-                            .text_color(rgb(INK_MUTED)),
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(5.0))
+                                .child(
+                                    icon(
+                                        if open {
+                                            ICON_CHEVRON_DOWN
+                                        } else {
+                                            ICON_CHEVRON_RIGHT
+                                        },
+                                        12.0,
+                                    )
+                                    .text_color(rgb(INK_MUTED)),
+                                )
+                                .child(
+                                    text(format!("TURING TAPE · DETERMINISTIC TRACE ({len})"))
+                                        .font_family(FONT_MONO_TERM)
+                                        .text_size(px(TEXT_2XS))
+                                        .text_color(rgb(INK_MUTED)),
+                                ),
                         )
                         .child(
                             text(if open {

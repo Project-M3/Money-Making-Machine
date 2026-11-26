@@ -515,7 +515,7 @@ export function mountWorkbench(container: HTMLElement): void {
             <span class="mono" style="color: var(--emerald)">\$0.42 / \$10.00</span>
           </div>
           <div class="m3-dock-tray-row" style="color: var(--ink-muted)">
-            <span class="mono">v0.4.2</span>
+            <span class="mono">v0.5.0</span>
             <span class="mono">${escapeHtml(state.settingsChannel)}</span>
           </div>
         </div>
@@ -1448,7 +1448,7 @@ export function mountWorkbench(container: HTMLElement): void {
           <div class="m3-settings-head">
             <div style="display: inline-flex; align-items: center; gap: 0.55rem;">
               <strong style="color: var(--ink-hero); font-size: 0.92rem;">${zh ? '偏好设置' : 'Settings'}</strong>
-              <span class="pill pill-slate">v0.4.2</span>
+              <span class="pill pill-slate">v0.5.0</span>
             </div>
             <div style="display: inline-flex; align-items: center; gap: 0.6rem;">
               <div class="seg-group">

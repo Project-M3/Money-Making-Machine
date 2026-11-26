@@ -11,6 +11,10 @@ pub const ICON_SIDEBAR_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" w
 
 pub const ICON_ARROW_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g transform="rotate(180 8 8)"><line x1="2.75" y1="8" x2="13.25" y2="8"/><path d="M8.5 3.25 L13.25 8 L8.5 12.75"/></g></svg>"#;
 
+pub const ICON_ARROW_RIGHT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g><line x1="2.75" y1="8" x2="13.25" y2="8"/><path d="M8.5 3.25 L13.25 8 L8.5 12.75"/></g></svg>"#;
+
+pub const ICON_PLUS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g><line x1="8" y1="3.25" x2="8" y2="12.75"/><line x1="3.25" y1="8" x2="12.75" y2="8"/></g></svg>"#;
+
 pub const ICON_SEARCH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g><circle cx="7" cy="7" r="4.75"/><line x1="10.375" y1="10.375" x2="13.75" y2="13.75"/></g></svg>"#;
 
 pub const ICON_BELL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g><path d="M3.75 10.75 V6.5 A4.25 4.25 0 0 1 12.25 6.5 V10.75 L13.25 11.75 H2.75 Z"/><line x1="6.5" y1="13.75" x2="9.5" y2="13.75"/></g></svg>"#;
@@ -44,6 +48,8 @@ pub const ICON_ENTER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1
 pub const ICON_CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g transform="rotate(90 8 8)"><path d="M5.875 3.75 L10.125 8 L5.875 12.25"/></g></svg>"#;
 
 pub const ICON_CHEVRON_RIGHT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g><path d="M5.875 3.75 L10.125 8 L5.875 12.25"/></g></svg>"#;
+
+pub const ICON_CHEVRON_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g transform="rotate(180 8 8)"><path d="M5.875 3.75 L10.125 8 L5.875 12.25"/></g></svg>"#;
 
 /// Renders a crisp outline SVG icon from IconMCP, inheriting `currentColor` from `.text_color(...)`.
 pub fn icon(markup: &'static str, size_px: f32) -> Svg {

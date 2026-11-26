@@ -3,15 +3,16 @@
 use super::agent::{agent_view, cross_company_context_strip, living_research_memo_card};
 use super::chart::chart_placeholder;
 use crate::components::{
-    action_button, badge_pill, card_title, concept_hint_static, inspector_kv, kv_line, mono_right,
-    obsidian_card, prop_section, prose_block, ratio_bar, render_warning_panel_for,
-    roic_sparkline_for, section_header, seg_group, seg_tab, stepper_inline, styled_input,
-    v_divider,
+    action_button, badge_pill, card_title, concept_hint_static, icon_button, icon_label_button,
+    inspector_kv, kv_line, mono_right, obsidian_card, prop_section, prose_block, ratio_bar,
+    render_warning_panel_for, roic_sparkline_for, section_header, seg_group, seg_tab,
+    stepper_inline, styled_input, v_divider,
 };
 use crate::format::{
     civil_ym_from_ms, currency_prefix, fmt_money_compact, fmt_money_compact_opt, fmt_pct_clean,
     fmt_price, fmt_shares_compact, primary_row, primary_val,
 };
+use crate::icons::{ICON_ARROW_LEFT, ICON_CHEVRON_LEFT, ICON_CHEVRON_RIGHT};
 use crate::platform_desktop::{copy_text_with_notice, open_external_url};
 use crate::stores::{AppStore, ChartTimeframe, CompanyViewTab, WorkspaceTab};
 use crate::theme::*;
@@ -176,8 +177,9 @@ fn empty_company_state(store: AppStore, l: UiLang) -> View {
 
 fn rich_top_bar(store: AppStore) -> View {
     view()
-        .px(px(16.0))
-        .py(px(8.0))
+        .min_h(px(42.0))
+        .px(px(18.0))
+        .py(px(6.0))
         .bg(rgb(BG_SURFACE))
         .border_b_1()
         .border_color(rgb(BORDER_HAIRLINE))
@@ -192,8 +194,9 @@ fn rich_top_bar(store: AppStore) -> View {
                 .items_center()
                 .flex_wrap()
                 .gap(px(8.0))
-                .child(action_button(
-                    l.t("← 返回", "← Back"),
+                .child(icon_label_button(
+                    ICON_ARROW_LEFT,
+                    l.t("返回", "Back"),
                     false,
                     move || {
                         store.close_company_overlay();
@@ -205,10 +208,10 @@ fn rich_top_bar(store: AppStore) -> View {
                         .flex_row()
                         .items_center()
                         .gap(px(4.0))
-                        .child(action_button("◀", false, move || {
+                        .child(icon_button(ICON_CHEVRON_LEFT, 12.0, move || {
                             store.step_selected_company(-1);
                         }))
-                        .child(action_button("▶", false, move || {
+                        .child(icon_button(ICON_CHEVRON_RIGHT, 12.0, move || {
                             store.step_selected_company(1);
                         })),
                 );

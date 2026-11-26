@@ -2,12 +2,13 @@
 
 use crate::components::{
     action_button, badge_pill, circle_tag_button, cmd_kbd_corner, mono_right, obsidian_card,
-    seg_group, seg_tab, v_divider,
+    seg_group, seg_tab, v_divider, view_filter_strip, view_header_strip,
 };
 use crate::format::{
     collect_circle_tags, compute_today_pulse, filter_reports_for_basket, fmt_money_compact_opt,
     fmt_pct_clean, fmt_price, primary_val,
 };
+use crate::icons::{ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_CLOSE, icon};
 use crate::platform_desktop::show_company_context_menu;
 use crate::stores::{
     AppStore, BasketsViewMode, CompanyViewTab, SortCol, StatusQuickFilter, WorkspaceTab,
@@ -40,18 +41,7 @@ pub fn baskets_view(store: AppStore) -> impl IntoElement {
 }
 
 fn render_pulse_strip(store: AppStore) -> View {
-    view()
-        .h(px(38.0))
-        .flex_shrink_0()
-        .px(px(20.0))
-        .bg(rgb(BG_SURFACE))
-        .border_b_1()
-        .border_color(rgb(BORDER_HAIRLINE))
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap(px(12.0))
+    view_header_strip()
         .child(
             view()
                 .flex_1()
@@ -297,18 +287,7 @@ fn render_pulse_strip(store: AppStore) -> View {
 }
 
 fn render_filter_bar(store: AppStore) -> View {
-    view()
-        .h(px(36.0))
-        .flex_shrink_0()
-        .px(px(20.0))
-        .bg(rgb(BG_ROW_ALT))
-        .border_b_1()
-        .border_color(rgb(BORDER_HAIRLINE))
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap(px(12.0))
+    view_filter_strip()
         .child(dynamic(move || {
             let l = store.lang.get();
             let reports = store.reports.get();
@@ -458,14 +437,19 @@ fn render_filter_bar(store: AppStore) -> View {
                         .border_1()
                         .border_color(rgba(GOLD_BORDER))
                         .cursor_pointer()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
                         .on_press(move || {
                             store.basket_filter.set(None);
                             store.circle_filter.set(None);
                             store.status_filter.set(StatusQuickFilter::All);
                             store.baskets_cursor_index.set(0);
                         })
+                        .child(icon(ICON_CLOSE, 11.0).text_color(rgb(GOLD_FG)))
                         .child(
-                            text(l.t("× 重置", "× Reset"))
+                            text(l.t("重置", "Reset"))
                                 .font_family(FONT_UI)
                                 .text_size(px(TEXT_XS))
                                 .text_color(rgb(GOLD_FG)),
@@ -703,10 +687,15 @@ fn render_baskets_list(
         let mut hdr_left = view().flex().flex_row().items_center().gap(px(10.0));
         if basket_filter.is_none() {
             hdr_left = hdr_left.child(
-                text(if is_collapsed { "▸" } else { "▾" })
-                    .font_family(FONT_MONO_TERM)
-                    .text_size(px(TEXT_SM))
-                    .text_color(rgb(INK_MUTED)),
+                icon(
+                    if is_collapsed {
+                        ICON_CHEVRON_RIGHT
+                    } else {
+                        ICON_CHEVRON_DOWN
+                    },
+                    12.0,
+                )
+                .text_color(rgb(INK_MUTED)),
             );
         }
         hdr_left = hdr_left
