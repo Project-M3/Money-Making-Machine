@@ -2634,6 +2634,14 @@ fn visible_palette_items_respects_silicon_group_expansion() {
             action: PaletteAction::SwitchTab(WorkspaceTab::Inbox),
         },
         PaletteItem {
+            group: "VIEW".into(),
+            title: "Circle Overview".into(),
+            subtitle: "Circle triage".into(),
+            shortcut: Some("⌘4"),
+            dot_color: SKY_FG,
+            action: PaletteAction::FocusBasket(None),
+        },
+        PaletteItem {
             group: "DATA".into(),
             title: "Sync".into(),
             subtitle: "Sync financials".into(),
@@ -2667,16 +2675,16 @@ fn visible_palette_items_respects_silicon_group_expansion() {
         },
     ];
 
-    let collapsed = std::collections::HashSet::new();
-    let vis_collapsed = visible_palette_items_for(&items, "", &collapsed);
-    assert_eq!(vis_collapsed.len(), 3, "1 View + 1 Action + 1 Circle");
+    let empty_exp = std::collections::HashSet::new();
+    let vis_all = visible_palette_items_for(&items, "", &empty_exp);
+    assert_eq!(
+        vis_all.len(),
+        6,
+        "All 2 Views + 2 Actions + 2 Circles show without folding"
+    );
+    assert_eq!(vis_all[1].action, PaletteAction::FocusBasket(None));
 
-    let mut expanded = std::collections::HashSet::new();
-    expanded.insert("ACTIONS".to_owned());
-    let vis_actions = visible_palette_items_for(&items, "", &expanded);
-    assert_eq!(vis_actions.len(), 4, "1 View + 2 Actions + 1 Circle");
-
-    let vis_query = visible_palette_items_for(&items, "catchup", &collapsed);
+    let vis_query = visible_palette_items_for(&items, "catchup", &empty_exp);
     assert_eq!(vis_query.len(), 1);
     assert_eq!(vis_query[0].title, "Catchup");
 }

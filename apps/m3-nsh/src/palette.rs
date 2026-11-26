@@ -5,9 +5,8 @@ use crate::format::{
     build_alan_interrogation_prompt_for, collect_circle_tags, filter_palette_items,
 };
 use crate::icons::{
-    ICON_ALERT, ICON_ARROW_CIRCLE_UP, ICON_CHECK, ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT,
-    ICON_CLOSE, ICON_ENTER, ICON_INBOX, ICON_JOURNAL, ICON_LAYERS, ICON_RADAR, ICON_REFRESH,
-    ICON_SEARCH, ICON_SETTINGS, ICON_TARGET, icon,
+    ICON_ALERT, ICON_ARROW_CIRCLE_UP, ICON_CHECK, ICON_CLOSE, ICON_ENTER, ICON_INBOX, ICON_JOURNAL,
+    ICON_LAYERS, ICON_RADAR, ICON_REFRESH, ICON_SEARCH, ICON_SETTINGS, ICON_TARGET, icon,
 };
 use crate::platform_desktop::{copy_text_with_notice, restart_after_update};
 use crate::stores::{
@@ -114,8 +113,8 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
         group: "VIEW".into(),
         title: l
             .t(
-                "能力圈总览 (CORE / WATCH / OUT / TOO HARD)",
-                "Circle Overview (CORE / WATCH / OUT / TOO HARD)",
+                "能力圈总览 (WATCH / IN / OUT / TOO HARD)",
+                "Circle Overview (WATCH / IN / OUT / TOO HARD)",
             )
             .into(),
         subtitle: l
@@ -703,6 +702,7 @@ fn is_view_palette_item(item: &PaletteItem) -> bool {
         PaletteAction::SwitchTab(_)
             | PaletteAction::OpenSettings
             | PaletteAction::OpenCompanyTab(_)
+            | PaletteAction::FocusBasket(None)
     )
 }
 
@@ -712,7 +712,7 @@ fn is_circle_palette_item(item: &PaletteItem) -> bool {
         PaletteAction::OpenDossier(_)
             | PaletteAction::OpenAgent(_)
             | PaletteAction::RunDeepResearch(_)
-            | PaletteAction::FocusBasket(_)
+            | PaletteAction::FocusBasket(Some(_))
             | PaletteAction::MoveCompanyBucket(_, _)
             | PaletteAction::FilterCircle(_)
     )
@@ -754,11 +754,11 @@ fn palette_item_icon(item: &PaletteItem) -> &'static str {
 }
 
 /// Computes the exact flattened list of visible Command Box rows matching the current query
-/// and collapsible Silicon-style group expansion state so keyboard `Up`/`Down`/`Enter` stay synced.
+/// so keyboard `Up`/`Down`/`Ctrl+J`/`Ctrl+K`/`Enter` stay synced with rendered order.
 pub fn visible_palette_items_for<'a>(
     all: &'a [PaletteItem],
     query: &str,
-    expanded_groups: &std::collections::HashSet<String>,
+    _expanded_groups: &std::collections::HashSet<String>,
 ) -> Vec<&'a PaletteItem> {
     let trimmed = query.trim();
     if !trimmed.is_empty() {
@@ -772,18 +772,10 @@ pub fn visible_palette_items_for<'a>(
         .collect();
     let circles: Vec<&PaletteItem> = all.iter().filter(|i| is_circle_palette_item(i)).collect();
 
-    let mut out = Vec::with_capacity(views.len() + actions.len() + 8);
+    let mut out = Vec::with_capacity(views.len() + actions.len() + circles.len());
     out.extend(views);
-    if expanded_groups.contains("ACTIONS") {
-        out.extend(actions);
-    } else if let Some(first) = actions.first() {
-        out.push(*first);
-    }
-    if expanded_groups.contains("CIRCLE") {
-        out.extend(circles.into_iter().take(10));
-    } else if let Some(first) = circles.first() {
-        out.push(*first);
-    }
+    out.extend(actions);
+    out.extend(circles);
     out
 }
 
@@ -867,13 +859,8 @@ fn render_palette_row(store: AppStore, item: PaletteItem, is_active: bool) -> im
         .child(right)
 }
 
-fn render_group_header(
-    store: AppStore,
-    title: String,
-    count: usize,
-    collapsible_key: Option<(&'static str, bool)>,
-) -> View {
-    let mut header = view()
+fn render_group_header(title: String, count: usize) -> View {
+    view()
         .px(px(14.0))
         .pt(px(8.0))
         .pb(px(3.0))
@@ -887,83 +874,9 @@ fn render_group_header(
                 .text_size(px(TEXT_2XS))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(INK_MUTED)),
-        );
-
-    let mut right = view().flex().flex_row().items_center().gap(px(6.0)).child(
-        text(format!("{count}"))
-            .font_family(FONT_MONO_NUM)
-            .text_size(px(TEXT_2XS))
-            .text_color(rgb(INK_MUTED)),
-    );
-    if let Some((key, expanded)) = collapsible_key {
-        right = right.child(
-            view()
-                .p(px(2.0))
-                .rounded_xs()
-                .cursor_pointer()
-                .hover(|s| s.bg(rgba(RAIL_HOVER)))
-                .on_press(move || {
-                    animate_shell_spring();
-                    store.toggle_palette_group(key);
-                })
-                .child(
-                    icon(
-                        if expanded {
-                            ICON_CHEVRON_DOWN
-                        } else {
-                            ICON_CHEVRON_RIGHT
-                        },
-                        12.0,
-                    )
-                    .text_color(rgb(INK_MUTED)),
-                ),
-        );
-    }
-    header = header.child(right);
-    header
-}
-
-fn render_expand_group_pill(
-    store: AppStore,
-    group_key: &'static str,
-    label: String,
-    extra: usize,
-) -> View {
-    view()
-        .mx(px(12.0))
-        .my(px(4.0))
-        .px(px(10.0))
-        .py(px(5.0))
-        .rounded_md()
-        .cursor_pointer()
-        .bg(rgba(RAIL_HOVER))
-        .border_1()
-        .border_color(rgba(BORDER_GLASS_SUBTLE))
-        .hover(|s| s.bg(rgba(RAIL_ACTIVE)))
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .on_press(move || {
-            animate_shell_spring();
-            store.toggle_palette_group(group_key);
-        })
-        .child(
-            view()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(6.0))
-                .child(icon(ICON_CHEVRON_RIGHT, 12.0).text_color(rgb(INK_SECONDARY)))
-                .child(
-                    text(label)
-                        .font_family(FONT_UI)
-                        .text_size(px(TEXT_XS))
-                        .text_color(rgb(INK_SECONDARY)),
-                ),
         )
         .child(
-            text(format!("+{extra}"))
+            text(format!("{count}"))
                 .font_family(FONT_MONO_NUM)
                 .text_size(px(TEXT_2XS))
                 .text_color(rgb(INK_MUTED)),
@@ -1162,7 +1075,6 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
                                         let l = store.lang.get();
                                         let all = build_palette_items_from_store(store);
                                         let q = store.palette_query.get();
-                                        let exp = store.palette_expanded_groups.get();
 
                                         if !q.trim().is_empty() {
                                             let filtered: Vec<PaletteItem> =
@@ -1237,24 +1149,8 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
                                             .cloned()
                                             .collect();
 
-                                        let actions_exp = exp.contains("ACTIONS");
-                                        let circles_exp = exp.contains("CIRCLE");
-                                        let actions_total = actions.len();
-                                        let circles_total = circles.len();
-                                        let shown_actions: Vec<PaletteItem> = if actions_exp {
-                                            actions
-                                        } else {
-                                            actions.into_iter().take(1).collect()
-                                        };
-                                        let shown_circles: Vec<PaletteItem> = if circles_exp {
-                                            circles.into_iter().take(10).collect()
-                                        } else {
-                                            circles.into_iter().take(1).collect()
-                                        };
-
-                                        let visible_len = views.len()
-                                            + shown_actions.len()
-                                            + shown_circles.len();
+                                        let visible_len =
+                                            views.len() + actions.len() + circles.len();
                                         let active_idx = store
                                             .palette_cursor
                                             .get()
@@ -1266,10 +1162,8 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
 
                                         if !views.is_empty() {
                                             list_col = list_col.child(render_group_header(
-                                                store,
                                                 l.t("工作台视图", "WORKSPACE VIEWS").to_owned(),
                                                 views.len(),
-                                                None,
                                             ));
                                             for item in views {
                                                 list_col = list_col.child(render_palette_row(
@@ -1281,16 +1175,12 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
                                             }
                                         }
 
-                                        if actions_total > 0 {
+                                        if !actions.is_empty() {
                                             list_col = list_col.child(render_group_header(
-                                                store,
                                                 l.t("常用操作", "COMMANDS & SYNC").to_owned(),
-                                                actions_total,
-                                                (actions_total > 1)
-                                                    .then_some(("ACTIONS", actions_exp)),
+                                                actions.len(),
                                             ));
-                                            let shown_cnt = shown_actions.len();
-                                            for item in shown_actions {
+                                            for item in actions {
                                                 list_col = list_col.child(render_palette_row(
                                                     store,
                                                     item,
@@ -1298,27 +1188,14 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
                                                 ));
                                                 flat_idx += 1;
                                             }
-                                            if !actions_exp && actions_total > shown_cnt {
-                                                list_col = list_col.child(render_expand_group_pill(
-                                                    store,
-                                                    "ACTIONS",
-                                                    l.t("展开全部操作", "More commands")
-                                                        .to_owned(),
-                                                    actions_total - shown_cnt,
-                                                ));
-                                            }
                                         }
 
-                                        if circles_total > 0 {
+                                        if !circles.is_empty() {
                                             list_col = list_col.child(render_group_header(
-                                                store,
                                                 l.t("能力圈标的", "CIRCLE DOSSIERS").to_owned(),
-                                                circles_total,
-                                                (circles_total > 1)
-                                                    .then_some(("CIRCLE", circles_exp)),
+                                                circles.len(),
                                             ));
-                                            let shown_cnt = shown_circles.len();
-                                            for item in shown_circles {
+                                            for item in circles {
                                                 list_col = list_col.child(render_palette_row(
                                                     store,
                                                     item,
@@ -1326,18 +1203,9 @@ pub fn morphing_topbar_command_box(store: AppStore, breadcrumb: Memo<String>) ->
                                                 ));
                                                 flat_idx += 1;
                                             }
-                                            if !circles_exp && circles_total > shown_cnt {
-                                                list_col = list_col.child(render_expand_group_pill(
-                                                    store,
-                                                    "CIRCLE",
-                                                    l.t("展开能力圈标的", "More companies")
-                                                        .to_owned(),
-                                                    circles_total - shown_cnt,
-                                                ));
-                                            }
                                         }
 
-                                        let est_h = (visible_len as f32 * 45.0 + 96.0).min(410.0);
+                                        let est_h = (visible_len as f32 * 45.0 + 96.0).min(440.0);
                                         view()
                                             .w_full()
                                             .h(px(est_h))
