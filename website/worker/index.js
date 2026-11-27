@@ -28,7 +28,7 @@ const ANSI_BANNER = `
                      03  Judgment belongs to the owner — no buy/sell advice, ever
                      04  Sit calmly — local-first, zero-token filing inbox, hard AI budget
 
-  ${M}Open https://m3.thinksmart.systems in a browser for the interactive Workbench.${X}
+  ${M}Native macOS app · Interactive UI preview at https://m3.thinksmart.systems${X}
   ${M}Apache-2.0 · Powered by Alan (https://alanworks.app) · Not investment advice.${X}
 `;
 

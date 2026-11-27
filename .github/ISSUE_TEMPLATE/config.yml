@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: M3 Website & Interactive Workbench
+  - name: M3 Website & Interface Preview
     url: https://m3.thinksmart.systems
-    about: Product overview, macOS installer, and live browser Workbench demo
+    about: Product overview, macOS installer, and interactive UI preview
   - name: Architecture, MCP & CLI Documentation
     url: https://github.com/thinksmart-systems/m3/tree/main/docs
     about: Read architecture specs, Munger human-agent workflow, and MCP/CLI contracts before opening an issue

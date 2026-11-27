@@ -48,7 +48,7 @@ curl -fsSL https://m3.thinksmart.systems/install.sh | bash
 curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta
 ```
 
-Signed release archives and SHA-256 manifests are also available directly on [GitHub Releases](https://github.com/thinksmart-systems/m3/releases). You can also explore the live interactive Workbench in your browser at **[m3.thinksmart.systems](https://m3.thinksmart.systems)**.
+Signed release archives and SHA-256 manifests are also available directly on [GitHub Releases](https://github.com/thinksmart-systems/m3/releases). Before installing, you can click through an interactive UI preview at **[m3.thinksmart.systems](https://m3.thinksmart.systems)**.
 
 ---
 
@@ -109,7 +109,7 @@ For Codex (`~/.codex/config.toml`), Cursor, or Antigravity MCP configuration, se
 | [`crates/m3-core`](./crates/m3-core) | Zero-UI deterministic engine: SEC EDGAR sync, `rust_decimal` accounting, `L0`/`L1`/`L1.5`/`L2` lakehouse, proactive watchdog, Feynman coach, Industry Studio, storage manager, i18n, self-updater |
 | [`crates/m3-cli`](./crates/m3-cli) | Schema-v1 JSON CLI (`m3`) and 40-tool stdio MCP server (`m3 mcp`) |
 | [`apps/m3-nsh`](./apps/m3-nsh) | Native macOS desktop workbench (`M3.app`) on Longbridge NSH `0.7.0` with `control.sock` IPC |
-| [`website`](./website) | Bilingual financial-newspaper site & browser Workbench showcase (`m3.thinksmart.systems`, Solid 2 + Vite 8 + Cloudflare Workers) |
+| [`website`](./website) | Bilingual financial-newspaper site & interactive UI preview (`m3.thinksmart.systems`, Solid 2 + Vite 8 + Cloudflare Workers) |
 | [`skills`](./skills) | First-party Agent Skills (`m3`, `m3-qa`) |
 | [`docs`](./docs) | Architecture specs, MCP/CLI contracts, Munger human-agent workflow, and pre-registered research reviews |
 | [`scripts`](./scripts) | macOS bundle assembly, `install.sh`, release automation, and SHA-256 manifest generator |
