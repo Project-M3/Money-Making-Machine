@@ -48,7 +48,7 @@ curl -fsSL https://m3.thinksmart.systems/install.sh | bash
 curl -fsSL https://m3.thinksmart.systems/install.sh | bash -s -- --channel beta
 ```
 
-也可在 [GitHub Releases](https://github.com/thinksmart-systems/m3/releases) 直接下载签名安装包与校验清单，或在浏览器打开 **[m3.thinksmart.systems](https://m3.thinksmart.systems)** 体验交互式工作台。
+也可在 [GitHub Releases](https://github.com/thinksmart-systems/m3/releases) 直接下载签名安装包与校验清单，或在安装前先去 **[m3.thinksmart.systems](https://m3.thinksmart.systems)** 浏览交互式界面预览。
 
 ---
 
@@ -109,7 +109,7 @@ Codex（`~/.codex/config.toml`）、Cursor 与 Antigravity 的配置方式详见
 | [`crates/m3-core`](./crates/m3-core) | 零 UI 确定性核心：SEC EDGAR 同步、`rust_decimal` 会计核算、`L0`/`L1`/`L1.5`/`L2` 湖仓、财报哨兵、费曼教练、行业工作台、存储管理、i18n 与自更新引擎 |
 | [`crates/m3-cli`](./crates/m3-cli) | 结构化 schema-v1 JSON CLI（`m3`）与 40 工具 stdio MCP 服务（`m3 mcp`） |
 | [`apps/m3-nsh`](./apps/m3-nsh) | 基于 Longbridge NSH `0.7.0` 的原生 macOS 桌面应用（`M3.app`），含 `control.sock` IPC |
-| [`website`](./website) | 双语金融报纸风格官网与浏览器工作台演示（`m3.thinksmart.systems`，Solid 2 + Vite 8 + Cloudflare Workers） |
+| [`website`](./website) | 双语金融报纸风格官网与交互式界面预览（`m3.thinksmart.systems`，Solid 2 + Vite 8 + Cloudflare Workers） |
 | [`skills`](./skills) | 官方 Agent Skills（`m3`、`m3-qa`） |
 | [`docs`](./docs) | 架构说明、MCP/CLI 契约、芒格人机工作流及预登记量化实验复盘 |
 | [`scripts`](./scripts) | macOS 应用打包、一键安装脚本（`install.sh`）、发版与 SHA-256 清单生成工具 |
