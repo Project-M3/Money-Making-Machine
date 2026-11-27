@@ -7,9 +7,33 @@ import { locale, t } from '../i18n'
 const MARKERS = [
   { n: 1, style: 'top: 184px; left: 18.2%' },
   { n: 2, style: 'top: 664px; left: 54.6%' },
-  { n: 3, style: 'top: 236px; left: 17.2%' },
+  { n: 3, style: 'top: 282px; left: 17.2%' },
   { n: 4, style: 'top: 6px; left: 36.4%' },
 ]
+
+function MacMenuBar() {
+  return (
+    <div
+      aria-hidden="true"
+      class="flex h-[26px] items-center justify-between border-b border-white/[0.07] bg-black/40 px-3.5 font-sans text-[12px] leading-none tracking-[-0.005em] text-white/85 select-none"
+    >
+      <div class="flex items-center gap-4">
+        <svg viewBox="0 0 14 17" width="11" height="13" fill="currentColor" class="text-white/90">
+          <path d="M11.6 9.1c0-2 1.6-3 1.7-3.1-.9-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3.1.7-.6 0-1.6-.7-2.6-.7-1.4 0-2.6.8-3.3 2-1.4 2.5-.4 6.1 1 8.1.7 1 1.5 2.1 2.6 2 1 0 1.4-.7 2.7-.7s1.6.7 2.7.7c1.1 0 1.8-1 2.5-2 .8-1.1 1.1-2.2 1.1-2.3-.1 0-2.4-.9-2.4-3.1ZM9.5 3.2c.6-.7 1-1.7.9-2.7-.9 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6 1 .1 1.9-.5 2.5-1.2Z" />
+        </svg>
+        <span class="font-semibold text-white">M3</span>
+        <For each={t.macMenus}>{(item) => <span class="text-white/70">{item}</span>}</For>
+      </div>
+      <div class="flex items-center gap-3 text-white/75">
+        <span class="inline-flex items-center gap-1 rounded-[3px] border border-white/15 bg-white/[0.06] px-1.5 py-[2px] font-mono text-[10px] font-semibold tracking-[0.02em] text-white/90">
+          M3
+          <span class="size-1.5 rounded-full bg-[#34d399]" />
+        </span>
+        <span class="m3-num text-[11.5px] text-white/80">{t.macClock}</span>
+      </div>
+    </div>
+  )
+}
 
 function WorkbenchIsland() {
   const [state, setState] = createSignal<'idle' | 'loading' | 'ready'>('idle')
@@ -61,7 +85,7 @@ function WorkbenchIsland() {
   return (
     <div ref={(el) => (sentinel = el)} class="relative">
       <Show when={state() !== 'ready'}>
-        <div class="relative overflow-hidden rounded-[14px] border border-[#2a2a30] bg-shell">
+        <div class="relative overflow-hidden rounded-[14px] border border-[#2a2a30] bg-shell shadow-[0_26px_64px_-18px_rgba(0,0,0,0.72)]">
           <img
             src="/shots/wb-inbox-1600.webp"
             width="1600"
@@ -83,7 +107,7 @@ function WorkbenchIsland() {
             <span
               aria-hidden="true"
               style={m.style}
-              class="pointer-events-none absolute z-10 inline-flex size-7 items-center justify-center rounded-full bg-claret font-sans text-[13px] font-semibold text-white shadow-[0_0_0_3px_rgba(255,241,229,0.9)]"
+              class="pointer-events-none absolute z-10 inline-flex size-7 items-center justify-center rounded-full bg-claret font-sans text-[13px] font-semibold text-white shadow-[0_0_0_3px_rgba(255,241,229,0.92)]"
             >
               {m.n}
             </span>
@@ -178,7 +202,21 @@ export function TryIt() {
       <SectionHead id="try-title" kicker={t.tryKicker} title={t.tryTitle} lead={t.tryLead} />
 
       <div class="mt-8 hidden lg:block">
-        <WorkbenchIsland />
+        <figure class="border-t border-ink pt-3">
+          <figcaption class="mb-3 flex flex-wrap justify-between gap-x-6 gap-y-1 text-[12.5px] text-ink-2">
+            <span>
+              <b class="font-semibold text-ink">{t.fig2Label}</b> {t.fig2Caption}
+            </span>
+            <span>{t.fig2Source}</span>
+          </figcaption>
+          <div class="overflow-hidden rounded-[8px] border border-[#2a2624] bg-[radial-gradient(95%_70%_at_50%_0%,#38302c_0%,#24201e_55%,#1a1817_100%)]">
+            <MacMenuBar />
+            <div class="p-4 sm:p-5 sm:pb-6">
+              <WorkbenchIsland />
+            </div>
+          </div>
+        </figure>
+
         <ol aria-label={t.tryHotspotsLabel} class="mt-6 grid grid-cols-4 gap-6 border-t border-hair pt-4">
           <For each={t.hotspots}>
             {(h, i) => (
@@ -196,10 +234,15 @@ export function TryIt() {
         </ol>
       </div>
 
-      <div class="mt-8 lg:hidden">
-        <p class="mb-4 text-[14px] text-ink-2">{t.tryMobileNote}</p>
+      <figure class="mt-8 border-t border-ink pt-3 lg:hidden">
+        <figcaption class="mb-3 flex flex-wrap justify-between gap-x-6 gap-y-1 text-[12.5px] text-ink-2">
+          <span>
+            <b class="font-semibold text-ink">{t.fig2Label}</b> {t.fig2MobileCaption}
+          </span>
+          <span>{t.fig2Source}</span>
+        </figcaption>
         <ScreenshotCarousel />
-      </div>
+      </figure>
     </section>
   )
 }
