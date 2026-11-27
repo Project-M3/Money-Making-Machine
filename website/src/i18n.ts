@@ -10,7 +10,7 @@ export type Locale = 'en' | 'zh'
 
 export const LANG_COOKIE = 'm3_lang'
 export const SITE_URL = 'https://m3.thinksmart.systems'
-export const REPO_URL = 'https://github.com/Project-M3/Money-Making-Machine'
+export const REPO_URL = 'https://github.com/thinksmart-systems/m3'
 export const RELEASES_URL = `${REPO_URL}/releases/latest`
 export const ROADMAP_URL = `${REPO_URL}/blob/main/ROADMAP.md`
 export const CHANGELOG_URL = `${REPO_URL}/blob/main/CHANGELOG.md`
@@ -78,7 +78,7 @@ const en = {
   tagline: 'The research instrument for patient investors',
   datelineIssuers: 'US issuers 6,000+',
   datelineArith: 'LLM arithmetic 0',
-  datelineMcp: 'MCP tools 17, read-only',
+  datelineMcp: 'MCP tools 40 · 24 read-only',
 
   kicker: 'Value research, on your Mac',
   h1a: 'Read every filing.',
@@ -204,13 +204,13 @@ const en = {
   roadKicker: 'Roadmap',
   roadTitle: 'Shipped, so far',
   milestones: [
+    { v: 'v0.6.5', date: '27 Nov 2026', title: 'Unified Alan & 40-tool MCP', body: 'Dual-canvas Alan workspace with pinned context, inline evidence cards, desktop control IPC, and a 40-tool `m3 mcp` server (`--read-only` keeps 24).' },
     { v: 'v0.6', date: '26 Nov 2026', title: 'Proactive Alan', body: 'Filing watchdog for WATCH + IN companies, calm daily and weekly briefings, a menu-bar keep-alive and a three-round Feynman coach.' },
-    { v: 'v0.5', date: '26 Nov 2026', title: 'Onboarding and MCP', body: 'In-app setup for five model providers, a starter workspace, progressive lakehouse bootstrap and a read-only `m3 mcp` server.' },
+    { v: 'v0.5', date: '26 Nov 2026', title: 'Onboarding and MCP', body: 'In-app setup for five model providers, a starter workspace, progressive lakehouse bootstrap and `m3 mcp`.' },
     { v: 'v0.4', date: '25 Nov 2026', title: 'Native macOS workbench', body: 'Rewritten on Longbridge NSH with a deterministic core, K-line and ROIC charts, a storage manager and verified in-app updates.' },
-    { v: 'v0.3', date: '24 Nov 2026', title: 'Full-US lakehouse', body: 'Bulk SEC EDGAR ingestion into Parquet and DuckDB, a zero-token filing inbox and budget-gated deep research.' },
   ] as Milestone[],
   roadNext:
-    'Next is Hong Kong filings (v0.6.5). Further out, the plan explores point-in-time backtesting and, strictly opt-in, broker connections behind a deterministic risk gate.',
+    'Next is point-in-time strategy backtesting and a local paper broker (v0.7), followed by Hong Kong filings. Further out, strictly opt-in broker connections sit behind a deterministic Rust risk gate.',
   roadLink: 'Read ROADMAP.md',
 
   installKicker: 'Install',
@@ -266,7 +266,7 @@ const zh: typeof en = {
   tagline: '耐心投资者的研究仪器',
   datelineIssuers: '美股发行人 6,000+',
   datelineArith: 'LLM 算术 0',
-  datelineMcp: 'MCP 只读工具 17',
+  datelineMcp: 'MCP 工具 40 · 24 只读',
 
   kicker: '价值研究，就在你的 Mac 上',
   h1a: '读遍每一份财报。',
@@ -390,12 +390,12 @@ const zh: typeof en = {
   roadKicker: '路线图',
   roadTitle: '已经发布的',
   milestones: [
+    { v: 'v0.6.5', date: '2026-11-27', title: '统一的 Alan 与 40 工具 MCP', body: '双画布 Alan 工作区、上下文锁定、内联证据卡、桌面 IPC 控制，以及 40 工具 `m3 mcp` 服务（`--read-only` 保留 24 个）。' },
     { v: 'v0.6', date: '2026-11-26', title: '主动的 Alan', body: '盯住 WATCH + IN 公司的财报哨兵、平静的日报与周报、菜单栏常驻，以及三轮费曼答辩教练。' },
-    { v: 'v0.5', date: '2026-11-26', title: '上手与 MCP', body: '应用内配置五家模型服务、入门工作区、渐进式湖仓初始化，以及只读的 `m3 mcp` 服务。' },
+    { v: 'v0.5', date: '2026-11-26', title: '上手与 MCP', body: '应用内配置五家模型服务、入门工作区、渐进式湖仓初始化，以及 `m3 mcp` 服务。' },
     { v: 'v0.4', date: '2026-11-25', title: '原生 macOS 工作台', body: '基于 Longbridge NSH 重写，确定性内核、K 线与 ROIC 图表、存储管理和校验过的应用内更新。' },
-    { v: 'v0.3', date: '2026-11-24', title: '全美股湖仓', body: 'SEC EDGAR 批量导入 Parquet 与 DuckDB，零 token 的财报收件箱，以及受预算约束的深度研究。' },
   ],
-  roadNext: '下一步是港股财报（v0.6.5）。更远的计划会探索防前视的历史回测，以及严格选择加入、受确定性风控约束的券商连接。',
+  roadNext: '下一步是防前视策略回测与本地模拟盘（v0.7），随后扩展港股财报。更远的计划包含严格选择加入、受确定性 Rust 风控约束的券商连接。',
   roadLink: '阅读 ROADMAP.md',
 
   installKicker: '安装',

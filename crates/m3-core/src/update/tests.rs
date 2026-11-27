@@ -109,9 +109,7 @@ fn passive_check_cache_handles_fresh_stale_and_channel_switch() {
         channel: "beta".to_string(),
         latest_version: "0.2.1-beta.20261124.5".to_string(),
         tag: "beta".to_string(),
-        release_url: Some(
-            "https://github.com/Project-M3/Money-Making-Machine/releases/tag/beta".to_string(),
-        ),
+        release_url: Some("https://github.com/thinksmart-systems/m3/releases/tag/beta".to_string()),
     };
     write_cache_atomic(&cache_path, &cache).unwrap();
 
@@ -526,7 +524,7 @@ fn default_manifest_url_builds_public_release_endpoints() {
     .unwrap();
     assert_eq!(
         stable,
-        "https://github.com/Project-M3/Money-Making-Machine/releases/latest/download/latest.json"
+        "https://github.com/thinksmart-systems/m3/releases/latest/download/latest.json"
     );
 
     let beta = super::default_manifest_url(
@@ -538,7 +536,7 @@ fn default_manifest_url_builds_public_release_endpoints() {
     .unwrap();
     assert_eq!(
         beta,
-        "https://github.com/Project-M3/Money-Making-Machine/releases/download/beta/latest.json"
+        "https://github.com/thinksmart-systems/m3/releases/download/beta/latest.json"
     );
 
     for ver in ["0.4.2", "v0.4.2"] {
@@ -551,7 +549,7 @@ fn default_manifest_url_builds_public_release_endpoints() {
         .unwrap();
         assert_eq!(
             pinned,
-            "https://github.com/Project-M3/Money-Making-Machine/releases/download/v0.4.2/latest.json"
+            "https://github.com/thinksmart-systems/m3/releases/download/v0.4.2/latest.json"
         );
     }
 }

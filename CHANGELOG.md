@@ -92,7 +92,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Initial **Munger Focus Value Research & Decision Workbench** (`v1`), deterministic SEC EDGAR XBRL & Yahoo Finance Charlie Calculator, built-in **Alan** interrogator with `M3ToolPolicyHook`, and `m3` JSON CLI.
 
-[Unreleased]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.5.1...main
+[Unreleased]: https://github.com/thinksmart-systems/m3/compare/v0.6.0...main
 [0.5.1]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/Project-M3/Money-Making-Machine/compare/v0.4.1...v0.4.2

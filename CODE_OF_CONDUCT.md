@@ -34,7 +34,7 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainers via [GitHub Issues](https://github.com/Project-M3/Money-Making-Machine/issues) or [GitHub Security Advisories](https://github.com/Project-M3/Money-Making-Machine/security/advisories) (for sensitive reports). All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainers via [GitHub Issues](https://github.com/thinksmart-systems/m3/issues) or [GitHub Security Advisories](https://github.com/thinksmart-systems/m3/security/advisories) (for sensitive reports). All complaints will be reviewed and investigated promptly and fairly.
 
 ## Attribution
 

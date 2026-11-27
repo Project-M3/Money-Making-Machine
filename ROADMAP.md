@@ -33,7 +33,7 @@ Project M3 has completed its local-first research, zero-friction onboarding, res
 | **`v0.5`** | **Zero-Friction Onboarding & Alan Setup** | In-app 5-provider Alan setup, guided starter workspace, progressive L0 bootstrap, `m3 mcp` server & Agent Skills, smoked-glass UI | **Shipped** |
 | **`v0.5.1`** | **Startup & Circle Polish** | Zero-blank-screen startup (`e23259f`), off-thread Research Desk & 4x faster `search_similar`, non-destructive Circle removal, `WATCH → IN → OUT → TOO HARD` | **Shipped** |
 | **`v0.6.0`** | **Proactive Alan** | Branch A (L1.5 Circle Filing Watchdog), Branch B (Calm Briefings + NSH `0.7.0` Tray Keep-Alive), Branch C (3-Round Socratic Feynman Coach & `WATCH → IN` Soft Gate) | **Shipped** |
-| **`v0.6.5`** | **Unified Alan** | App-Shell Dual Canvas (`Closed \| Split \| Immersive`), unified `AlanScope` + `📌` context pin lock, inline deterministic M3 evidence cards & single-line collapsible Turing Tape, retirement of Company Desk Tab 2 & Industry bottom chat, expanded read-only `/mnt/m3` mount tree & bounded session persistence (`alan` `v0.1.4`, forward-compatible with newer `alan9`) | **Next** |
+| **`v0.6.5`** | **Unified Alan** | App-Shell Dual Canvas (`Closed \| Split \| Immersive`), unified `AlanScope` + `📌` context pin lock, inline deterministic M3 evidence cards & single-line collapsible Turing Tape, retirement of Company Desk Tab 2 & Industry bottom chat, expanded `/mnt/m3` mount tree, 40-tool `m3 mcp` server & desktop `control.sock` IPC | **Shipped** |
 | **`v0.7`** | **Programmable Strategy Engine & Paper Broker** | Declarative/scriptable value strategies, point-in-time historical backtesting on DuckDB/Parquet, built-in Paper Broker | **Planned** |
 | **`v0.7.5`** | **Multi-Market & HKEX Expansion** | `HKEX` filing ingestion alongside US SEC EDGAR, dual-market data pipelines, and multi-currency accounting (deferred post-`v0.7` alongside brokerage work) | **Planned** |
 | **`v0.8`** | **Deterministic RiskEngine & Brokerage Adapters** | Hardcoded Rust `RiskEngine` guardrails + unified `BrokerAdapter` (**Longbridge OpenAPI** US/HK + **Alpaca** US) | **Planned** |
@@ -85,7 +85,7 @@ Turn **Alan** inside M3 from an on-demand responder into a calm, bounded, human-
 
 ---
 
-### `v0.6.5` — Unified Alan (`Next`)
+### `v0.6.5` — Unified Alan (`Shipped`)
 
 Consolidate all interactive **Alan** research, interrogation, and Feynman coaching into one calm App-Shell Dual Canvas (see [docs/v0.6.5-unified-alan.md](./docs/v0.6.5-unified-alan.md)):
 

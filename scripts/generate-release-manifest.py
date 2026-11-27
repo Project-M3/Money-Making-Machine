@@ -17,7 +17,7 @@ SUPPORTED_TARGETS = (
     "x86_64-apple-darwin",
 )
 SUPPORTED_CHANNELS = ("stable", "beta")
-DEFAULT_REPO = "Project-M3/Money-Making-Machine"
+DEFAULT_REPO = "thinksmart-systems/m3"
 SHA256_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})(?:[ \t]+\*?(.+))?$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
