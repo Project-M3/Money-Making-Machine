@@ -6,15 +6,15 @@
 //! - Right inspection drawer with Circle-gated Strike Zone status, 5Y annuals, SIC peers & actions
 
 use crate::components::{
-    action_button, badge_pill, kv_line, obsidian_card, prop_section, section_header, seg_group,
-    styled_input, v_divider, view_filter_strip, view_header_strip,
+    action_button, animate_shell_spring, badge_pill, kv_line, obsidian_card, prop_section,
+    section_header, seg_group, styled_input, v_divider, view_filter_strip, view_header_strip,
 };
 use crate::format::{dec_to_f64, fmt_money_compact, fmt_pct_clean, fmt_price, fmt_time_cn_for};
 use crate::icons::{ICON_CLOSE, icon};
 use crate::platform_desktop::{copy_text_with_notice, open_external_url};
 use crate::stores::{
-    AppStore, CompanyViewTab, ScatterPlotModel, ScatterPoint, UniversePreset, UniverseSearchMode,
-    WorkspaceTab,
+    AlanScope, AppStore, CompanyViewTab, ScatterPlotModel, ScatterPoint, UniversePreset,
+    UniverseSearchMode, WorkspaceTab,
 };
 use crate::theme::*;
 use m3_core::edgar;
@@ -2531,6 +2531,18 @@ fn render_universe_drawer_content(
         )
         // Quick Actions
         .child({
+            let ticker_alan = row.ticker.clone();
+            let row_name_alan = row.name.clone();
+            let seed_alan = match l {
+                UiLang::Zh => format!(
+                    "请结合 {} ({}) 的 L0 多年财务底表与 SEC 10-K 原文，快速评估它的商业质量与主要风险。",
+                    row.ticker, row.name
+                ),
+                UiLang::En => format!(
+                    "Evaluate {} ({}) using L0 multi-year financials and primary SEC 10-K filings.",
+                    row.ticker, row.name
+                ),
+            };
             let mut actions = view().flex().flex_col().gap(px(6.0));
             if live_bkt.is_some() {
                 actions = actions
@@ -2587,6 +2599,20 @@ fn render_universe_drawer_content(
                     ));
             }
             actions
+                .child(drawer_button(
+                    l.t("问 Alan ↗", "Ask Alan ↗"),
+                    VIOLET_FG,
+                    VIOLET_BG,
+                    VIOLET_BORDER,
+                    move || {
+                        animate_shell_spring();
+                        store.open_alan_with_anchor(
+                            AlanScope::Company(ticker_alan.clone()),
+                            &row_name_alan,
+                            &seed_alan,
+                        );
+                    },
+                ))
                 .child(drawer_button(
                     l.t("发起 / 查看行业研究", "Study Industry"),
                     SKY_FG,

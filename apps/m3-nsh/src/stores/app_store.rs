@@ -16,12 +16,13 @@ use crate::stores::async_bridge::{
     run_streamed_blocking, spawn_notify_listener,
 };
 use crate::stores::types::{
-    AgentMessageRole, AgentUiMessage, AlanReplyTarget, BasketsViewMode, BriefingPeriod,
-    ChartTimeframe, CircleBriefing, CompanyViewTab, DeepResearchPerspectiveUi, FeynmanRound,
-    FeynmanScope, FeynmanTurn, InboxFilter, InboxViewMode, InboxViewState, JournalViewTab,
-    OnboardingStep, PaletteItem, ParsedResearchMemo, SettingsTab, SignalTriageRecord, SortCol,
-    StatusQuickFilter, StoredAppMessage, UniversePreset, UniverseSearchMode, UniverseViewState,
-    WorkspaceTab, apply_ui_row_guards, default_deep_research_perspectives,
+    AgentMessageRole, AgentUiMessage, AlanCanvasTab, AlanReplyTarget, AlanScope, AlanStageMode,
+    BasketsViewMode, BriefingPeriod, ChartTimeframe, CircleBriefing, CompanyViewTab,
+    DeepResearchPerspectiveUi, FeynmanRound, FeynmanScope, FeynmanTurn, InboxFilter, InboxViewMode,
+    InboxViewState, InlineEvidenceCard, JournalViewTab, OnboardingStep, PaletteItem,
+    ParsedResearchMemo, SettingsTab, SignalTriageRecord, SortCol, StatusQuickFilter,
+    StoredAppMessage, UniversePreset, UniverseSearchMode, UniverseViewState, WorkspaceTab,
+    apply_ui_row_guards, default_deep_research_perspectives,
 };
 use m3_core::alan_connection::{
     self, AlanConnectionBrowserLoginResult, AlanConnectionProfileSummary, AlanConnectionProvider,
@@ -31,6 +32,10 @@ use m3_core::alan_connection::{
 use m3_core::alan_interrogator::{
     InterrogatorEvent, M3InterrogatorHandle, TuringTapeEntry, TuringTapeKind,
     compose_feynman_quiz_turn, compose_industry_tutor_turn, parse_acme_evidence_tokens,
+    resolve_inline_evidence_cards,
+};
+use m3_core::alan_session::{
+    self, AlanMessageRole as PersistedAlanRole, PersistedAlanMessage, PersistedAlanSession,
 };
 use m3_core::app_config;
 use m3_core::budget::{self, BudgetConfig, ThemeCluster, ThemesFile};
@@ -159,6 +164,15 @@ pub struct AppStore {
     pub agent_expanded_evidence: Signal<Option<String>>,
     pub agent_expanded_tape: Signal<Option<usize>>,
     pub alan_reply_target: Signal<AlanReplyTarget>,
+    pub alan_stage_mode: Signal<AlanStageMode>,
+    pub alan_canvas_tab: Signal<AlanCanvasTab>,
+    pub alan_scope: Signal<AlanScope>,
+    pub alan_context_pinned: Signal<bool>,
+    pub alan_deep_research_split_pref: Signal<bool>,
+    pub alan_sidebar_auto_collapsed: Signal<bool>,
+    pub alan_window_width: Signal<f32>,
+    pub alan_evidence_cards: Signal<HashMap<String, Vec<InlineEvidenceCard>>>,
+    pub alan_anchor_label: Signal<Option<String>>,
 
     // ── Soft Gate & 3-Round Feynman Coach ────────────────────────────────────
     pub pending_graduation_ticker: Signal<Option<String>>,
@@ -277,6 +291,7 @@ pub struct AppStore {
 
     // ── Internal Non-Reactive State ──────────────────────────────────────────
     alan_handle: Stored<Option<M3InterrogatorHandle>>,
+    alan_ignore_reset_done: Stored<usize>,
     agent_seq: Stored<usize>,
     universe_search_seq: Stored<u64>,
     company_context_seq: Stored<u64>,
@@ -689,6 +704,15 @@ impl AppStore {
             agent_expanded_evidence: signal(None),
             agent_expanded_tape: signal(None),
             alan_reply_target: signal(AlanReplyTarget::Company),
+            alan_stage_mode: signal(AlanStageMode::Closed),
+            alan_canvas_tab: signal(AlanCanvasTab::Interrogate),
+            alan_scope: signal(AlanScope::Briefing("latest".to_owned())),
+            alan_context_pinned: signal(false),
+            alan_deep_research_split_pref: signal(false),
+            alan_sidebar_auto_collapsed: signal(false),
+            alan_window_width: signal(1380.0),
+            alan_evidence_cards: signal_with(HashMap::new(), SignalEquals::Never),
+            alan_anchor_label: signal(None),
 
             pending_graduation_ticker: signal(None),
             feynman_mode_active: signal(false),
@@ -812,6 +836,7 @@ impl AppStore {
             storage_cleaning: signal(None),
 
             alan_handle: stored(None),
+            alan_ignore_reset_done: stored(0),
             agent_seq: stored(1),
             universe_search_seq: stored(0),
             company_context_seq: stored(0),
@@ -1042,6 +1067,7 @@ impl AppStore {
         self.reload_inbox_from_lake();
         self.reload_proactive_from_lake_sync();
         self.reload_budget_from_lake();
+        self.sync_alan_scope_to_context();
         self.startup_hydrated.set(true);
     }
 
@@ -1149,6 +1175,7 @@ impl AppStore {
         }
         if self.company_open.get_untracked() {
             self.reload_research_desk_context(trimmed);
+            self.sync_alan_scope_to_context();
         }
     }
 
@@ -1272,6 +1299,7 @@ impl AppStore {
             }
             WorkspaceTab::Baskets | WorkspaceTab::Journal | WorkspaceTab::Settings => {}
         }
+        self.sync_alan_stage_for_navigation();
     }
 
     fn refresh_settings_tab_data(self, tab: SettingsTab, force_storage_rescan: bool) {
@@ -1321,9 +1349,30 @@ impl AppStore {
     }
 
     pub fn open_company(self, ticker: &str, tab: CompanyViewTab) {
-        self.company_view_tab.set(tab);
+        let redirected_alan = tab == CompanyViewTab::DeepResearchAlan;
+        let effective_tab = if redirected_alan {
+            CompanyViewTab::FinancialsMemo
+        } else {
+            tab
+        };
+        self.company_view_tab.set(effective_tab);
         self.company_open.set(true);
         self.load_selection(ticker);
+        if redirected_alan {
+            let norm = self
+                .selected_ticker
+                .get_untracked()
+                .trim()
+                .to_ascii_uppercase();
+            let scope = if norm.is_empty() {
+                AlanScope::Portfolio
+            } else {
+                AlanScope::Company(norm)
+            };
+            self.open_alan_for_scope(scope, AlanCanvasTab::Interrogate);
+        } else {
+            self.sync_alan_stage_for_navigation();
+        }
     }
 
     pub fn open_selected_company(self, tab: CompanyViewTab) {
@@ -1339,24 +1388,32 @@ impl AppStore {
             );
             return;
         }
-        self.company_view_tab.set(tab);
+        let redirected_alan = tab == CompanyViewTab::DeepResearchAlan;
+        let effective_tab = if redirected_alan {
+            CompanyViewTab::FinancialsMemo
+        } else {
+            tab
+        };
+        self.company_view_tab.set(effective_tab);
         self.company_open.set(true);
         self.reload_research_desk_context(&ticker);
+        if redirected_alan {
+            self.open_alan_for_scope(
+                AlanScope::Company(ticker.trim().to_ascii_uppercase()),
+                AlanCanvasTab::Interrogate,
+            );
+        } else {
+            self.sync_alan_stage_for_navigation();
+        }
     }
 
     pub fn open_company_contextual(self, ticker: &str) {
-        let target_tab = if self.company_open.get_untracked()
-            && self.company_view_tab.get_untracked() == CompanyViewTab::DeepResearchAlan
-        {
-            CompanyViewTab::DeepResearchAlan
-        } else {
-            CompanyViewTab::FinancialsMemo
-        };
-        self.open_company(ticker, target_tab);
+        self.open_company(ticker, CompanyViewTab::FinancialsMemo);
     }
 
     pub fn close_company_overlay(self) {
         self.company_open.set(false);
+        self.sync_alan_stage_for_navigation();
     }
 
     pub fn toggle_palette(self) {
@@ -1396,6 +1453,7 @@ impl AppStore {
     }
 
     pub fn toggle_sidebar(self) {
+        self.alan_sidebar_auto_collapsed.set(false);
         self.sidebar_collapsed
             .set(!self.sidebar_collapsed.get_untracked());
     }
@@ -2115,6 +2173,7 @@ impl AppStore {
         self.baskets_cursor_index.set(0);
         self.company_open.set(false);
         self.active_tab.set(WorkspaceTab::Baskets);
+        self.sync_alan_stage_for_navigation();
     }
 
     pub fn jump_to_tag(self, tag: String) {
@@ -2123,6 +2182,7 @@ impl AppStore {
         self.baskets_cursor_index.set(0);
         self.company_open.set(false);
         self.active_tab.set(WorkspaceTab::Baskets);
+        self.sync_alan_stage_for_navigation();
     }
 
     pub fn toggle_circle_filter(self, tag: &str) {
@@ -2156,6 +2216,7 @@ impl AppStore {
         });
         self.company_open.set(false);
         self.active_tab.set(WorkspaceTab::Baskets);
+        self.sync_alan_stage_for_navigation();
     }
 
     pub fn toggle_basket_collapsed(self, bucket: Bucket) {
@@ -2261,16 +2322,16 @@ impl AppStore {
         self.pending_graduation_ticker.set(None);
     }
 
-    /// Dismisses the Soft Gate modal, opens Company Research Desk · Alan, and starts the
-    /// 3-round Socratic Feynman Defense for `ticker`.
+    /// Dismisses the Soft Gate modal, opens Company Research Desk, and starts the
+    /// 3-round Socratic Feynman Defense inside the unified Alan Canvas.
     pub fn start_graduation_feynman(self, ticker: &str) {
         let norm_ticker = ticker.trim().to_ascii_uppercase();
         self.pending_graduation_ticker.set(None);
         if norm_ticker.is_empty() {
             return;
         }
-        self.open_company(&norm_ticker, CompanyViewTab::DeepResearchAlan);
-        self.start_company_feynman(&norm_ticker);
+        self.open_company(&norm_ticker, CompanyViewTab::FinancialsMemo);
+        self.open_alan_for_scope(AlanScope::Company(norm_ticker), AlanCanvasTab::Feynman);
     }
 
     /// Removes `ticker` from `workbench/watchlist.json` and refreshes DuckDB flags without
@@ -3188,7 +3249,7 @@ impl AppStore {
                     .map(|r| r.ticker.clone())
                     .unwrap_or(ticker)
             });
-            self.open_company(&canonical, CompanyViewTab::DeepResearchAlan);
+            self.open_company(&canonical, CompanyViewTab::FinancialsMemo);
             self.start_deep_research(&canonical, None, "inbox");
         }
     }
@@ -3735,7 +3796,7 @@ impl AppStore {
                 .map(|r| r.ticker.clone())
                 .unwrap_or_else(|| row.ticker.clone())
         });
-        self.open_company(&canonical, CompanyViewTab::DeepResearchAlan);
+        self.open_company(&canonical, CompanyViewTab::FinancialsMemo);
         self.start_deep_research(&canonical, None, "universe");
     }
 
@@ -3860,6 +3921,11 @@ impl AppStore {
         self.industries.set(list);
         self.selected_industry_slug.set(next_slug);
         self.reload_selected_industry_context();
+        if !self.company_open.get_untracked()
+            && self.active_tab.get_untracked() == WorkspaceTab::Industry
+        {
+            self.sync_alan_scope_to_context();
+        }
     }
 
     pub fn selected_industry(self) -> Option<IndustryProfile> {
@@ -3873,6 +3939,11 @@ impl AppStore {
         self.selected_industry_slug.set(Some(slug.to_owned()));
         self.industry_live_perspectives.set(BTreeMap::new());
         self.reload_selected_industry_context();
+        if !self.company_open.get_untracked()
+            && self.active_tab.get_untracked() == WorkspaceTab::Industry
+        {
+            self.sync_alan_scope_to_context();
+        }
     }
 
     pub fn delete_industry(self, slug: &str) {
@@ -4494,7 +4565,7 @@ impl AppStore {
             );
             return;
         }
-        self.open_company(&ticker, CompanyViewTab::DeepResearchAlan);
+        self.open_company(&ticker, CompanyViewTab::FinancialsMemo);
         self.start_deep_research(&ticker, None, "menu");
     }
 
@@ -4656,6 +4727,473 @@ impl AppStore {
         });
     }
 
+    // ── Unified Alan Dual Canvas, Scope Pin & Bounded Session State ──────────
+
+    /// Returns `true` when the active M3 viewport is a deep research surface
+    /// (Company Research Desk or Industry Research Studio).
+    pub fn is_deep_research_view(self) -> bool {
+        self.company_open.get_untracked()
+            || self.active_tab.get_untracked() == WorkspaceTab::Industry
+    }
+
+    /// Computes the natural [`AlanScope`] matching the active M3 view and selection.
+    pub fn active_context_scope(self) -> AlanScope {
+        if self.company_open.get_untracked() {
+            let ticker = self
+                .selected_ticker
+                .get_untracked()
+                .trim()
+                .to_ascii_uppercase();
+            return if ticker.is_empty() {
+                AlanScope::Portfolio
+            } else {
+                AlanScope::Company(ticker)
+            };
+        }
+        match self.active_tab.get_untracked() {
+            WorkspaceTab::Industry => self
+                .selected_industry_slug
+                .get_untracked()
+                .filter(|s| !s.trim().is_empty())
+                .map(AlanScope::Industry)
+                .unwrap_or(AlanScope::Portfolio),
+            WorkspaceTab::Inbox => {
+                let id = self
+                    .selected_briefing_id
+                    .get_untracked()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "latest".to_owned());
+                AlanScope::Briefing(id)
+            }
+            WorkspaceTab::Universe
+            | WorkspaceTab::Baskets
+            | WorkspaceTab::Journal
+            | WorkspaceTab::Settings => AlanScope::Portfolio,
+        }
+    }
+
+    fn apply_alan_sidebar_layout(self, mode: AlanStageMode) {
+        match mode {
+            AlanStageMode::Split => {
+                let should_collapse =
+                    self.is_deep_research_view() || self.alan_window_width.get_untracked() < 1260.0;
+                if should_collapse {
+                    if !self.sidebar_collapsed.get_untracked() {
+                        self.sidebar_collapsed.set(true);
+                        self.alan_sidebar_auto_collapsed.set(true);
+                    }
+                } else if self.alan_sidebar_auto_collapsed.get_untracked() {
+                    self.sidebar_collapsed.set(false);
+                    self.alan_sidebar_auto_collapsed.set(false);
+                }
+            }
+            AlanStageMode::Closed => {
+                if self.alan_sidebar_auto_collapsed.get_untracked() {
+                    self.sidebar_collapsed.set(false);
+                    self.alan_sidebar_auto_collapsed.set(false);
+                }
+            }
+            AlanStageMode::Immersive => {}
+        }
+    }
+
+    /// Updates tracked window width and auto-collapses the sidebar on narrower Split widths.
+    pub fn sync_alan_for_window_width(self, width: f32) {
+        self.alan_window_width.set(width);
+        let mode = self.alan_stage_mode.get_untracked();
+        if mode == AlanStageMode::Split {
+            self.apply_alan_sidebar_layout(mode);
+        }
+    }
+
+    fn sync_alan_stage_for_navigation(self) {
+        let is_deep = self.is_deep_research_view();
+        let cur_mode = self.alan_stage_mode.get_untracked();
+        let pinned = self.alan_context_pinned.get_untracked();
+
+        if is_deep {
+            if cur_mode == AlanStageMode::Closed
+                && self.alan_deep_research_split_pref.get_untracked()
+            {
+                self.alan_stage_mode.set(AlanStageMode::Split);
+                self.apply_alan_sidebar_layout(AlanStageMode::Split);
+            } else if cur_mode == AlanStageMode::Split
+                && !self.alan_deep_research_split_pref.get_untracked()
+                && !pinned
+            {
+                self.alan_stage_mode.set(AlanStageMode::Closed);
+                self.apply_alan_sidebar_layout(AlanStageMode::Closed);
+            } else {
+                self.apply_alan_sidebar_layout(cur_mode);
+            }
+        } else if !pinned && cur_mode != AlanStageMode::Closed {
+            self.alan_stage_mode.set(AlanStageMode::Closed);
+            self.apply_alan_sidebar_layout(AlanStageMode::Closed);
+        } else if cur_mode == AlanStageMode::Split {
+            self.apply_alan_sidebar_layout(AlanStageMode::Split);
+        }
+
+        self.sync_alan_scope_to_context();
+    }
+
+    fn sync_alan_scope_to_context(self) {
+        if self.alan_context_pinned.get_untracked() {
+            return;
+        }
+        let next = self.active_context_scope().normalized();
+        self.switch_alan_scope(next);
+    }
+
+    fn switch_alan_scope(self, next_scope: AlanScope) {
+        let norm = next_scope.normalized();
+        if self.alan_scope.get_untracked() == norm {
+            return;
+        }
+        self.save_alan_session();
+        self.alan_scope.set(norm.clone());
+        self.agent_expanded_evidence.set(None);
+        self.agent_expanded_tape.set(None);
+        self.alan_anchor_label.set(None);
+        self.agent_tape.set(Vec::new());
+        self.agent_streaming.set(false);
+        self.agent_status_hint.set(None);
+        self.agent_session_ticker.set(match &norm {
+            AlanScope::Company(t) => Some(t.clone()),
+            _ => None,
+        });
+        if self.alan_handle.with(|opt| opt.is_some()) {
+            self.alan_ignore_reset_done.with(|cnt| *cnt += 1);
+            self.alan_handle.with(|opt| {
+                if let Some(h) = opt {
+                    h.reset();
+                }
+            });
+        }
+        self.load_alan_session(&norm);
+    }
+
+    /// Toggles the App-Shell Dual Canvas between `Closed ↔ Split` (or steps `Immersive → Split`).
+    pub fn toggle_alan_split(self) {
+        let cur = self.alan_stage_mode.get_untracked();
+        let next = match cur {
+            AlanStageMode::Closed => AlanStageMode::Split,
+            AlanStageMode::Split => AlanStageMode::Closed,
+            AlanStageMode::Immersive => AlanStageMode::Split,
+        };
+        if next == AlanStageMode::Split {
+            self.sync_alan_scope_to_context();
+            let scope = self.alan_scope.get_untracked();
+            if self.agent_messages.with_untracked(|m| m.is_empty()) {
+                self.load_alan_session(&scope);
+            }
+        } else {
+            self.save_alan_session();
+        }
+        if self.is_deep_research_view() {
+            self.alan_deep_research_split_pref
+                .set(next == AlanStageMode::Split);
+        }
+        self.alan_stage_mode.set(next);
+        self.apply_alan_sidebar_layout(next);
+    }
+
+    /// Toggles the unified Alan Studio between `Split ↔ Immersive` (entering `Immersive` if `Closed`).
+    pub fn toggle_alan_immersive(self) {
+        let cur = self.alan_stage_mode.get_untracked();
+        let next = match cur {
+            AlanStageMode::Immersive => AlanStageMode::Split,
+            AlanStageMode::Closed | AlanStageMode::Split => AlanStageMode::Immersive,
+        };
+        if cur == AlanStageMode::Closed {
+            self.sync_alan_scope_to_context();
+            let scope = self.alan_scope.get_untracked();
+            if self.agent_messages.with_untracked(|m| m.is_empty()) {
+                self.load_alan_session(&scope);
+            }
+        }
+        self.alan_stage_mode.set(next);
+        self.apply_alan_sidebar_layout(next);
+    }
+
+    /// Sets [`AlanStageMode`] explicitly (e.g. `Esc` stepping `Immersive → Split`).
+    pub fn set_alan_stage_mode(self, mode: AlanStageMode) {
+        if mode == AlanStageMode::Closed {
+            self.save_alan_session();
+        } else if self.alan_stage_mode.get_untracked() == AlanStageMode::Closed {
+            self.sync_alan_scope_to_context();
+            let scope = self.alan_scope.get_untracked();
+            if self.agent_messages.with_untracked(|m| m.is_empty()) {
+                self.load_alan_session(&scope);
+            }
+        }
+        if self.is_deep_research_view() {
+            self.alan_deep_research_split_pref
+                .set(mode != AlanStageMode::Closed);
+        }
+        self.alan_stage_mode.set(mode);
+        self.apply_alan_sidebar_layout(mode);
+    }
+
+    /// Closes the unified Alan Canvas (`[✕]` button).
+    pub fn close_alan_canvas(self) {
+        self.set_alan_stage_mode(AlanStageMode::Closed);
+    }
+
+    /// Switches the active sub-tab inside the unified Alan Canvas (`Interrogate | Feynman`).
+    pub fn set_alan_canvas_tab(self, tab: AlanCanvasTab) {
+        self.alan_canvas_tab.set(tab);
+        if tab == AlanCanvasTab::Feynman {
+            match self.alan_scope.get_untracked() {
+                AlanScope::Company(ticker) => {
+                    let same = self.feynman_mode_active.get_untracked()
+                        && matches!(
+                            self.feynman_scope.get_untracked(),
+                            Some(FeynmanScope::Company { ticker: ref t }) if t.eq_ignore_ascii_case(&ticker)
+                        );
+                    if !same && !ticker.trim().is_empty() {
+                        self.start_company_feynman(&ticker);
+                    }
+                }
+                AlanScope::Industry(slug) => {
+                    let same = self.feynman_mode_active.get_untracked()
+                        && matches!(
+                            self.feynman_scope.get_untracked(),
+                            Some(FeynmanScope::Industry { slug: ref s }) if s == &slug
+                        );
+                    if !same && !slug.trim().is_empty() {
+                        self.start_industry_feynman(&slug);
+                    }
+                }
+                AlanScope::Briefing(_) | AlanScope::Portfolio => {}
+            }
+        }
+    }
+
+    /// Opens the unified Alan Canvas in `Split` (or preserves `Immersive`) scoped to `scope`
+    /// on the requested `tab`.
+    pub fn open_alan_for_scope(self, scope: AlanScope, tab: AlanCanvasTab) {
+        let norm = scope.normalized();
+        self.switch_alan_scope(norm.clone());
+        self.alan_canvas_tab.set(tab);
+
+        if self.alan_stage_mode.get_untracked() == AlanStageMode::Closed {
+            self.alan_stage_mode.set(AlanStageMode::Split);
+            if self.is_deep_research_view() {
+                self.alan_deep_research_split_pref.set(true);
+            }
+        }
+        self.apply_alan_sidebar_layout(self.alan_stage_mode.get_untracked());
+
+        if tab == AlanCanvasTab::Feynman {
+            match &norm {
+                AlanScope::Company(ticker) if !ticker.trim().is_empty() => {
+                    let same = self.feynman_mode_active.get_untracked()
+                        && matches!(
+                            self.feynman_scope.get_untracked(),
+                            Some(FeynmanScope::Company { ticker: ref t }) if t.eq_ignore_ascii_case(ticker)
+                        );
+                    if !same {
+                        self.start_company_feynman(ticker);
+                    }
+                }
+                AlanScope::Industry(slug) if !slug.trim().is_empty() => {
+                    let same = self.feynman_mode_active.get_untracked()
+                        && matches!(
+                            self.feynman_scope.get_untracked(),
+                            Some(FeynmanScope::Industry { slug: ref s }) if s == slug
+                        );
+                    if !same {
+                        self.start_industry_feynman(slug);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Opens the unified Alan Canvas for `scope`, attaching an anchor label and prefilling
+    /// the interrogation draft with `seed_prompt` (0 LLM tokens until submitted).
+    pub fn open_alan_with_anchor(self, scope: AlanScope, label: &str, seed_prompt: &str) {
+        self.open_alan_for_scope(scope, AlanCanvasTab::Interrogate);
+        let clean_label = label.trim();
+        self.alan_anchor_label
+            .set((!clean_label.is_empty()).then(|| clean_label.to_owned()));
+        let clean_seed = seed_prompt.trim();
+        if !clean_seed.is_empty() {
+            self.agent_input_draft.set(clean_seed.to_owned());
+        }
+    }
+
+    /// Toggles `📌` context pinning; unpinning immediately snaps scope back to the active view.
+    pub fn toggle_alan_pin(self) {
+        let next = !self.alan_context_pinned.get_untracked();
+        self.alan_context_pinned.set(next);
+        if !next {
+            self.sync_alan_scope_to_context();
+        }
+    }
+
+    /// Loads bounded persisted Alan conversation turns for `scope` and resolves deterministic
+    /// [`InlineEvidenceCard`]s for each assistant reply's Acme tokens.
+    pub fn load_alan_session(self, scope: &AlanScope) {
+        let paths = self.paths.get_untracked();
+        let norm = scope.normalized();
+        let persisted = alan_session::load_alan_session(&paths, &norm);
+        let focus_ticker = match &norm {
+            AlanScope::Company(t) => t.as_str(),
+            _ => "",
+        };
+        let reports = self.reports.get_untracked();
+        let mut dossier_map = HashMap::new();
+        for rep in &reports {
+            if !focus_ticker.is_empty() && rep.ticker.eq_ignore_ascii_case(focus_ticker) {
+                dossier_map.insert(rep.ticker.clone(), self.selected_dossier.get_untracked());
+            } else if let Ok(d) = store::load_dossier(&paths, &rep.ticker) {
+                dossier_map.insert(rep.ticker.clone(), d);
+            }
+        }
+
+        let mut cards_map: HashMap<String, Vec<InlineEvidenceCard>> = HashMap::new();
+        let mut ui_msgs = Vec::with_capacity(persisted.messages.len());
+        for m in persisted.messages {
+            let role = match m.role {
+                PersistedAlanRole::User => AgentMessageRole::User,
+                PersistedAlanRole::Assistant => AgentMessageRole::Assistant,
+                PersistedAlanRole::SystemNote => AgentMessageRole::SystemNote,
+            };
+            let raw_src = if m.raw_text.is_empty() {
+                m.text.clone()
+            } else {
+                m.raw_text.clone()
+            };
+            let (text, tokens) = if role == AgentMessageRole::Assistant {
+                let (cleaned, toks) =
+                    parse_acme_evidence_tokens(&raw_src, focus_ticker, &reports, &dossier_map);
+                if !toks.is_empty() {
+                    let resolved = resolve_inline_evidence_cards(&paths, &toks);
+                    if !resolved.is_empty() {
+                        cards_map.insert(m.id.clone(), resolved);
+                    }
+                }
+                (if cleaned.is_empty() { m.text } else { cleaned }, toks)
+            } else {
+                (m.text, Vec::new())
+            };
+            ui_msgs.push(AgentUiMessage {
+                id: m.id,
+                role,
+                raw_text: raw_src,
+                text,
+                tokens,
+                streaming: false,
+            });
+        }
+
+        self.alan_evidence_cards.set(cards_map);
+        self.agent_messages.set(ui_msgs);
+    }
+
+    /// Atomically persists the active Alan conversation turns to `<workbench>/alan_sessions/`.
+    pub fn save_alan_session(self) {
+        let paths = self.paths.get_untracked();
+        let scope = self.alan_scope.get_untracked().normalized();
+        let msgs = self.agent_messages.get_untracked();
+        if msgs.is_empty() {
+            return;
+        }
+        let now = store::now_ms();
+        let mut persisted_msgs = Vec::with_capacity(msgs.len());
+        for (idx, m) in msgs.into_iter().enumerate() {
+            if m.streaming && m.text.trim().is_empty() && m.raw_text.trim().is_empty() {
+                continue;
+            }
+            let role = match m.role {
+                AgentMessageRole::User => PersistedAlanRole::User,
+                AgentMessageRole::Assistant => PersistedAlanRole::Assistant,
+                AgentMessageRole::SystemNote => PersistedAlanRole::SystemNote,
+            };
+            persisted_msgs.push(PersistedAlanMessage {
+                id: m.id,
+                role,
+                text: m.text,
+                raw_text: m.raw_text,
+                created_at_ms: now.saturating_add(idx as u64),
+            });
+        }
+        if persisted_msgs.is_empty() {
+            return;
+        }
+        let mut session = PersistedAlanSession::empty(&scope);
+        session.updated_at_ms = now;
+        session.messages = persisted_msgs;
+        if let Err(err) = alan_session::save_alan_session(&paths, &session) {
+            log::warn!(
+                "Failed to save Alan session ({}): {err:#}",
+                scope.scope_key()
+            );
+        }
+    }
+
+    /// Submits a scoped interrogation question inside the unified Alan Canvas across any [`AlanScope`].
+    pub fn submit_scoped_alan_question(self, raw_question: String) {
+        let trimmed = raw_question.trim().to_owned();
+        if trimmed.is_empty() {
+            return;
+        }
+        let l = self.lang.get_untracked();
+        let scope = self.alan_scope.get_untracked().normalized();
+        let anchor = self.alan_anchor_label.get_untracked();
+        self.alan_anchor_label.set(None);
+        self.agent_input_draft.set(String::new());
+        self.alan_reply_target.set(AlanReplyTarget::Company);
+        self.agent_session_ticker.set(match &scope {
+            AlanScope::Company(t) => Some(t.clone()),
+            _ => None,
+        });
+        self.agent_streaming.set(true);
+        self.agent_status_hint.set(Some(
+            l.t("正在连接 Alan…", "Connecting to Alan…").to_owned(),
+        ));
+
+        let display_q = match anchor {
+            Some(ref label) if !label.is_empty() => format!("[{label}] {trimmed}"),
+            _ => trimmed.clone(),
+        };
+        let short_q: String = display_q.chars().take(72).collect();
+        self.append_tape(
+            None,
+            TuringTapeKind::Input,
+            format!("{} · {short_q}", scope.label_for(l)),
+            Some(display_q.clone()),
+            "sent".to_owned(),
+        );
+
+        let user_seq = self.next_agent_seq();
+        let asst_seq = self.next_agent_seq();
+        self.agent_messages.update(|msgs| {
+            msgs.push(AgentUiMessage {
+                id: format!("user-{user_seq}"),
+                role: AgentMessageRole::User,
+                raw_text: display_q.clone(),
+                text: display_q.clone(),
+                tokens: Vec::new(),
+                streaming: false,
+            });
+            msgs.push(AgentUiMessage {
+                id: format!("assistant-{asst_seq}"),
+                role: AgentMessageRole::Assistant,
+                raw_text: String::new(),
+                text: String::new(),
+                tokens: Vec::new(),
+                streaming: true,
+            });
+        });
+
+        self.save_alan_session();
+        let handle = self.ensure_alan_handle();
+        handle.submit_scoped(&scope, l, display_q);
+    }
+
     pub fn submit_alan_question(
         self,
         ticker: &str,
@@ -4706,6 +5244,7 @@ impl AppStore {
             });
         });
 
+        self.save_alan_session();
         let handle = self.ensure_alan_handle();
         handle.submit(ticker, name, bucket, question);
     }
@@ -4842,12 +5381,17 @@ impl AppStore {
     }
 
     pub fn reset_alan_session(self) {
+        let paths = self.paths.get_untracked();
+        let scope = self.alan_scope.get_untracked().normalized();
+        let _ = alan_session::clear_alan_session(&paths, &scope);
         self.alan_handle.with(|opt| {
             if let Some(h) = opt {
                 h.reset();
             }
         });
         self.agent_messages.set(Vec::new());
+        self.alan_evidence_cards.set(HashMap::new());
+        self.alan_anchor_label.set(None);
         self.industry_alan_messages.set(Vec::new());
         self.agent_tape.set(Vec::new());
         self.agent_expanded_evidence.set(None);
@@ -4866,10 +5410,14 @@ impl AppStore {
             return;
         }
         let paths = self.paths.get_untracked();
-        let focus_ticker = self
-            .agent_session_ticker
-            .get_untracked()
-            .unwrap_or_else(|| self.selected_ticker.get_untracked());
+        let scope = self.alan_scope.get_untracked();
+        let focus_ticker =
+            self.agent_session_ticker
+                .get_untracked()
+                .unwrap_or_else(|| match &scope {
+                    AlanScope::Company(t) => t.clone(),
+                    _ => self.selected_ticker.get_untracked(),
+                });
         let reports = self.reports.get_untracked();
         let mut dossier_map = HashMap::new();
         for rep in &reports {
@@ -4897,8 +5445,25 @@ impl AppStore {
         let mut tape = self.agent_tape.get_untracked();
         let mut seq = self.agent_seq.get();
         let mut reload_disk = false;
+        let mut turn_finished = false;
 
         for ev in &events {
+            if matches!(ev, InterrogatorEvent::ResetDone) {
+                let ignored = self.alan_ignore_reset_done.with(|cnt| {
+                    if *cnt > 0 {
+                        *cnt -= 1;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if ignored {
+                    continue;
+                }
+            }
+            if matches!(ev, InterrogatorEvent::TurnDone { .. }) {
+                turn_finished = true;
+            }
             if apply_interrogator_event(
                 &mut streaming,
                 &mut status_hint,
@@ -4919,9 +5484,26 @@ impl AppStore {
         self.agent_tape.set(tape);
         match target {
             AlanReplyTarget::Company => {
+                let mut cards_map = self.alan_evidence_cards.get_untracked();
+                let mut cards_changed = false;
+                for msg in &messages {
+                    if msg.role == AgentMessageRole::Assistant && !msg.tokens.is_empty() {
+                        let resolved = resolve_inline_evidence_cards(&paths, &msg.tokens);
+                        if cards_map.get(&msg.id) != Some(&resolved) {
+                            cards_map.insert(msg.id.clone(), resolved);
+                            cards_changed = true;
+                        }
+                    }
+                }
+                if cards_changed {
+                    self.alan_evidence_cards.set(cards_map);
+                }
                 self.agent_streaming.set(streaming);
                 self.agent_status_hint.set(status_hint);
                 self.agent_messages.set(messages);
+                if turn_finished {
+                    self.save_alan_session();
+                }
             }
             AlanReplyTarget::Industry(_) => {
                 self.industry_alan_streaming.set(streaming);
@@ -5294,6 +5876,7 @@ impl AppStore {
     pub fn set_inbox_view_mode(self, mode: InboxViewMode) {
         self.inbox_view_mode_user_override.set(true);
         self.inbox_view_mode.set(mode);
+        self.sync_alan_scope_to_context();
     }
 
     pub fn set_briefing_period(self, period: BriefingPeriod) {
@@ -5306,10 +5889,12 @@ impl AppStore {
         if matching_id.is_some() {
             self.selected_briefing_id.set(matching_id);
         }
+        self.sync_alan_scope_to_context();
     }
 
     pub fn select_briefing(self, briefing_id: &str) {
         self.selected_briefing_id.set(Some(briefing_id.to_owned()));
+        self.sync_alan_scope_to_context();
     }
 
     pub fn toggle_inbox_noise_expanded(self) {

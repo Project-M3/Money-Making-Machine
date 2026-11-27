@@ -1,14 +1,21 @@
-//! Alan & 4-Perspective Deep Research view (`Tab 2: DeepResearchAlan`).
+//! Unified Alan Canvas (`Closed | Split | Immersive`) and reusable Company Desk helpers.
 
 use crate::components::{
-    action_button, badge_pill, card_title, obsidian_card, prose_block, section_header, styled_input,
+    action_button, badge_pill, card_title, obsidian_card, prose_block, section_header, seg_group,
+    seg_tab, styled_input,
 };
-use crate::format::{build_alan_interrogation_prompt_for, fmt_time_cn_for};
-use crate::icons::{ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, icon};
+use crate::format::{
+    build_alan_interrogation_prompt_for, fmt_pct_clean, fmt_price, fmt_time_cn_for,
+};
+use crate::icons::{
+    ICON_ALAN, ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_CLOSE, ICON_EXPAND, ICON_PIN,
+    ICON_SHRINK, icon,
+};
 use crate::platform_desktop::copy_text_with_notice;
 use crate::stores::{
-    AgentMessageRole, AppStore, CompanyViewTab, DeepResearchPerspectiveUi, FeynmanRound,
-    FeynmanScope, MemoSection, PerspectiveUiStatus, default_deep_research_perspectives,
+    AgentMessageRole, AlanCanvasTab, AlanScope, AlanStageMode, AppStore, CompanyViewTab,
+    DeepResearchPerspectiveUi, FeynmanRound, FeynmanScope, InlineEvidenceCard, MemoSection,
+    PerspectiveUiStatus, default_deep_research_perspectives,
 };
 use crate::theme::*;
 use m3_core::alan_interrogator::{AcmeEvidenceKind, TuringTapeKind};
@@ -19,10 +26,1315 @@ use m3_core::model::{Bucket, MungerReport};
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
 
-/// Renders the `2 Deep Research & Alan` workspace view.
+fn scope_pill_label(store: AppStore, scope: &AlanScope, lang: UiLang) -> String {
+    match scope {
+        AlanScope::Company(ticker) => format!("Alan · {}", ticker.trim().to_ascii_uppercase()),
+        AlanScope::Industry(slug) => {
+            let title = store.industries.with(|list| {
+                list.iter()
+                    .find(|p| p.slug == *slug)
+                    .map(|p| p.title.clone())
+            });
+            format!("Alan · {}", title.unwrap_or_else(|| slug.clone()))
+        }
+        AlanScope::Briefing(_) => format!("Alan · {}", lang.t("简报", "Briefing")),
+        AlanScope::Portfolio => format!("Alan · {}", lang.t("全局能力圈", "Portfolio")),
+    }
+}
+
+/// Renders the unified App-Shell Alan Canvas (`Split` right card or `Immersive` 760px studio).
+pub fn alan_canvas_view(store: AppStore) -> impl IntoElement {
+    let tape_expanded = signal(false);
+
+    view()
+        .flex_1()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .h_full()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(render_alan_canvas_topbar(store))
+        .child(when(
+            move || store.alan_canvas_tab.get() == AlanCanvasTab::Interrogate,
+            move || render_alan_interrogate_pane(store, tape_expanded),
+        ))
+        .child(when(
+            move || store.alan_canvas_tab.get() == AlanCanvasTab::Feynman,
+            move || render_alan_feynman_pane(store),
+        ))
+}
+
+fn render_alan_canvas_topbar(store: AppStore) -> View {
+    view()
+        .h(px(42.0))
+        .flex_shrink_0()
+        .px(px(12.0))
+        .bg(rgb(BG_SURFACE))
+        .border_b_1()
+        .border_color(rgb(BORDER_HAIRLINE))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(8.0))
+        .child(dynamic(move || {
+            let l = store.lang.get();
+            let pinned = store.alan_context_pinned.get();
+            let scope = store.alan_scope.get();
+            let scope_txt = scope_pill_label(store, &scope, l);
+
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    view()
+                        .px(px(6.0))
+                        .py(px(4.0))
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .bg(if pinned {
+                            rgba(GOLD_BG)
+                        } else {
+                            rgba(0x00000000)
+                        })
+                        .border_1()
+                        .border_color(if pinned {
+                            rgba(GOLD_BORDER)
+                        } else {
+                            rgba(0x00000000)
+                        })
+                        .hover(|s| s.bg(rgb(BG_HOVER)))
+                        .tooltip(
+                            view()
+                                .px(px(8.0))
+                                .py(px(4.0))
+                                .rounded_sm()
+                                .bg(rgb(0x161620))
+                                .border_1()
+                                .border_color(rgba(BORDER_GLASS_STRONG))
+                                .child(
+                                    text(if pinned {
+                                        l.t(
+                                            "已锁定上下文（点击恢复自动跟随）",
+                                            "Context pinned (click to auto-follow)",
+                                        )
+                                    } else {
+                                        l.t(
+                                            "自动跟随当前视图（点击锁定上下文）",
+                                            "Auto-following view (click to pin)",
+                                        )
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .text_color(rgb(INK_PRIMARY)),
+                                )
+                                .into_element(),
+                        )
+                        .on_press(move || store.toggle_alan_pin())
+                        .child(icon(ICON_PIN, 13.0).text_color(rgb(if pinned {
+                            GOLD_FG
+                        } else {
+                            INK_MUTED
+                        }))),
+                )
+                .child(
+                    view()
+                        .min_w(px(0.0))
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .rounded_sm()
+                        .bg(rgba(VIOLET_BG))
+                        .border_1()
+                        .border_color(rgba(VIOLET_BORDER))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.0))
+                        .child(icon(ICON_ALAN, 11.0).text_color(rgb(VIOLET_FG)))
+                        .child(
+                            text(scope_txt)
+                                .font_family(FONT_UI)
+                                .text_size(px(TEXT_XS))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(INK_HERO))
+                                .truncate()
+                                .number_of_lines(1),
+                        ),
+                )
+        }))
+        .child(
+            view()
+                .flex_shrink_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(dynamic(move || {
+                    let l = store.lang.get();
+                    let active_tab = store.alan_canvas_tab.get();
+                    seg_group().children(AlanCanvasTab::all().into_iter().map(|tab| {
+                        seg_tab(
+                            tab.label_for(l),
+                            active_tab == tab,
+                            Some((VIOLET_FG, VIOLET_BG)),
+                            false,
+                            move || store.set_alan_canvas_tab(tab),
+                        )
+                    }))
+                }))
+                .child(dynamic(move || {
+                    let l = store.lang.get();
+                    let immersive = store.alan_stage_mode.get() == AlanStageMode::Immersive;
+                    view()
+                        .px(px(7.0))
+                        .py(px(4.0))
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .bg(rgb(BG_WELL))
+                        .border_1()
+                        .border_color(rgb(BORDER_SUBTLE))
+                        .hover(|s| s.bg(rgb(BG_HOVER)))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .on_press(move || {
+                            crate::components::animate_shell_spring();
+                            store.toggle_alan_immersive();
+                        })
+                        .child(
+                            icon(if immersive { ICON_SHRINK } else { ICON_EXPAND }, 12.0)
+                                .text_color(rgb(INK_SECONDARY)),
+                        )
+                        .child(
+                            text(if immersive {
+                                l.t("分栏", "Split")
+                            } else {
+                                l.t("沉浸", "Immerse")
+                            })
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_XS))
+                            .text_color(rgb(INK_SECONDARY)),
+                        )
+                }))
+                .child(
+                    view()
+                        .px(px(6.0))
+                        .py(px(4.0))
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgba(RAIL_HOVER)))
+                        .on_press(move || {
+                            crate::components::animate_shell_spring();
+                            store.close_alan_canvas();
+                        })
+                        .child(icon(ICON_CLOSE, 13.0).text_color(rgb(INK_MUTED))),
+                ),
+        )
+}
+
+fn render_alan_interrogate_pane(store: AppStore, tape_expanded: Signal<bool>) -> View {
+    view()
+        .flex_1()
+        .min_h(px(0.0))
+        .w_full()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        // Single-line collapsible Turing Tape status capsule (collapsed by default)
+        .child(render_turing_tape_capsule(store, tape_expanded))
+        // Scrollable conversation stream + deterministic InlineEvidenceCards
+        .child(
+            scroll()
+                .flex_1()
+                .min_h(px(0.0))
+                .w_full()
+                .child(dynamic(move || render_alan_message_stream(store))),
+        )
+        // Native IME-safe Composer mounted ONCE outside dynamic()
+        .child(render_alan_composer_footer(store))
+}
+
+fn render_turing_tape_capsule(store: AppStore, tape_expanded: Signal<bool>) -> View {
+    view().child(dynamic(move || {
+        let l = store.lang.get();
+        let streaming = store.agent_streaming.get();
+        let hint = store.agent_status_hint.get();
+        let tape = store.agent_tape.get();
+        if !streaming && tape.is_empty() {
+            return view();
+        }
+        let open = tape_expanded.get();
+        let expanded_seq = store.agent_expanded_tape.get();
+        let len = tape.len();
+        let latest = tape.last();
+
+        let dot_col = if streaming {
+            VIOLET_FG
+        } else if let Some(entry) = latest {
+            match entry.kind {
+                TuringTapeKind::Policy | TuringTapeKind::Error => CORAL_FG,
+                TuringTapeKind::Out => EMERALD_FG,
+                TuringTapeKind::Tool => SKY_FG,
+                TuringTapeKind::Input => INK_MUTED,
+            }
+        } else {
+            EMERALD_FG
+        };
+
+        let capsule_text = if streaming {
+            hint.or_else(|| latest.map(|e| format!("[{}] {}", e.kind.tag(), e.summary)))
+                .unwrap_or_else(|| l.t("Alan 正在思考…", "Alan thinking…").to_owned())
+        } else if let Some(entry) = latest {
+            format!("[{}] {}", entry.kind.tag(), entry.summary)
+        } else {
+            l.t("确定性工具轨迹就绪", "Deterministic trace ready")
+                .to_owned()
+        };
+
+        let mut wrapper = view()
+            .w_full()
+            .flex_shrink_0()
+            .bg(rgb(BG_ROW_ALT))
+            .border_b_1()
+            .border_color(rgb(BORDER_HAIRLINE))
+            .flex()
+            .flex_col()
+            .child(
+                view()
+                    .h(px(30.0))
+                    .px(px(12.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(BG_HOVER)))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .on_press(move || tape_expanded.update(|v| *v = !*v))
+                    .child(
+                        view()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                view()
+                                    .w(px(6.0))
+                                    .h(px(6.0))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(rgb(dot_col)),
+                            )
+                            .child(
+                                text(capsule_text)
+                                    .font_family(FONT_MONO_TERM)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_SECONDARY))
+                                    .truncate()
+                                    .number_of_lines(1),
+                            ),
+                    )
+                    .child(
+                        view()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(5.0))
+                            .child(
+                                text(format!("{len}"))
+                                    .font_family(FONT_MONO_NUM)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_MUTED)),
+                            )
+                            .child(
+                                icon(
+                                    if open {
+                                        ICON_CHEVRON_DOWN
+                                    } else {
+                                        ICON_CHEVRON_RIGHT
+                                    },
+                                    11.0,
+                                )
+                                .text_color(rgb(INK_MUTED)),
+                            ),
+                    ),
+            );
+
+        if open && !tape.is_empty() {
+            wrapper = wrapper.child(
+                scroll().w_full().max_h(px(180.0)).child(
+                    view()
+                        .w_full()
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .border_t_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .bg(rgb(BG_WELL))
+                        .flex()
+                        .flex_col()
+                        .children(tape.into_iter().enumerate().map(|(idx, row)| {
+                            let row_seq = row.seq;
+                            let row_expanded = expanded_seq == Some(row_seq);
+                            let tag_color = match row.kind {
+                                TuringTapeKind::Input => INK_MUTED,
+                                TuringTapeKind::Tool => SKY_FG,
+                                TuringTapeKind::Out => EMERALD_FG,
+                                TuringTapeKind::Policy => CORAL_FG,
+                                TuringTapeKind::Error => GOLD_FG,
+                            };
+                            let mut entry = view()
+                                .py(px(4.0))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .on_press(move || {
+                                    store.agent_expanded_tape.update(|cur| {
+                                        *cur = if *cur == Some(row_seq) {
+                                            None
+                                        } else {
+                                            Some(row_seq)
+                                        };
+                                    });
+                                });
+                            if idx + 1 < len {
+                                entry = entry.border_b_1().border_color(rgb(BORDER_HAIRLINE));
+                            }
+                            entry = entry.child(
+                                view()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(6.0))
+                                    .child(
+                                        view()
+                                            .flex_1()
+                                            .min_w(px(0.0))
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .child(
+                                                text(format!("{:04}", row.seq))
+                                                    .font_family(FONT_MONO_TERM)
+                                                    .text_size(px(TEXT_2XS))
+                                                    .text_color(rgb(INK_MUTED)),
+                                            )
+                                            .child(
+                                                text(format!("[{}]", row.kind.tag()))
+                                                    .font_family(FONT_MONO_TERM)
+                                                    .text_size(px(TEXT_2XS))
+                                                    .text_color(rgb(tag_color)),
+                                            )
+                                            .child(
+                                                view().flex_1().min_w(px(0.0)).child(
+                                                    text(row.summary)
+                                                        .font_family(FONT_MONO_TERM)
+                                                        .text_size(px(TEXT_2XS))
+                                                        .text_color(rgb(INK_PRIMARY))
+                                                        .truncate()
+                                                        .number_of_lines(1),
+                                                ),
+                                            ),
+                                    )
+                                    .child(
+                                        text(row.status)
+                                            .font_family(FONT_MONO_TERM)
+                                            .text_size(px(TEXT_2XS))
+                                            .text_color(rgb(INK_MUTED)),
+                                    ),
+                            );
+                            if row_expanded && let Some(detail) = row.detail {
+                                entry = entry.child(
+                                    view().pl(px(20.0)).child(
+                                        text(detail)
+                                            .font_family(FONT_MONO_TERM)
+                                            .text_size(px(TEXT_2XS))
+                                            .line_height(px(16.0))
+                                            .text_color(rgb(INK_SECONDARY)),
+                                    ),
+                                );
+                            }
+                            entry
+                        })),
+                ),
+            );
+        }
+
+        wrapper
+    }))
+}
+
+fn scope_starter_prompts(scope: &AlanScope, lang: UiLang) -> Vec<(&'static str, String)> {
+    match scope {
+        AlanScope::Company(ticker) => vec![
+            (
+                lang.t("护城河与财务质量", "Moat & Accounting Check"),
+                match lang {
+                    UiLang::Zh => format!(
+                        "基于 /mnt/m3 和确定性报告，检验 {ticker} 的 ROIC、严苛自由现金流转化率与护城河脆弱点。"
+                    ),
+                    UiLang::En => format!(
+                        "Using /mnt/m3 and deterministic reports, stress-test {ticker}'s ROIC, strict FCF conversion, and moat fragility."
+                    ),
+                },
+            ),
+            (
+                lang.t("5 年逆向事前验尸", "5Y Pre-Mortem"),
+                match lang {
+                    UiLang::Zh => format!(
+                        "站在 5 年后回看，找出 {ticker} 最可能导致永久性本金损失的 3 条失败路径与可证伪指标。"
+                    ),
+                    UiLang::En => format!(
+                        "Looking back from 5 years ahead, what are the 3 likeliest paths to >50% permanent drawdown for {ticker} and testable falsification metrics?"
+                    ),
+                },
+            ),
+        ],
+        AlanScope::Industry(slug) => vec![
+            (
+                lang.t("产业链利润池", "Value Chain Profit Pool"),
+                match lang {
+                    UiLang::Zh => format!(
+                        "读取行业 {slug} 档案与同行数据，拆解该产业链的定价权归属、单位经济模型与最容易看走眼的护城河幻觉。"
+                    ),
+                    UiLang::En => format!(
+                        "Inspect industry {slug} and peer data to break down value-chain pricing power, unit economics, and moat illusions."
+                    ),
+                },
+            ),
+            (
+                lang.t("行业典型死法", "Industry Failure Modes"),
+                match lang {
+                    UiLang::Zh => format!(
+                        "在 {slug} 行业里，历史上的赢家或扩张者通常死于哪几类周期/技术/资本配置陷阱？"
+                    ),
+                    UiLang::En => format!(
+                        "In {slug}, which cycle, tech, or capital-allocation traps typically destroy incumbents?"
+                    ),
+                },
+            ),
+        ],
+        AlanScope::Briefing(_) => vec![
+            (
+                lang.t("解读本期异动", "Interpret Latest Briefing"),
+                lang.t(
+                    "结合最新简报与能力圈信号，哪条变化最值得我今天花时间深挖，哪几条属于可以忽略的噪音？",
+                    "Based on the latest briefing and Circle signals, which delta truly merits deep work today and what is noise?",
+                )
+                .to_owned(),
+            ),
+            (
+                lang.t("击球区优先排序", "Prioritize Strike Radar"),
+                lang.t(
+                    "对当前接近或处于击球区的 WATCH/IN 标的，按确定性与安全边际排序，并指出最需要补充证伪指标的公司。",
+                    "Rank WATCH/IN companies near or in the Strike Zone by certainty and margin of safety, and flag missing falsification criteria.",
+                )
+                .to_owned(),
+            ),
+        ],
+        AlanScope::Portfolio => vec![
+            (
+                lang.t("全局能力圈体检", "Circle Health Check"),
+                lang.t(
+                    "审视当前 watchlist 与决策账本：核心池 (IN) 存在哪些共性风险暴露或待处理红灯？",
+                    "Review my watchlist and decision journal: what shared risks or open red flags exist in Core (IN)?",
+                )
+                .to_owned(),
+            ),
+            (
+                lang.t("机会成本对照", "Opportunity Cost Audit"),
+                lang.t(
+                    "对照 IN 与 WATCH 中的候选标的，当前哪家公司的期望回报与确定性最占优？",
+                    "Compare IN and WATCH candidates: where is expected return vs certainty strongest right now?",
+                )
+                .to_owned(),
+            ),
+        ],
+    }
+}
+
+fn render_inline_evidence_card(store: AppStore, card: InlineEvidenceCard, lang: UiLang) -> View {
+    let jump_ticker = card.ticker.clone();
+    let is_xbrl = card.source_kind == AcmeEvidenceKind::Xbrl;
+    let cur = card.currency.as_deref().unwrap_or("USD");
+    let price_str = fmt_price(card.latest_price, cur);
+    let strike_str = fmt_price(card.strike_price, cur);
+    let (gap_str, gap_pol) = fmt_pct_clean(card.strike_gap_pct, true);
+    let roic_str = card
+        .roic_5y
+        .map(|v| format!("{:.1}%", v))
+        .unwrap_or_else(|| "—".to_owned());
+    let fcf_str = card
+        .fcf_conversion_or_yield
+        .map(|v| format!("{:.1}%", v))
+        .unwrap_or_else(|| "—".to_owned());
+
+    let (src_lbl, src_fg, src_bg, src_br) = match card.source_kind {
+        AcmeEvidenceKind::Report => ("REPORT", EMERALD_FG, EMERALD_BG, EMERALD_BORDER),
+        AcmeEvidenceKind::Xbrl => ("XBRL", SKY_FG, SKY_BG, SKY_BORDER),
+        AcmeEvidenceKind::Dossier => ("DOSSIER", GOLD_FG, GOLD_BG, GOLD_BORDER),
+    };
+
+    let mut header_left = view()
+        .flex_1()
+        .min_w(px(0.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .child(
+            text(card.ticker.clone())
+                .font_family(FONT_MONO_NUM)
+                .text_size(px(TEXT_XS))
+                .font_weight(FontWeight::BOLD)
+                .text_color(rgb(INK_HERO)),
+        )
+        .child(
+            view().flex_1().min_w(px(0.0)).child(
+                text(card.name)
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .text_color(rgb(INK_SECONDARY))
+                    .truncate()
+                    .number_of_lines(1),
+            ),
+        );
+    if let Some(b) = card.bucket {
+        let (bfg, bbg, bbr) = bucket_colors(b);
+        header_left = header_left.child(badge_pill(b.code(), bfg, bbg, bbr));
+    }
+
+    let mut header_right = view()
+        .flex_shrink_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.0))
+        .child(badge_pill(src_lbl, src_fg, src_bg, src_br));
+    if card.warning_count > 0 {
+        header_right = header_right.child(badge_pill(
+            match lang {
+                UiLang::Zh => format!("{} 警示", card.warning_count),
+                UiLang::En => format!("{} warn", card.warning_count),
+            },
+            CORAL_FG,
+            CORAL_BG,
+            CORAL_BORDER,
+        ));
+    }
+
+    let gap_col = if gap_pol < 0 {
+        EMERALD_FG
+    } else if gap_pol > 0 {
+        GOLD_FG
+    } else {
+        INK_SECONDARY
+    };
+
+    view()
+        .w_full()
+        .p(px(10.0))
+        .rounded_md()
+        .cursor_pointer()
+        .bg(rgb(BG_SURFACE))
+        .border_1()
+        .border_color(rgb(BORDER_SUBTLE))
+        .hover(|s| s.bg(rgb(BG_HOVER)))
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .on_press(move || {
+            let exists = store.reports.with_untracked(|reps| {
+                reps.iter()
+                    .any(|r| r.ticker.eq_ignore_ascii_case(&jump_ticker))
+            });
+            if exists {
+                store.open_company(
+                    &jump_ticker,
+                    if is_xbrl {
+                        CompanyViewTab::XbrlInspector
+                    } else {
+                        CompanyViewTab::FinancialsMemo
+                    },
+                );
+            } else {
+                store.open_inbox_signal_target(&jump_ticker);
+            }
+        })
+        .child(
+            view()
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(header_left)
+                .child(header_right),
+        )
+        .child(
+            view()
+                .w_full()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(12.0))
+                .child(evidence_kv(lang.t("现价", "Price"), price_str, INK_PRIMARY))
+                .child(evidence_kv(
+                    lang.t("击球价", "Strike"),
+                    strike_str,
+                    INK_PRIMARY,
+                ))
+                .child(evidence_kv(lang.t("距击球", "Gap"), gap_str, gap_col))
+                .child(evidence_kv("5Y ROIC", roic_str, SKY_FG))
+                .child(evidence_kv("FCF", fcf_str, EMERALD_FG)),
+        )
+}
+
+fn evidence_kv(label: &str, val: String, val_col: u32) -> View {
+    view()
+        .flex()
+        .flex_row()
+        .items_baseline()
+        .gap(px(4.0))
+        .child(
+            text(label.to_owned())
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_2XS))
+                .text_color(rgb(INK_MUTED)),
+        )
+        .child(
+            text(val)
+                .font_family(FONT_MONO_NUM)
+                .text_size(px(TEXT_XS))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(val_col)),
+        )
+}
+
+fn render_alan_message_stream(store: AppStore) -> View {
+    let l = store.lang.get();
+    let scope = store.alan_scope.get();
+    let msgs = store.agent_messages.get();
+    let cards_map = store.alan_evidence_cards.get();
+    let expanded_ev = store.agent_expanded_evidence.get();
+
+    let expanded_token = expanded_ev.as_ref().and_then(|eid| {
+        msgs.iter()
+            .flat_map(|m| m.tokens.iter())
+            .find(|t| &t.id == eid)
+            .cloned()
+    });
+
+    let mut stream = view().w_full().p(px(14.0)).flex().flex_col().gap(px(12.0));
+
+    if msgs.is_empty() {
+        let starters = scope_starter_prompts(&scope, l);
+        stream = stream.child(
+            obsidian_card()
+                .p(px(14.0))
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .child(
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .flex_wrap()
+                        .gap(px(6.0))
+                        .child(badge_pill(
+                            scope_pill_label(store, &scope, l),
+                            VIOLET_FG,
+                            VIOLET_BG,
+                            VIOLET_BORDER,
+                        ))
+                        .child(badge_pill(
+                            l.t(
+                                "只读 /mnt/m3 · 红线保护",
+                                "Read-only /mnt/m3 · Redline Guarded",
+                            ),
+                            EMERALD_FG,
+                            EMERALD_BG,
+                            EMERALD_BORDER,
+                        )),
+                )
+                .child(
+                    text(l.t(
+                        "直接提问或从下方切入分析；Alan 基于本地确定性财务与只读挂载树推演，严禁篡改人类主权区。",
+                        "Ask a question or pick a prompt below; Alan reasons over deterministic financials and read-only /mnt/m3 without mutating human judgment.",
+                    ))
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .line_height(px(18.0))
+                    .text_color(rgb(INK_SECONDARY)),
+                )
+                .child(
+                    view()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .children(starters.into_iter().map(|(label, prompt)| {
+                            view()
+                                .w_full()
+                                .px(px(10.0))
+                                .py(px(7.0))
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(rgb(BG_WELL))
+                                .border_1()
+                                .border_color(rgb(BORDER_SUBTLE))
+                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                .on_press(move || store.submit_scoped_alan_question(prompt.clone()))
+                                .child(
+                                    text(format!("→ {label}"))
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_XS))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(rgb(INK_PRIMARY)),
+                                )
+                        })),
+                ),
+        );
+        return stream;
+    }
+
+    for msg in msgs {
+        match msg.role {
+            AgentMessageRole::User => {
+                stream = stream.child(
+                    view()
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .rounded_md()
+                        .bg(rgb(BG_WELL))
+                        .border_1()
+                        .border_color(rgb(BORDER_HAIRLINE))
+                        .child(
+                            text(match l {
+                                UiLang::Zh => format!("你  ·  {}", msg.text),
+                                UiLang::En => format!("You  ·  {}", msg.text),
+                            })
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_SM))
+                            .line_height(px(19.0))
+                            .text_color(rgb(INK_HERO)),
+                        ),
+                );
+            }
+            AgentMessageRole::SystemNote => {
+                stream = stream.child(
+                    view()
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .rounded_md()
+                        .bg(rgba(GOLD_BG))
+                        .border_1()
+                        .border_color(rgba(GOLD_BORDER))
+                        .child(
+                            text(msg.text)
+                                .font_family(FONT_MONO_TERM)
+                                .text_size(px(TEXT_XS))
+                                .line_height(px(18.0))
+                                .text_color(rgb(GOLD_FG)),
+                        ),
+                );
+            }
+            AgentMessageRole::Assistant => {
+                let body = if msg.text.is_empty() && msg.streaming {
+                    l.t(
+                        "Alan 正在读取 /mnt/m3 与确定性报告…",
+                        "Alan is reading /mnt/m3 and deterministic reports…",
+                    )
+                    .to_owned()
+                } else {
+                    msg.text.clone()
+                };
+                let mut box_el = view().flex().flex_col().gap(px(8.0)).child(
+                    text(body)
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_BASE))
+                        .line_height(px(21.0))
+                        .text_color(rgb(if msg.text.is_empty() && msg.streaming {
+                            INK_MUTED
+                        } else {
+                            INK_PRIMARY
+                        }))
+                        .selectable(true),
+                );
+
+                if let Some(cards) = cards_map.get(&msg.id)
+                    && !cards.is_empty()
+                {
+                    box_el = box_el.child(
+                        view().flex().flex_col().gap(px(6.0)).children(
+                            cards
+                                .iter()
+                                .cloned()
+                                .map(|card| render_inline_evidence_card(store, card, l)),
+                        ),
+                    );
+                }
+
+                if !msg.tokens.is_empty() {
+                    let chips = view().flex().flex_row().flex_wrap().gap(px(5.0)).children(
+                        msg.tokens.into_iter().map(|tok| {
+                            let tok_id = tok.id.clone();
+                            let selected = expanded_ev.as_deref() == Some(tok_id.as_str());
+                            let (fg, bg, border) = match tok.kind {
+                                AcmeEvidenceKind::Report => {
+                                    (EMERALD_FG, EMERALD_BG, EMERALD_BORDER)
+                                }
+                                AcmeEvidenceKind::Xbrl => (SKY_FG, SKY_BG, SKY_BORDER),
+                                AcmeEvidenceKind::Dossier => (GOLD_FG, GOLD_BG, GOLD_BORDER),
+                            };
+                            view()
+                                .px(px(7.0))
+                                .py(px(2.0))
+                                .rounded_sm()
+                                .bg(if selected { rgb(BG_ACTIVE) } else { rgba(bg) })
+                                .border_1()
+                                .border_color(rgba(border))
+                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                .cursor_pointer()
+                                .on_press(move || {
+                                    store.agent_expanded_evidence.update(|cur| {
+                                        if cur.as_deref() == Some(tok_id.as_str()) {
+                                            *cur = None;
+                                        } else {
+                                            *cur = Some(tok_id.clone());
+                                        }
+                                    });
+                                })
+                                .child(
+                                    text(tok.label)
+                                        .font_family(FONT_MONO_TERM)
+                                        .text_size(px(TEXT_2XS))
+                                        .text_color(rgb(fg)),
+                                )
+                        }),
+                    );
+                    box_el = box_el.child(chips);
+                }
+                stream = stream.child(box_el);
+            }
+        }
+    }
+
+    if let Some(tok) = expanded_token {
+        let jump_ticker = tok.ticker.clone();
+        let is_xbrl = tok.kind == AcmeEvidenceKind::Xbrl;
+        let cite_text = format!("[{}:{}] {}", tok.kind.prefix(), tok.ticker, tok.summary);
+        let cite_label = tok.label.clone();
+
+        let mut hdr_actions = view().flex().flex_row().items_center().gap(px(6.0));
+        if is_xbrl {
+            hdr_actions = hdr_actions.child(action_button(
+                l.t("跳至 XBRL 底表 →", "XBRL Ledger →"),
+                false,
+                move || {
+                    let exists = store.reports.with_untracked(|reps| {
+                        reps.iter()
+                            .any(|r| r.ticker.eq_ignore_ascii_case(&jump_ticker))
+                    });
+                    if exists {
+                        store.open_company(&jump_ticker, CompanyViewTab::XbrlInspector);
+                    }
+                },
+            ));
+        }
+        hdr_actions = hdr_actions
+            .child(action_button(
+                l.t("复制引用", "Copy"),
+                false,
+                move || {
+                    copy_text_with_notice(store, cite_text.clone(), &cite_label);
+                },
+            ))
+            .child(action_button(l.t("收起", "Hide"), false, move || {
+                store.agent_expanded_evidence.set(None);
+            }));
+
+        stream = stream.child(
+            view()
+                .p(px(10.0))
+                .rounded_sm()
+                .bg(rgb(BG_WELL))
+                .border_1()
+                .border_color(rgb(BORDER_PILL))
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .child(
+                            text(match l {
+                                UiLang::Zh => format!("证据核验 · {}", tok.label),
+                                UiLang::En => format!("Evidence · {}", tok.label),
+                            })
+                            .font_family(FONT_MONO_TERM)
+                            .text_size(px(TEXT_XS))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(INK_HERO)),
+                        )
+                        .child(hdr_actions),
+                )
+                .child(
+                    text(tok.summary)
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_XS))
+                        .line_height(px(18.0))
+                        .text_color(rgb(INK_SECONDARY)),
+                ),
+        );
+    }
+
+    stream
+}
+
+fn render_alan_composer_footer(store: AppStore) -> View {
+    view()
+        .flex_shrink_0()
+        .w_full()
+        .p(px(12.0))
+        .bg(rgb(BG_SURFACE))
+        .border_t_1()
+        .border_color(rgb(BORDER_HAIRLINE))
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(when(
+            move || store.alan_anchor_label.with(|a| a.is_some()),
+            move || {
+                view()
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded_sm()
+                    .bg(rgba(SKY_BG))
+                    .border_1()
+                    .border_color(rgba(SKY_BORDER))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(
+                        text(move || {
+                            let lbl = store.alan_anchor_label.get().unwrap_or_default();
+                            match store.lang.get() {
+                                UiLang::Zh => format!("引用锚点：{lbl}"),
+                                UiLang::En => format!("Anchor: {lbl}"),
+                            }
+                        })
+                        .font_family(FONT_MONO_TERM)
+                        .text_size(px(TEXT_2XS))
+                        .text_color(rgb(SKY_FG))
+                        .truncate()
+                        .number_of_lines(1),
+                    )
+                    .child(
+                        view()
+                            .cursor_pointer()
+                            .on_press(move || store.alan_anchor_label.set(None))
+                            .child(icon(ICON_CLOSE, 11.0).text_color(rgb(INK_MUTED))),
+                    )
+            },
+        ))
+        .child(
+            view()
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    styled_input(
+                        move || store.agent_input_draft.get(),
+                        move || {
+                            let l = store.lang.get();
+                            let scope = store.alan_scope.get();
+                            let label = scope.label_for(l);
+                            match l {
+                                UiLang::Zh => format!("向 Alan 追问「{label}」（Enter 发送）…"),
+                                UiLang::En => format!("Ask Alan about {label} (Enter to send)…"),
+                            }
+                        },
+                        false,
+                    )
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .on_change(move |val: &str| store.agent_input_draft.set(val.to_owned()))
+                    .on_submit(move |val: &str| {
+                        store.submit_scoped_alan_question(val.to_owned());
+                    }),
+                )
+                .child(action_button(
+                    move || store.lang.get().t("发送", "Send").to_owned(),
+                    true,
+                    move || {
+                        let q = store.agent_input_draft.get_untracked();
+                        store.submit_scoped_alan_question(q);
+                    },
+                )),
+        )
+        .child(dynamic(move || {
+            let l = store.lang.get();
+            let streaming = store.agent_streaming.get();
+            let has_history = store.agent_messages.with(|m| !m.is_empty());
+            let scope = store.alan_scope.get();
+
+            let row = view()
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(
+                    text(l.t(
+                        "会话已按作用域自动持久化 · 最多保留 30 轮",
+                        "Session persisted per scope · bounded to 30 turns",
+                    ))
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_2XS))
+                    .text_color(rgb(INK_MUTED)),
+                );
+
+            let mut btns = view().flex().flex_row().items_center().gap(px(6.0));
+            if streaming {
+                btns = btns.child(action_button(
+                    l.t("中断", "Interrupt"),
+                    false,
+                    move || store.interrupt_alan(),
+                ));
+            } else if has_history {
+                btns = btns.child(action_button(l.t("清空", "Reset"), false, move || {
+                    store.reset_alan_session()
+                }));
+            }
+            if let AlanScope::Company(ticker) = scope {
+                let t_prompt = ticker.clone();
+                btns = btns.child(action_button(
+                    l.t("复制 Prompt", "Copy Prompt"),
+                    false,
+                    move || {
+                        let cur_l = store.lang.get_untracked();
+                        let (name, bucket) = store
+                            .reports
+                            .with_untracked(|reps| {
+                                reps.iter()
+                                    .find(|r| r.ticker.eq_ignore_ascii_case(&t_prompt))
+                                    .map(|r| (r.name.clone(), r.bucket))
+                            })
+                            .unwrap_or_else(|| (t_prompt.clone(), Bucket::Watch));
+                        let p =
+                            build_alan_interrogation_prompt_for(&t_prompt, &name, bucket, cur_l);
+                        copy_text_with_notice(store, p, &format!("Alan Prompt {t_prompt}"));
+                    },
+                ));
+            }
+
+            row.child(btns)
+        }))
+}
+
+fn render_alan_feynman_pane(store: AppStore) -> impl IntoElement {
+    scroll()
+        .flex_1()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .child(
+            view()
+                .w_full()
+                .p(px(16.0))
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .child(dynamic(move || {
+                    let l = store.lang.get();
+                    let scope = store.alan_scope.get();
+                    let feynman_active = store.feynman_mode_active.get();
+                    let feynman_scope = store.feynman_scope.get();
+
+                    match &scope {
+                        AlanScope::Company(ticker) => {
+                            let matches_active = feynman_active
+                                && matches!(
+                                    &feynman_scope,
+                                    Some(FeynmanScope::Company { ticker: t }) if t.eq_ignore_ascii_case(ticker)
+                                );
+                            if matches_active {
+                                return view().into_element();
+                            }
+                            let tk = ticker.clone();
+                            obsidian_card()
+                                .p(px(16.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(10.0))
+                                .child(
+                                    text(match l {
+                                        UiLang::Zh => format!("3 轮费曼答辩 · {ticker}"),
+                                        UiLang::En => format!("3-Round Feynman Defense · {ticker}"),
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_MD))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_HERO)),
+                                )
+                                .child(
+                                    text(l.t(
+                                        "通过「护城河与单位经济 → 5年死法与可证伪指标 → 估值纪律」三轮苏格拉底反刍后，由你亲手签字写入 Dossier。",
+                                        "Complete 3 Socratic rounds (Moat & Economics -> 5Y Failure Modes -> Valuation Discipline), then sign off personally into your Dossier.",
+                                    ))
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .line_height(px(18.0))
+                                    .text_color(rgb(INK_SECONDARY)),
+                                )
+                                .child(
+                                    view().pt(px(4.0)).flex().flex_row().child(action_button(
+                                        l.t("开始 3 轮费曼答辩", "Start 3-Round Feynman Coach"),
+                                        true,
+                                        move || store.start_company_feynman(&tk),
+                                    )),
+                                )
+                                .into_element()
+                        }
+                        AlanScope::Industry(slug) => {
+                            let matches_active = feynman_active
+                                && matches!(
+                                    &feynman_scope,
+                                    Some(FeynmanScope::Industry { slug: s }) if s == slug
+                                );
+                            if matches_active {
+                                return view().into_element();
+                            }
+                            let sl = slug.clone();
+                            let label = scope_pill_label(store, &scope, l);
+                            obsidian_card()
+                                .p(px(16.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(10.0))
+                                .child(
+                                    text(match l {
+                                        UiLang::Zh => format!("行业 3 轮费曼答辩 · {label}"),
+                                        UiLang::En => format!("Industry Feynman Defense · {label}"),
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_MD))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_HERO)),
+                                )
+                                .child(
+                                    text(l.t(
+                                        "用大白话讲清该行业利润池归属、失败模式与估值锚区间，完成后归档至行业研究手册。",
+                                        "Articulate value-chain profit pools, failure modes, and valuation bounds in plain language to archive your defense.",
+                                    ))
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .line_height(px(18.0))
+                                    .text_color(rgb(INK_SECONDARY)),
+                                )
+                                .child(
+                                    view().pt(px(4.0)).flex().flex_row().child(action_button(
+                                        l.t("开始行业费曼答辩", "Start Industry Feynman Coach"),
+                                        true,
+                                        move || store.start_industry_feynman(&sl),
+                                    )),
+                                )
+                                .into_element()
+                        }
+                        AlanScope::Briefing(_) | AlanScope::Portfolio => {
+                            let sel_ticker = store.selected_ticker.get();
+                            let sel_ind = store.selected_industry_slug.get();
+                            let mut btns = view().flex().flex_row().flex_wrap().gap(px(8.0));
+                            if !sel_ticker.trim().is_empty() {
+                                let tk = sel_ticker.clone();
+                                btns = btns.child(action_button(
+                                    match l {
+                                        UiLang::Zh => format!("答辩 {sel_ticker}"),
+                                        UiLang::En => format!("Defend {sel_ticker}"),
+                                    },
+                                    true,
+                                    move || {
+                                        store.open_alan_for_scope(
+                                            AlanScope::Company(tk.clone()),
+                                            AlanCanvasTab::Feynman,
+                                        );
+                                    },
+                                ));
+                            }
+                            if let Some(slug) = sel_ind {
+                                let sl = slug.clone();
+                                btns = btns.child(action_button(
+                                    l.t("答辩当前行业", "Defend Selected Industry"),
+                                    false,
+                                    move || {
+                                        store.open_alan_for_scope(
+                                            AlanScope::Industry(sl.clone()),
+                                            AlanCanvasTab::Feynman,
+                                        );
+                                    },
+                                ));
+                            }
+                            obsidian_card()
+                                .p(px(16.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(10.0))
+                                .child(
+                                    text(l.t(
+                                        "费曼答辩需绑定具体公司或行业",
+                                        "Feynman Defense Scopes to a Company or Industry",
+                                    ))
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_MD))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_HERO)),
+                                )
+                                .child(
+                                    text(l.t(
+                                        "当前上下文为全局视图。请打开一家公司研报或行业研究，或使用下方快捷入口启动 3 轮费曼答辩。",
+                                        "Current scope is overview. Open a company dossier or industry study, or launch a 3-round defense below.",
+                                    ))
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .line_height(px(18.0))
+                                    .text_color(rgb(INK_SECONDARY)),
+                                )
+                                .child(btns)
+                                .into_element()
+                        }
+                    }
+                }))
+                .child(feynman_coach_panel_for_canvas(store)),
+        )
+}
+
+/// Renders the legacy Company Desk view wrapper (retained while feature views migrate).
 pub fn agent_view(store: AppStore) -> impl IntoElement {
     let focus_draft = signal(String::new());
-    let tape_drawer_open = signal(true);
+    let tape_drawer_open = signal(false);
 
     scroll().flex_1().min_w(px(0.0)).min_h(px(0.0)).child(
         view()
@@ -35,7 +1347,7 @@ pub fn agent_view(store: AppStore) -> impl IntoElement {
             .child(cross_company_context_strip(store))
             .child(living_research_memo_card(store, false))
             .child(research_runs_history_card(store))
-            .child(embedded_alan_console(store, tape_drawer_open))
+            .child(alan_console(store, tape_drawer_open))
             .child(dossier_staff_draft_section(store)),
     )
 }
@@ -1027,7 +2339,7 @@ fn research_runs_history_card(store: AppStore) -> View {
     }))
 }
 
-fn embedded_alan_console(store: AppStore, tape_drawer_open: Signal<bool>) -> View {
+fn alan_console(store: AppStore, tape_drawer_open: Signal<bool>) -> View {
     obsidian_card()
         // Header bar
         .child(dynamic(move || {
@@ -1894,6 +3206,23 @@ fn dossier_staff_draft_section(store: AppStore) -> View {
     }))
 }
 
+fn is_feynman_panel_visible_for_canvas(store: AppStore) -> bool {
+    if !store.feynman_mode_active.get() {
+        return false;
+    }
+    match (store.alan_scope.get(), store.feynman_scope.get()) {
+        (AlanScope::Company(a), Some(FeynmanScope::Company { ticker: b })) => {
+            a.eq_ignore_ascii_case(&b)
+        }
+        (AlanScope::Industry(a), Some(FeynmanScope::Industry { slug: b })) => a == b,
+        _ => false,
+    }
+}
+
+fn feynman_coach_panel_for_canvas(store: AppStore) -> View {
+    feynman_coach_panel_with_visibility(store, move || is_feynman_panel_visible_for_canvas(store))
+}
+
 fn is_feynman_panel_visible(store: AppStore, is_industry: bool) -> bool {
     if !store.feynman_mode_active.get() {
         return false;
@@ -1910,13 +3239,20 @@ fn is_feynman_panel_visible(store: AppStore, is_industry: bool) -> bool {
 }
 
 /// Interactive 3-Round Socratic Feynman Coach & Human Sign-Off panel shared between
-/// Company Desk (`2 Deep Research & Alan`) and Industry Studio (`⌘3`).
+/// the unified Alan Canvas and Industry Studio.
 pub(crate) fn feynman_coach_panel(store: AppStore, is_industry: bool) -> View {
+    feynman_coach_panel_with_visibility(store, move || is_feynman_panel_visible(store, is_industry))
+}
+
+fn feynman_coach_panel_with_visibility(
+    store: AppStore,
+    is_visible: impl Fn() -> bool + 'static,
+) -> View {
     let draft_metric_input = signal(String::new());
     let show_archive = signal(false);
 
     view().child(when(
-        move || is_feynman_panel_visible(store, is_industry),
+        is_visible,
         move || {
             obsidian_card()
                 .p(px(18.0))

@@ -6,17 +6,16 @@
 //!   panel (valuation multiple presets + low/high inputs, clickable peer chips,
 //!   Feynman mastery checklist, protected `## Human Notes` editor), L0 Peer Matrix
 //!   with 10-K batch fetch, Living Industry Primer with strict `SEC 10-K` vs `Web`
-//!   source separation, and Alan 4-Lens streaming + Feynman Quiz tutor.
+//!   source separation, async 4-Lens artifact trigger, and unified Alan Canvas handoff.
 
-use super::agent::feynman_coach_panel;
 use crate::components::{
-    action_button, badge_pill, concept_hint, obsidian_card, seg_group, styled_input, v_divider,
-    view_header_strip,
+    action_button, animate_shell_spring, badge_pill, concept_hint, obsidian_card, seg_group,
+    styled_input, v_divider, view_header_strip,
 };
 use crate::format::{fmt_pct_clean, fmt_price};
 use crate::icons::{ICON_CHECK, ICON_CLOSE, ICON_LAYERS, ICON_PLUS, icon};
 use crate::platform_desktop::{copy_text_with_notice, reveal_workspace_dir};
-use crate::stores::{AgentMessageRole, AppStore, INDUSTRY_VALUATION_PRESETS};
+use crate::stores::{AlanCanvasTab, AlanScope, AppStore, INDUSTRY_VALUATION_PRESETS};
 use crate::theme::*;
 use m3_core::i18n::UiLang;
 use m3_core::industry::{self, IndustryProfile, IndustryStatus};
@@ -843,11 +842,10 @@ fn render_industry_workspace(store: AppStore, profile: IndustryProfile) -> View 
         .flex_col()
         .gap(px(16.0))
         .child(render_header_card(store, &profile))
-        .child(feynman_coach_panel(store, true))
         .child(render_sovereignty_card(store, &profile))
         .child(render_peer_matrix_card(store, &profile))
         .child(render_primer_card(store, &profile))
-        .child(render_live_research_and_tutor_card(store, &profile))
+        .child(render_4lens_research_card(store, &profile))
 }
 
 fn render_header_card(store: AppStore, profile: &IndustryProfile) -> View {
@@ -856,6 +854,8 @@ fn render_header_card(store: AppStore, profile: &IndustryProfile) -> View {
     let slug = profile.slug.clone();
     let slug_for_progress = slug.clone();
     let slug_for_btn = slug.clone();
+    let slug_for_alan = slug.clone();
+    let slug_for_feynman = slug.clone();
     let sic_codes = profile.sic_codes.clone();
     let (st_fg, st_bg, st_br) = industry_status_colors(status);
 
@@ -878,6 +878,7 @@ fn render_header_card(store: AppStore, profile: &IndustryProfile) -> View {
                 .flex_row()
                 .items_center()
                 .justify_between()
+                .flex_wrap()
                 .gap(px(12.0))
                 .child(
                     view()
@@ -926,37 +927,81 @@ fn render_header_card(store: AppStore, profile: &IndustryProfile) -> View {
                 .child(
                     view()
                         .flex_shrink_0()
-                        .px(px(14.0))
-                        .py(px(8.0))
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .bg(rgba(VIOLET_BG))
-                        .border_1()
-                        .border_color(rgba(VIOLET_BORDER))
-                        .hover(|s| s.bg(rgb(BG_HOVER)))
-                        .active(|s| s.bg(rgb(BG_ACTIVE)))
-                        .on_press(move || store.start_industry_deep_research())
-                        .child(
-                            text(move || {
-                                let l = store.lang.get();
-                                let running = store.industry_research_running.get()
-                                    && store.industry_research_slug.get().as_deref()
-                                        == Some(slug_for_btn.as_str());
-                                if running {
-                                    l.t("Alan 4 视角深研中…", "Alan 4-Lens Running…").to_owned()
-                                } else {
-                                    l.t(
-                                        "派 Alan 4 视角深研 (10-K + Web)",
-                                        "Run Alan 4-Lens Research (10-K + Web)",
-                                    )
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(action_button(
+                            move || {
+                                store
+                                    .lang
+                                    .get()
+                                    .t("打开 Alan 讨论", "Open Alan Discussion")
                                     .to_owned()
-                                }
-                            })
-                            .font_family(FONT_UI)
-                            .text_size(px(TEXT_XS))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(VIOLET_FG))
-                            .number_of_lines(1),
+                            },
+                            false,
+                            move || {
+                                animate_shell_spring();
+                                store.open_alan_for_scope(
+                                    AlanScope::Industry(slug_for_alan.clone()),
+                                    AlanCanvasTab::Interrogate,
+                                );
+                            },
+                        ))
+                        .child(action_button(
+                            move || {
+                                store
+                                    .lang
+                                    .get()
+                                    .t("开启费曼答辩", "Start Feynman Defense")
+                                    .to_owned()
+                            },
+                            false,
+                            move || {
+                                animate_shell_spring();
+                                store.open_alan_for_scope(
+                                    AlanScope::Industry(slug_for_feynman.clone()),
+                                    AlanCanvasTab::Feynman,
+                                );
+                            },
+                        ))
+                        .child(
+                            view()
+                                .flex_shrink_0()
+                                .px(px(14.0))
+                                .py(px(8.0))
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(rgba(VIOLET_BG))
+                                .border_1()
+                                .border_color(rgba(VIOLET_BORDER))
+                                .hover(|s| s.bg(rgb(BG_HOVER)))
+                                .active(|s| s.bg(rgb(BG_ACTIVE)))
+                                .on_press(move || store.start_industry_deep_research())
+                                .child(
+                                    text(move || {
+                                        let l = store.lang.get();
+                                        let running = store.industry_research_running.get()
+                                            && store.industry_research_slug.get().as_deref()
+                                                == Some(slug_for_btn.as_str());
+                                        if running {
+                                            l.t("行业 4 视角深研中…", "Industry 4-Lens Running…")
+                                                .to_owned()
+                                        } else {
+                                            l.t(
+                                                "生成 / 刷新行业 4 视角深研",
+                                                "Generate / Refresh Industry 4-Lens",
+                                            )
+                                            .to_owned()
+                                        }
+                                    })
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(VIOLET_FG))
+                                    .number_of_lines(1),
+                                ),
                         ),
                 ),
         )
@@ -1177,6 +1222,7 @@ fn render_sovereignty_card(store: AppStore, profile: &IndustryProfile) -> View {
     let feynman_checked = profile.feynman_checked.clone();
     let checked_count = feynman_checked.iter().filter(|b| **b).count();
     let total_fq = feynman_questions.len();
+    let slug_fq = profile.slug.clone();
 
     let metric_lenses: [(u8, &str); 3] = [(0, "EV/EBIT"), (1, "P/E"), (2, "EV/FCF")];
 
@@ -1553,24 +1599,48 @@ fn render_sovereignty_card(store: AppStore, profile: &IndustryProfile) -> View {
                                         .to_owned()
                                 })),
                         )
-                        .child(badge_pill(
-                            format!("{checked_count}/{total_fq}"),
-                            if total_fq > 0 && checked_count == total_fq {
-                                EMERALD_FG
-                            } else {
-                                GOLD_FG
-                            },
-                            if total_fq > 0 && checked_count == total_fq {
-                                EMERALD_BG
-                            } else {
-                                GOLD_BG
-                            },
-                            if total_fq > 0 && checked_count == total_fq {
-                                EMERALD_BORDER
-                            } else {
-                                GOLD_BORDER
-                            },
-                        )),
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(action_button(
+                                    move || {
+                                        store
+                                            .lang
+                                            .get()
+                                            .t("开启费曼答辩", "Start Feynman Defense")
+                                            .to_owned()
+                                    },
+                                    false,
+                                    move || {
+                                        animate_shell_spring();
+                                        store.open_alan_for_scope(
+                                            AlanScope::Industry(slug_fq.clone()),
+                                            AlanCanvasTab::Feynman,
+                                        );
+                                    },
+                                ))
+                                .child(badge_pill(
+                                    format!("{checked_count}/{total_fq}"),
+                                    if total_fq > 0 && checked_count == total_fq {
+                                        EMERALD_FG
+                                    } else {
+                                        GOLD_FG
+                                    },
+                                    if total_fq > 0 && checked_count == total_fq {
+                                        EMERALD_BG
+                                    } else {
+                                        GOLD_BG
+                                    },
+                                    if total_fq > 0 && checked_count == total_fq {
+                                        EMERALD_BORDER
+                                    } else {
+                                        GOLD_BORDER
+                                    },
+                                )),
+                        ),
                 )
                 .child(if feynman_questions.is_empty() {
                     view()
@@ -1586,8 +1656,8 @@ fn render_sovereignty_card(store: AppStore, profile: &IndustryProfile) -> View {
                                     .lang
                                     .get()
                                     .t(
-                                        "尚未生成费曼自检清单。点击右上角「派 Alan 4 视角深研」后将自动提炼 4 道检验题。",
-                                        "No Feynman criteria yet. Run Alan 4-Lens Research to generate the 4 mastery checks.",
+                                        "尚未生成费曼自检清单。点击右上角「生成 / 刷新行业 4 视角深研」后将自动提炼 4 道检验题。",
+                                        "No Feynman criteria yet. Click 'Generate / Refresh Industry 4-Lens' to generate the 4 mastery checks.",
                                     )
                                     .to_owned()
                             })
@@ -1874,7 +1944,7 @@ fn render_peer_matrix_card(store: AppStore, profile: &IndustryProfile) -> View {
                                         if running {
                                             l.t("4 视角运行中…", "4-Lens Running…").to_owned()
                                         } else {
-                                            l.t("派 Alan 4 视角深研", "Run Alan 4-Lens")
+                                            l.t("生成 / 刷新行业 4 视角深研", "Generate / Refresh 4-Lens")
                                                 .to_owned()
                                         }
                                     })
@@ -2160,6 +2230,7 @@ fn render_peer_matrix_row(
 fn render_primer_card(store: AppStore, profile: &IndustryProfile) -> View {
     let slug = profile.slug.clone();
     let slug_for_live = slug.clone();
+    let slug_for_parsed = slug.clone();
 
     obsidian_card()
         .w_full()
@@ -2290,8 +2361,8 @@ fn render_primer_card(store: AppStore, profile: &IndustryProfile) -> View {
                     .child(
                         text(
                             l.t(
-                                "尚未生成行业活手册。点击上方「派 Alan 4 视角深研」，系统将自动拉取代表公司 SEC 10-K、结合 DuckDB 财务矩阵与公开网页搜索，写出产业链、护城河、历史死法与关键 KPI 活手册（严格分离 SEC 10-K 与 Web 出处，并永久保留 ## Human Notes）。",
-                                "No primer yet. Click 'Run Alan 4-Lens Research' above to synthesize Value Chain, Moats, Failure Modes & Key KPIs from SEC 10-K, DuckDB & bounded Web Search with strict SEC vs Web citation separation and protected ## Human Notes.",
+                                "尚未生成行业活手册。点击上方「生成 / 刷新行业 4 视角深研」，系统将自动拉取代表公司 SEC 10-K、结合 DuckDB 财务矩阵与公开网页搜索，写出产业链、护城河、历史死法与关键 KPI 活手册（严格分离 SEC 10-K 与 Web 出处，并永久保留 ## Human Notes）。",
+                                "No primer yet. Click 'Generate / Refresh Industry 4-Lens' above to synthesize Value Chain, Moats, Failure Modes & Key KPIs from SEC 10-K, DuckDB & bounded Web Search with strict SEC vs Web citation separation and protected ## Human Notes.",
                             )
                             .to_owned(),
                         )
@@ -2304,11 +2375,16 @@ fn render_primer_card(store: AppStore, profile: &IndustryProfile) -> View {
             };
 
             let parsed = parse_industry_primer(&md);
-            render_parsed_primer(parsed, l).into_element()
+            render_parsed_primer(store, &slug_for_parsed, parsed, l).into_element()
         }))
 }
 
-fn render_parsed_primer(parsed: ParsedIndustryPrimer, l: UiLang) -> View {
+fn render_parsed_primer(
+    store: AppStore,
+    slug: &str,
+    parsed: ParsedIndustryPrimer,
+    l: UiLang,
+) -> View {
     let mut container = view().w_full().flex().flex_col().gap(px(10.0));
 
     if !parsed.metadata.is_empty() {
@@ -2329,6 +2405,18 @@ fn render_parsed_primer(parsed: ParsedIndustryPrimer, l: UiLang) -> View {
         if sec.body.trim().is_empty() {
             continue;
         }
+        let slug_anchor = slug.to_owned();
+        let heading_anchor = sec.heading.clone();
+        let seed_prompt = match l {
+            UiLang::Zh => format!(
+                "围绕行业活手册「{}」章节，请结合代表公司 10-K 与同业财务矩阵展开深挖。",
+                sec.heading
+            ),
+            UiLang::En => format!(
+                "Regarding the '{}' section in the Living Industry Primer, inspect representative 10-K filings and the peer matrix.",
+                sec.heading
+            ),
+        };
         container = container.child(
             view()
                 .w_full()
@@ -2341,11 +2429,31 @@ fn render_parsed_primer(parsed: ParsedIndustryPrimer, l: UiLang) -> View {
                 .flex_col()
                 .gap(px(6.0))
                 .child(
-                    text(sec.heading)
-                        .font_family(FONT_UI)
-                        .text_size(px(TEXT_SM))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(INK_HERO)),
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .child(
+                            text(sec.heading)
+                                .font_family(FONT_UI)
+                                .text_size(px(TEXT_SM))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(INK_HERO)),
+                        )
+                        .child(action_button(
+                            l.t("问 Alan ↗", "Ask Alan ↗").to_owned(),
+                            false,
+                            move || {
+                                animate_shell_spring();
+                                store.open_alan_with_anchor(
+                                    AlanScope::Industry(slug_anchor.clone()),
+                                    &heading_anchor,
+                                    &seed_prompt,
+                                );
+                            },
+                        )),
                 )
                 .child(
                     text(sec.body)
@@ -2666,10 +2774,12 @@ fn extract_inline_citations(
     }
 }
 
-// ── Live 4-Lens Streaming + Interactive Alan Tutor & Feynman Quiz ────────────
+// ── 4-Lens Artifact Streaming & Unified Alan Canvas Handoff ──────────────────
 
-fn render_live_research_and_tutor_card(store: AppStore, profile: &IndustryProfile) -> View {
+fn render_4lens_research_card(store: AppStore, profile: &IndustryProfile) -> View {
     let slug = profile.slug.clone();
+    let slug_alan = slug.clone();
+    let slug_feynman = slug.clone();
 
     obsidian_card()
         .w_full()
@@ -2677,9 +2787,7 @@ fn render_live_research_and_tutor_card(store: AppStore, profile: &IndustryProfil
         .flex()
         .flex_col()
         .gap(px(14.0))
-        // 4-Lens live progress grid
         .child(render_4lens_live_section(store, slug))
-        // Alan Industry Tutor & Feynman Quiz
         .child(
             view()
                 .w_full()
@@ -2687,247 +2795,64 @@ fn render_live_research_and_tutor_card(store: AppStore, profile: &IndustryProfil
                 .border_t_1()
                 .border_color(rgb(BORDER_HAIRLINE))
                 .flex()
-                .flex_col()
-                .gap(px(10.0))
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
                 .child(
-                    view()
-                        .w_full()
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(8.0))
-                        .child(
-                            view()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
-                                    text(move || {
-                                        store
-                                            .lang
-                                            .get()
-                                            .t(
-                                                "Alan 行业导师与费曼考官",
-                                                "Alan Industry Tutor & Feynman Examiner",
-                                            )
-                                            .to_owned()
-                                    })
-                                    .font_family(FONT_UI)
-                                    .text_size(px(TEXT_MD))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(INK_HERO)),
-                                )
-                                .child(when(
-                                    move || store.industry_alan_status_hint.with(|h| h.is_some()),
-                                    move || {
-                                        text(move || {
-                                            store.industry_alan_status_hint.get().unwrap_or_default()
-                                        })
-                                        .font_family(FONT_MONO_TERM)
-                                        .text_size(px(TEXT_XS))
-                                        .text_color(rgb(VIOLET_FG))
-                                    },
-                                )),
-                        )
-                        .child(
-                            view()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(when(
-                                    move || store.industry_alan_streaming.get(),
-                                    move || {
-                                        action_button(
-                                            move || store.lang.get().t("停止", "Stop").to_owned(),
-                                            false,
-                                            move || store.interrupt_alan(),
-                                        )
-                                    },
-                                ))
-                                .child(
-                                    view()
-                                        .flex_shrink_0()
-                                        .px(px(12.0))
-                                        .py(px(6.0))
-                                        .rounded_sm()
-                                        .cursor_pointer()
-                                        .bg(rgba(VIOLET_BG))
-                                        .border_1()
-                                        .border_color(rgba(VIOLET_BORDER))
-                                        .hover(|s| s.bg(rgb(BG_HOVER)))
-                                        .on_press(move || {
-                                            if let Some(slug) =
-                                                store.selected_industry_slug.get_untracked()
-                                            {
-                                                store.start_industry_feynman(&slug);
-                                            }
-                                        })
-                                        .child(
-                                            text(move || {
-                                                store
-                                                    .lang
-                                                    .get()
-                                                    .t("3 轮费曼答辩", "3-Round Feynman Coach")
-                                                    .to_owned()
-                                            })
-                                            .font_family(FONT_UI)
-                                            .text_size(px(TEXT_XS))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(VIOLET_FG)),
-                                        ),
-                                )
-                                .child(
-                                    view()
-                                        .flex_shrink_0()
-                                        .px(px(12.0))
-                                        .py(px(6.0))
-                                        .rounded_sm()
-                                        .cursor_pointer()
-                                        .bg(rgba(GOLD_BG))
-                                        .border_1()
-                                        .border_color(rgba(GOLD_BORDER))
-                                        .hover(|s| s.bg(rgb(BG_HOVER)))
-                                        .on_press(move || store.trigger_industry_feynman_quiz())
-                                        .child(
-                                            text(move || {
-                                                store
-                                                    .lang
-                                                    .get()
-                                                    .t(
-                                                        "开始费曼考官测验 (4问)",
-                                                        "Start Feynman Quiz (4 Qs)",
-                                                    )
-                                                    .to_owned()
-                                            })
-                                            .font_family(FONT_UI)
-                                            .text_size(px(TEXT_XS))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(GOLD_FG)),
-                                        ),
-                                ),
-                        ),
+                    text(move || {
+                        store
+                            .lang
+                            .get()
+                            .t(
+                                "Alan 行业讨论与 3 轮费曼答辩已统一接入右侧 Alan 画布（支持分栏 / 全屏沉浸）。",
+                                "Industry Alan discussion & 3-round Feynman defense live in the unified Alan Canvas (Split / Immersive).",
+                            )
+                            .to_owned()
+                    })
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .text_color(rgb(INK_MUTED)),
                 )
-                .child(dynamic(move || {
-                    let l = store.lang.get();
-                    let msgs = store.industry_alan_messages.get();
-                    if msgs.is_empty() {
-                        return view()
-                            .w_full()
-                            .p(px(12.0))
-                            .rounded_sm()
-                            .bg(rgb(BG_WELL))
-                            .border_1()
-                            .border_color(rgb(BORDER_HAIRLINE))
-                            .child(
-                                text(
-                                    l.t(
-                                        "点击右上角「开始费曼考官测验」，或在下方直接向 Alan 追问产业链定价权、护城河持续性与会计排雷细节。",
-                                        "Click 'Start Feynman Quiz' above or ask Alan directly below about value-chain pricing power, moat durability, or accounting red flags.",
-                                    )
-                                    .to_owned(),
-                                )
-                                .font_family(FONT_UI)
-                                .text_size(px(TEXT_XS))
-                                .text_color(rgb(INK_MUTED)),
-                            )
-                            .into_element();
-                    }
-
-                    view()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.0))
-                        .children(msgs.into_iter().map(|msg| {
-                            let (role_label, role_col, bg_col, br_col) = match msg.role {
-                                AgentMessageRole::User => {
-                                    ("YOU", INK_MUTED, BG_SURFACE, rgb(BORDER_SUBTLE))
-                                }
-                                AgentMessageRole::Assistant => (
-                                    "ALAN · INDUSTRY TUTOR",
-                                    VIOLET_FG,
-                                    BG_WELL,
-                                    rgba(VIOLET_BORDER),
-                                ),
-                                AgentMessageRole::SystemNote => {
-                                    ("SYSTEM NOTE", CORAL_FG, BG_WELL, rgba(CORAL_BORDER))
-                                }
-                            };
-                            let body = if msg.text.is_empty() && msg.streaming {
-                                l.t("思考与检索工具中…", "Thinking & querying tools…")
-                                    .to_owned()
-                            } else {
-                                msg.text
-                            };
-                            view()
-                                .w_full()
-                                .p(px(12.0))
-                                .rounded_sm()
-                                .bg(rgb(bg_col))
-                                .border_1()
-                                .border_color(br_col)
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.0))
-                                .child(
-                                    text(role_label)
-                                        .font_family(FONT_MONO_TERM)
-                                        .text_size(px(TEXT_2XS))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(role_col)),
-                                )
-                                .child(
-                                    text(body)
-                                        .font_family(FONT_UI)
-                                        .text_size(px(TEXT_BASE))
-                                        .line_height(px(21.0))
-                                        .text_color(rgb(INK_PRIMARY))
-                                        .selectable(true),
-                                )
-                        }))
-                        .into_element()
-                }))
                 .child(
                     view()
-                        .w_full()
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(px(8.0))
-                        .child(
-                            styled_input(
-                                move || store.industry_alan_input.get(),
-                                move || {
-                                    store
-                                        .lang
-                                        .get()
-                                        .t(
-                                            "向 Alan 行业导师提问或作答费曼考题…",
-                                            "Ask Alan or submit your Feynman quiz answer…",
-                                        )
-                                        .to_owned()
-                                },
-                                false,
-                            )
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .on_change(move |val: &str| {
-                                store.industry_alan_input.set(val.to_owned())
-                            })
-                            .on_submit(move |val: &str| {
-                                store.submit_industry_alan_question(val);
-                            }),
-                        )
                         .child(action_button(
-                            move || store.lang.get().t("发送 ↵", "Ask ↵").to_owned(),
+                            move || {
+                                store
+                                    .lang
+                                    .get()
+                                    .t("打开 Alan 讨论", "Open Alan Discussion")
+                                    .to_owned()
+                            },
+                            false,
+                            move || {
+                                animate_shell_spring();
+                                store.open_alan_for_scope(
+                                    AlanScope::Industry(slug_alan.clone()),
+                                    AlanCanvasTab::Interrogate,
+                                );
+                            },
+                        ))
+                        .child(action_button(
+                            move || {
+                                store
+                                    .lang
+                                    .get()
+                                    .t("开启费曼答辩", "Start Feynman Defense")
+                                    .to_owned()
+                            },
                             true,
                             move || {
-                                let q = store.industry_alan_input.get_untracked();
-                                store.submit_industry_alan_question(&q);
+                                animate_shell_spring();
+                                store.open_alan_for_scope(
+                                    AlanScope::Industry(slug_feynman.clone()),
+                                    AlanCanvasTab::Feynman,
+                                );
                             },
                         )),
                 ),

@@ -1,6 +1,7 @@
 //! Reactive store domain types and UI state structs for `m3-nsh`.
 
 use m3_core::alan_interrogator::AcmeEvidenceToken;
+pub use m3_core::alan_interrogator::{AlanScope, InlineEvidenceCard};
 pub use m3_core::feynman::{FeynmanRound, FeynmanScope, FeynmanTurn};
 use m3_core::i18n::UiLang;
 use m3_core::lake::{UniverseFilter, UniverseRow, UniverseSortBy};
@@ -33,6 +34,42 @@ pub enum CompanyViewTab {
     FinancialsMemo,
     DeepResearchAlan,
     XbrlInspector,
+}
+
+/// App-Shell Dual Canvas stage mode for the unified Alan view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AlanStageMode {
+    #[default]
+    Closed,
+    Split,
+    Immersive,
+}
+
+impl AlanStageMode {
+    pub const fn is_open(self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+}
+
+/// Active mode inside the unified Alan Canvas (`Interrogate` chat vs 3-round `Feynman` coach).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AlanCanvasTab {
+    #[default]
+    Interrogate,
+    Feynman,
+}
+
+impl AlanCanvasTab {
+    pub const fn all() -> [Self; 2] {
+        [Self::Interrogate, Self::Feynman]
+    }
+
+    pub fn label_for(self, lang: UiLang) -> &'static str {
+        match self {
+            Self::Interrogate => lang.t("审讯对话", "Interrogate"),
+            Self::Feynman => lang.t("费曼答辩", "Feynman"),
+        }
+    }
 }
 
 /// Active category tab inside Settings (`⌘,`).
@@ -162,6 +199,8 @@ pub struct TodayPulse {
 pub enum PaletteAction {
     OpenDossier(String),
     OpenAgent(String),
+    ToggleAlanSplit,
+    ToggleAlanImmersive,
     RunDeepResearch(String),
     ShowBudgetStatus,
     SyncThemes,

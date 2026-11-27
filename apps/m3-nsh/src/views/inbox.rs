@@ -1,8 +1,8 @@
 //! Event-Driven L1 Briefing Inbox view (`⌘1`).
 
 use crate::components::{
-    action_button, badge_pill, cmd_kbd_corner, kbd, obsidian_card, section_header, seg_group,
-    seg_tab, v_divider, view_filter_strip, view_header_strip,
+    action_button, animate_shell_spring, badge_pill, cmd_kbd_corner, kbd, obsidian_card,
+    section_header, seg_group, seg_tab, v_divider, view_filter_strip, view_header_strip,
 };
 use crate::format::{
     budget_watermark_summary_for, count_inbox_filter, filter_inbox_signals, fmt_money_compact,
@@ -11,8 +11,8 @@ use crate::format::{
 };
 use crate::platform_desktop::{copy_text_with_notice, open_external_url};
 use crate::stores::{
-    AppStore, BriefingPeriod, CircleBriefing, CompanyViewTab, InboxFilter, InboxViewMode,
-    SignalTriageRecord, TriageQuote, TriageVerdict,
+    AlanScope, AppStore, BriefingPeriod, CircleBriefing, CompanyViewTab, InboxFilter,
+    InboxViewMode, SignalTriageRecord, TriageQuote, TriageVerdict,
 };
 use crate::theme::*;
 use crate::views::onboarding::onboarding_card;
@@ -1042,6 +1042,18 @@ fn render_briefing_reading_pane(store: AppStore, b: &CircleBriefing, l: UiLang) 
             let (v_lbl, v_fg, v_bg, v_br) = triage_verdict_badge(hit.verdict, l);
             let tk_open = hit.ticker.clone();
             let tk_research = hit.ticker.clone();
+            let tk_alan = hit.ticker.clone();
+            let hit_title_alan = hit.headline.clone();
+            let hit_seed_alan = match l {
+                UiLang::Zh => format!(
+                    "请核查 {} 巡检命中「{}」：{}。对照一手 10-K / 财务事实判断是否触发事前证伪条件。",
+                    hit.ticker, hit.headline, hit.rationale
+                ),
+                UiLang::En => format!(
+                    "Review {} watchdog hit '{}': {}. Verify against primary 10-K filings and pre-falsification metrics.",
+                    hit.ticker, hit.headline, hit.rationale
+                ),
+            };
 
             let mut hit_box = view()
                 .p(px(14.0))
@@ -1090,14 +1102,40 @@ fn render_briefing_reading_pane(store: AppStore, b: &CircleBriefing, l: UiLang) 
                                         }),
                                 ),
                         )
-                        .child(action_button(
-                            l.t("派 Alan 4 视角深研", "Dispatch Alan 4-Lens Research"),
-                            is_alert,
-                            move || {
-                                store.open_company(&tk_research, CompanyViewTab::DeepResearchAlan);
-                                store.start_deep_research(&tk_research, None, "briefing_watchdog");
-                            },
-                        )),
+                        .child(
+                            view()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(action_button(
+                                    l.t("问 Alan ↗", "Ask Alan ↗"),
+                                    false,
+                                    move || {
+                                        animate_shell_spring();
+                                        store.open_alan_with_anchor(
+                                            AlanScope::Company(tk_alan.clone()),
+                                            &hit_title_alan,
+                                            &hit_seed_alan,
+                                        );
+                                    },
+                                ))
+                                .child(action_button(
+                                    l.t("派 Alan 4 视角深研", "Dispatch Alan 4-Lens Research"),
+                                    is_alert,
+                                    move || {
+                                        store.open_company(
+                                            &tk_research,
+                                            CompanyViewTab::FinancialsMemo,
+                                        );
+                                        store.start_deep_research(
+                                            &tk_research,
+                                            None,
+                                            "briefing_watchdog",
+                                        );
+                                    },
+                                )),
+                        ),
                 )
                 .child(
                     text(hit.headline.clone())
@@ -1932,6 +1970,18 @@ fn render_stream_triage_card(
     let is_alert = tr.verdict == TriageVerdict::FalsificationAlert;
     let (v_lbl, v_fg, v_bg, v_br) = triage_verdict_badge(tr.verdict, l);
     let tk_research = sig.primary_ticker.clone();
+    let tk_alan = sig.primary_ticker.clone();
+    let tr_headline_alan = tr.headline.clone();
+    let tr_seed_alan = match l {
+        UiLang::Zh => format!(
+            "针对 {} 的 Alan 巡检信号「{}」：{}。请结合一手原文检验其对投资核心假设的影响。",
+            sig.primary_ticker, tr.headline, tr.rationale
+        ),
+        UiLang::En => format!(
+            "Review {} Watchdog signal '{}': {}. Check primary filings for impact on thesis.",
+            sig.primary_ticker, tr.headline, tr.rationale
+        ),
+    };
 
     let mut card = obsidian_card()
         .p(px(18.0))
@@ -1966,14 +2016,33 @@ fn render_stream_triage_card(
                                 .text_color(rgb(INK_HERO)),
                         ),
                 )
-                .child(action_button(
-                    l.t("派 Alan 4 视角深研", "Dispatch Alan 4-Lens Research"),
-                    is_alert,
-                    move || {
-                        store.open_company(&tk_research, CompanyViewTab::DeepResearchAlan);
-                        store.start_deep_research(&tk_research, None, "stream_watchdog");
-                    },
-                )),
+                .child(
+                    view()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(action_button(
+                            l.t("问 Alan ↗", "Ask Alan ↗"),
+                            false,
+                            move || {
+                                animate_shell_spring();
+                                store.open_alan_with_anchor(
+                                    AlanScope::Company(tk_alan.clone()),
+                                    &tr_headline_alan,
+                                    &tr_seed_alan,
+                                );
+                            },
+                        ))
+                        .child(action_button(
+                            l.t("派 Alan 4 视角深研", "Dispatch Alan 4-Lens Research"),
+                            is_alert,
+                            move || {
+                                store.open_company(&tk_research, CompanyViewTab::FinancialsMemo);
+                                store.start_deep_research(&tk_research, None, "stream_watchdog");
+                            },
+                        )),
+                ),
         )
         .child(
             text(tr.headline.clone())
@@ -2190,7 +2259,7 @@ fn render_inbox_business_profile_card(
         .flex_wrap()
         .gap(px(8.0));
     if let Some(cik_val) = cik_opt {
-        let tk_fetch = ticker_upper;
+        let tk_fetch = ticker_upper.clone();
         cta_row = cta_row.child(
             view()
                 .px(px(12.0))
@@ -2218,27 +2287,68 @@ fn render_inbox_business_profile_card(
                 ),
         );
     }
-    cta_row = cta_row.child(
-        view()
-            .px(px(12.0))
-            .py(px(6.0))
-            .rounded_sm()
-            .cursor_pointer()
-            .bg(rgba(VIOLET_BG))
-            .border_1()
-            .border_color(rgba(VIOLET_BORDER))
-            .hover(|s| s.bg(rgb(BG_HOVER)))
-            .on_press(move || {
-                store.triage_inbox_signal(&id_alan, SignalStatus::Researching, false, true);
-            })
-            .child(
-                text(l.t("派 Alan 快速解读", "Ask Alan").to_owned())
+    let tk_alan_profile = ticker_upper.clone();
+    let seed_alan_profile = match l {
+        UiLang::Zh => format!(
+            "请快速梳理 {} 的主营业务模式、护城河与核心风险要点。",
+            ticker_upper
+        ),
+        UiLang::En => format!(
+            "Summarize {}'s core business model, moat, and primary filing risks.",
+            ticker_upper
+        ),
+    };
+    cta_row = cta_row
+        .child(
+            view()
+                .px(px(12.0))
+                .py(px(6.0))
+                .rounded_sm()
+                .cursor_pointer()
+                .bg(rgba(VIOLET_BG))
+                .border_1()
+                .border_color(rgba(VIOLET_BORDER))
+                .hover(|s| s.bg(rgb(BG_HOVER)))
+                .on_press(move || {
+                    animate_shell_spring();
+                    store.open_alan_with_anchor(
+                        AlanScope::Company(tk_alan_profile.clone()),
+                        l.t("10-K 业务梳理", "10-K Business Profile"),
+                        &seed_alan_profile,
+                    );
+                })
+                .child(
+                    text(l.t("打开 Alan 讨论 ↗", "Ask Alan ↗").to_owned())
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_SM))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(VIOLET_FG)),
+                ),
+        )
+        .child(
+            view()
+                .px(px(12.0))
+                .py(px(6.0))
+                .rounded_sm()
+                .cursor_pointer()
+                .bg(rgb(BG_WELL))
+                .border_1()
+                .border_color(rgb(BORDER_SUBTLE))
+                .hover(|s| s.bg(rgb(BG_HOVER)))
+                .on_press(move || {
+                    store.triage_inbox_signal(&id_alan, SignalStatus::Researching, false, true);
+                })
+                .child(
+                    text(
+                        l.t("派 Alan 4 视角深研", "Dispatch 4-Lens Research")
+                            .to_owned(),
+                    )
                     .font_family(FONT_UI)
                     .text_size(px(TEXT_SM))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(VIOLET_FG)),
-            ),
-    );
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(INK_PRIMARY)),
+                ),
+        );
 
     card.child(
         text(
@@ -2640,18 +2750,64 @@ fn render_evidence_card(store: AppStore, ev: &SignalEvidence, l: UiLang) -> View
     let copy_label = format!("{} {}", ev.ticker, ev.doc_type);
     let date_str = ev.filing_date.as_deref().unwrap_or("—");
     let has_url = !ev.source_url.trim().is_empty();
+    let tk_alan = ev.ticker.clone();
+    let anchor_title = if ev.title.trim().is_empty() {
+        format!("{} {}", ev.doc_type, ev.section)
+    } else {
+        ev.title.clone()
+    };
+    let ev_seed = match l {
+        UiLang::Zh => format!(
+            "针对 {} {} ({}) 原文摘录「{}」，请核查其前后文并评估投资含义。",
+            ev.ticker, ev.doc_type, ev.section, ev.quote
+        ),
+        UiLang::En => format!(
+            "Review this {} {} ({}) excerpt and its context: {}",
+            ev.ticker, ev.doc_type, ev.section, ev.quote
+        ),
+    };
 
-    let mut right_meta = view().flex().flex_row().items_center().gap(px(8.0)).child(
-        text(format!(
-            "{} {:.0}%",
-            l.t("相似度", "Sim"),
-            ev.similarity * 100.0
-        ))
-        .font_family(FONT_MONO_NUM)
-        .text_size(px(TEXT_XS))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(EMERALD_FG)),
-    );
+    let mut right_meta = view()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            text(format!(
+                "{} {:.0}%",
+                l.t("相似度", "Sim"),
+                ev.similarity * 100.0
+            ))
+            .font_family(FONT_MONO_NUM)
+            .text_size(px(TEXT_XS))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(rgb(EMERALD_FG)),
+        )
+        .child(
+            view()
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded_xs()
+                .bg(rgba(VIOLET_BG))
+                .border_1()
+                .border_color(rgba(VIOLET_BORDER))
+                .hover(|s| s.bg(rgb(BG_HOVER)))
+                .cursor_pointer()
+                .on_press(move || {
+                    animate_shell_spring();
+                    store.open_alan_with_anchor(
+                        AlanScope::Company(tk_alan.clone()),
+                        &anchor_title,
+                        &ev_seed,
+                    );
+                })
+                .child(
+                    text(l.t("问 Alan ↗", "Ask Alan ↗"))
+                        .font_family(FONT_MONO_TERM)
+                        .text_size(px(TEXT_2XS))
+                        .text_color(rgb(VIOLET_FG)),
+                ),
+        );
 
     if has_url {
         right_meta = right_meta

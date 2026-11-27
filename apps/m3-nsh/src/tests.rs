@@ -21,8 +21,9 @@ use crate::stores::types::{
     UniverseViewState, apply_ui_row_guards, default_deep_research_perspectives,
 };
 use crate::stores::{
-    AppStore, BasketsViewMode, ChartTimeframe, CompanyViewTab, InboxFilter, InboxViewState,
-    PaletteAction, PaletteItem, SettingsTab, UniversePreset, UniverseSearchMode, WorkspaceTab,
+    AlanCanvasTab, AlanScope, AlanStageMode, AppStore, BasketsViewMode, ChartTimeframe,
+    CompanyViewTab, InboxFilter, InboxViewState, PaletteAction, PaletteItem, SettingsTab,
+    UniversePreset, UniverseSearchMode, WorkspaceTab,
 };
 use crate::theme::{
     BG_ROW_ALT, BG_SELECTED_ROW, BG_VIEWPORT, CORAL_FG, EMERALD_FG, SKY_FG, VIOLET_FG,
@@ -114,13 +115,12 @@ fn store_state_transitions_and_navigation() {
                 UniverseSearchMode::Similar
             );
 
-            store.open_company("AAPL", CompanyViewTab::DeepResearchAlan);
+            store.open_company("AAPL", CompanyViewTab::FinancialsMemo);
             assert!(store.company_open.get());
             assert_eq!(store.selected_ticker.get(), "AAPL");
-            assert_eq!(
-                store.company_view_tab.get(),
-                CompanyViewTab::DeepResearchAlan
-            );
+            assert_eq!(store.company_view_tab.get(), CompanyViewTab::FinancialsMemo);
+            store.company_view_tab.set(CompanyViewTab::XbrlInspector);
+            assert_eq!(store.company_view_tab.get(), CompanyViewTab::XbrlInspector);
 
             store.close_company_overlay();
             assert!(!store.company_open.get());
@@ -3256,6 +3256,218 @@ fn journal_gui_composer_validates_and_records_entries() {
             assert_eq!(
                 j.entries[0].falsification_trigger,
                 "Renewal drops below 90%"
+            );
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn alan_stage_mode_and_shortcut_transitions_work() {
+    let root = temp_workspace("alan_stage_shortcuts");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            // Global launch default is Closed on overview tabs.
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+            assert!(!store.alan_stage_mode.get_untracked().is_open());
+            assert_eq!(
+                store.alan_canvas_tab.get_untracked(),
+                AlanCanvasTab::Interrogate
+            );
+            assert!(!store.alan_context_pinned.get_untracked());
+
+            // ⌘L toggles Closed <-> Split.
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+            assert!(store.alan_stage_mode.get_untracked().is_open());
+
+            // ⇧⌘L toggles Split <-> Immersive.
+            store.toggle_alan_immersive();
+            assert_eq!(
+                store.alan_stage_mode.get_untracked(),
+                AlanStageMode::Immersive
+            );
+
+            // Esc in Immersive steps down to Split without closing Company Desk.
+            store.open_company("COST", CompanyViewTab::FinancialsMemo);
+            store.toggle_alan_immersive();
+            assert_eq!(
+                store.alan_stage_mode.get_untracked(),
+                AlanStageMode::Immersive
+            );
+            assert!(store.company_open.get_untracked());
+
+            if store.alan_stage_mode.get_untracked() == AlanStageMode::Immersive {
+                store.set_alan_stage_mode(AlanStageMode::Split);
+            }
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+            assert!(store.company_open.get_untracked());
+
+            // ⌘L from Immersive also returns to Split; ⌘L from Split closes to Closed.
+            store.toggle_alan_immersive();
+            assert_eq!(
+                store.alan_stage_mode.get_untracked(),
+                AlanStageMode::Immersive
+            );
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+
+            // Direct ⇧⌘L from Closed enters Immersive; close_alan_canvas returns to Closed.
+            store.toggle_alan_immersive();
+            assert_eq!(
+                store.alan_stage_mode.get_untracked(),
+                AlanStageMode::Immersive
+            );
+            store.close_alan_canvas();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn alan_split_preference_remembered_in_deep_research_vs_overview_tabs() {
+    let root = temp_workspace("alan_split_pref");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            // Overview tabs default Closed and do not remember Split across tab switches.
+            assert!(!store.is_deep_research_view());
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+            assert!(!store.alan_deep_research_split_pref.get_untracked());
+
+            store.open_tab(WorkspaceTab::Universe);
+            assert!(!store.is_deep_research_view());
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+
+            // Entering Industry Studio (deep research view) starts Closed until user opens Split.
+            store.open_tab(WorkspaceTab::Industry);
+            assert!(store.is_deep_research_view());
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+
+            // Opening Split in Industry remembers preference for Company Desk & Industry Studio.
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+            assert!(store.alan_deep_research_split_pref.get_untracked());
+
+            // Switching to an overview tab hides Alan back to Closed.
+            store.open_tab(WorkspaceTab::Baskets);
+            assert!(!store.is_deep_research_view());
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+            assert!(store.alan_deep_research_split_pref.get_untracked());
+
+            // Entering Company Desk restores remembered Split preference.
+            store.open_company("AAPL", CompanyViewTab::FinancialsMemo);
+            assert!(store.is_deep_research_view());
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+
+            // Closing Split in Company Desk updates preference to false.
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+            assert!(!store.alan_deep_research_split_pref.get_untracked());
+
+            store.close_company_overlay();
+            store.open_tab(WorkspaceTab::Industry);
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn alan_pin_lock_vs_auto_follow_scope_and_anchor_handoff() {
+    let root = temp_workspace("alan_pin_scope");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            // Unpinned auto-follow tracks Inbox -> Universe -> Industry -> Company.
+            assert_eq!(
+                store.alan_scope.get_untracked(),
+                AlanScope::Briefing("latest".into())
+            );
+
+            store.open_tab(WorkspaceTab::Universe);
+            assert_eq!(store.alan_scope.get_untracked(), AlanScope::Portfolio);
+
+            store.open_tab(WorkspaceTab::Industry);
+            store.open_or_create_industry_from_topic("Specialty Pharma");
+            let ind_slug = store
+                .selected_industry_slug
+                .get_untracked()
+                .expect("industry slug");
+            assert_eq!(
+                store.alan_scope.get_untracked(),
+                AlanScope::Industry(ind_slug.clone())
+            );
+
+            store.open_company("HRMY", CompanyViewTab::FinancialsMemo);
+            assert_eq!(
+                store.alan_scope.get_untracked(),
+                AlanScope::Company("HRMY".into())
+            );
+
+            // Open with anchor sets Split, scope, anchor label, and prefilled prompt.
+            store.open_alan_with_anchor(
+                AlanScope::Company("HRMY".into()),
+                "Red Flag · SBC",
+                "Inspect HRMY SBC/OCF trend",
+            );
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+            assert_eq!(
+                store.alan_anchor_label.get_untracked().as_deref(),
+                Some("Red Flag · SBC")
+            );
+            assert_eq!(
+                store.agent_input_draft.get_untracked(),
+                "Inspect HRMY SBC/OCF trend"
+            );
+
+            // Pinning freezes AlanScope and keeps Split open even across overview tabs.
+            store.toggle_alan_pin();
+            assert!(store.alan_context_pinned.get_untracked());
+
+            store.close_company_overlay();
+            store.open_tab(WorkspaceTab::Journal);
+            assert_eq!(
+                store.alan_scope.get_untracked(),
+                AlanScope::Company("HRMY".into())
+            );
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+
+            // Unpinning immediately snaps AlanScope back to active view context.
+            store.toggle_alan_pin();
+            assert!(!store.alan_context_pinned.get_untracked());
+            assert_eq!(store.alan_scope.get_untracked(), AlanScope::Portfolio);
+
+            // Explicit Feynman handoff for Industry switches scope and Feynman tab.
+            store.open_alan_for_scope(
+                AlanScope::Industry(ind_slug.clone()),
+                AlanCanvasTab::Feynman,
+            );
+            assert_eq!(
+                store.alan_scope.get_untracked(),
+                AlanScope::Industry(ind_slug)
+            );
+            assert_eq!(
+                store.alan_canvas_tab.get_untracked(),
+                AlanCanvasTab::Feynman
             );
         },
     );

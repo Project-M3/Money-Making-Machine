@@ -51,6 +51,14 @@ pub const ICON_CHEVRON_RIGHT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" 
 
 pub const ICON_CHEVRON_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g transform="rotate(180 8 8)"><path d="M5.875 3.75 L10.125 8 L5.875 12.25"/></g></svg>"#;
 
+pub const ICON_ALAN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g><path d="M8 2.25 L9.45 6.55 L13.75 8 L9.45 9.45 L8 13.75 L6.55 9.45 L2.25 8 L6.55 6.55 Z"/></g></svg>"#;
+
+pub const ICON_PIN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g><path d="M5.5 2.75 H10.5 L9.75 6.75 L12 8.75 V10 H4 V8.75 L6.25 6.75 Z"/><line x1="8" y1="10" x2="8" y2="14"/></g></svg>"#;
+
+pub const ICON_EXPAND: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g><path d="M10 2.5 H13.5 V6"/><path d="M6 13.5 H2.5 V10"/><line x1="13.5" y1="2.5" x2="9.25" y2="6.75"/><line x1="2.5" y1="13.5" x2="6.75" y2="9.25"/></g></svg>"#;
+
+pub const ICON_SHRINK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><g><path d="M9.5 6.5 V3"/><path d="M9.5 6.5 H13"/><path d="M6.5 9.5 V13"/><path d="M6.5 9.5 H3"/><line x1="13.5" y1="2.5" x2="9.5" y2="6.5"/><line x1="2.5" y1="13.5" x2="6.5" y2="9.5"/></g></svg>"#;
+
 /// Crisp monochrome `18x18` macOS Menu Bar template icon matching `PIXEL_M3` (transparent background).
 pub const ICON_TRAY_M3: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" shape-rendering="crispEdges"><g fill="#000000"><rect x="1" y="4" width="2" height="10"/><rect x="7" y="4" width="2" height="10"/><rect x="3" y="5" width="1" height="2"/><rect x="6" y="5" width="1" height="2"/><rect x="4" y="6" width="2" height="3"/><rect x="11" y="4" width="5" height="1"/><rect x="11" y="5" width="6" height="1"/><rect x="15" y="6" width="2" height="2"/><rect x="13" y="8" width="3" height="2"/><rect x="15" y="10" width="2" height="2"/><rect x="11" y="12" width="6" height="1"/><rect x="11" y="13" width="5" height="1"/></g></svg>"##;
 

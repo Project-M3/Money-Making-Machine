@@ -1,17 +1,21 @@
-//! In-process `EmbeddedAlan` V2 interrogator for Project-M3 (`2 Alan 审讯台`).
+//! In-process Alan V2 interrogator for Project-M3.
 //!
 //! - Mounts read-only `/mnt/m3` exposing `watchlist.json`, `journal.json`,
-//!   `computed/<TICKER>.json`, and `dossiers/<TICKER>.json`.
+//!   `computed/<TICKER>.json`, `dossiers/<TICKER>.json`, `industries/index.json`,
+//!   `industries/<slug>.json`, `memos/<TICKER>.md`, `memos/<TICKER>-feynman.md`,
+//!   `briefings/latest.json`, and `events/recent.json`.
 //! - Registers deterministic M3 tools (`m3_status`, `m3_report`, `m3_dossier`,
 //!   `m3_update_draft`, `m3_universe_query`, `m3_peer_percentiles`,
-//!   `m3_semantic_neighbors`, `m3_events_for_ticker`) backed directly by
-//!   `store.rs`, `calculator.rs`, `lake.rs`, and `lake_l1.rs`.
+//!   `m3_semantic_neighbors`, `m3_events_for_ticker`, `m3_industry_matrix`,
+//!   `m3_web_search`) backed directly by `store.rs`, `calculator.rs`,
+//!   `industry.rs`, `lake.rs`, and `lake_l1.rs`.
 //! - Enforces [`M3ToolPolicyHook`] unconditionally denying any tool call
 //!   touching `human_judgment`, `computed/`, `raw/`, `data/munger/`, `m3.duckdb`,
 //!   `.parquet`, `lake/`, `journal.json`, `watchlist.json`, `budget.json`,
-//!   `themes.json`, or `memos/`.
-//! - Emits live streamed prose, `alanworks.app`-style Turing Tape rows, and
-//!   clickable Acme evidence tokens (`[report:TICKER]`, `[xbrl:TICKER]`, `[dossier:TICKER]`).
+//!   `themes.json`, `memos/`, `industries/`, `briefings/`, or `events/`.
+//! - Emits live streamed prose, `alanworks.app`-style Turing Tape rows,
+//!   clickable Acme evidence tokens (`[report:TICKER]`, `[xbrl:TICKER]`,
+//!   `[dossier:TICKER]`), and deterministic [`InlineEvidenceCard`] summaries.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
@@ -30,13 +34,17 @@ use alan_shell::Shell;
 use anyhow::{Context, Result};
 use duckdb::params;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, mpsc as tokio_mpsc};
 
+use crate::i18n::UiLang;
 use crate::industry::{self, IndustryProfile};
-use crate::lake::{LakeDb, UniverseFilter, UniverseSortBy};
+use crate::lake::{LakeDb, UniverseFilter, UniverseRow, UniverseSortBy};
 use crate::lake_l1::SimilarSearchFilter;
-use crate::model::{Bucket, Dossier, HumanJudgment, Latticework, MungerReport};
+use crate::model::{
+    Bucket, Dossier, HumanJudgment, Latticework, MungerReport, PriceSnapshot, serde_decimal_opt,
+};
 use crate::store::{self, WorkspacePaths};
 
 const M3_INTERROGATOR_SYSTEM_PROMPT: &str = "\
@@ -79,7 +87,7 @@ pub struct TuringTapeEntry {
 }
 
 /// Clickable Acme evidence token resolved from Alan prose & tool executions.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AcmeEvidenceKind {
     Report,
     Xbrl,
@@ -96,13 +104,168 @@ impl AcmeEvidenceKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcmeEvidenceToken {
     pub id: String,
     pub kind: AcmeEvidenceKind,
     pub ticker: String,
     pub label: String,
     pub summary: String,
+}
+
+/// Deterministic inline evidence card resolved without LLM calls from local
+/// computed reports, watchlist entries, dossiers, and DuckDB universe rows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InlineEvidenceCard {
+    pub ticker: String,
+    pub name: String,
+    pub bucket: Option<Bucket>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub latest_price: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub strike_price: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub strike_gap_pct: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub roic_5y: Option<Decimal>,
+    #[serde(default, with = "serde_decimal_opt")]
+    pub fcf_conversion_or_yield: Option<Decimal>,
+    pub warning_count: usize,
+    pub source_kind: AcmeEvidenceKind,
+    #[serde(default)]
+    pub has_dossier: bool,
+}
+
+/// Unified interrogation scope across Company, Industry, Briefing, and Portfolio views.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AlanScope {
+    Company(String),
+    Industry(String),
+    Briefing(String),
+    Portfolio,
+}
+
+fn sanitize_scope_slug(raw: &str, fallback: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return fallback.to_owned();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    while out.contains("..") {
+        out = out.replace("..", "_");
+    }
+    let cleaned = out.trim_matches(|c| c == '-' || c == '.');
+    if cleaned.is_empty() {
+        fallback.to_owned()
+    } else {
+        cleaned.to_owned()
+    }
+}
+
+impl AlanScope {
+    /// Returns a canonically normalized copy of this scope.
+    pub fn normalized(&self) -> Self {
+        match self {
+            Self::Company(ticker) => Self::Company(ticker.trim().to_ascii_uppercase()),
+            Self::Industry(slug) => Self::Industry(slug.trim().to_owned()),
+            Self::Briefing(id) => {
+                let trimmed = id.trim();
+                Self::Briefing(if trimmed.is_empty() {
+                    "latest".to_owned()
+                } else {
+                    trimmed.to_owned()
+                })
+            }
+            Self::Portfolio => Self::Portfolio,
+        }
+    }
+
+    /// Safe filename slug for session persistence and routing
+    /// (e.g. `company-COST`, `industry-retail`, `briefing-latest`, `portfolio`).
+    pub fn scope_key(&self) -> String {
+        match self {
+            Self::Company(ticker) => {
+                let norm = ticker.trim().to_ascii_uppercase();
+                format!("company-{}", sanitize_scope_slug(&norm, "unknown"))
+            }
+            Self::Industry(slug) => {
+                format!("industry-{}", sanitize_scope_slug(slug, "unknown"))
+            }
+            Self::Briefing(id) => {
+                let trimmed = id.trim();
+                let key = if trimmed.is_empty() {
+                    "latest"
+                } else {
+                    trimmed
+                };
+                format!("briefing-{}", sanitize_scope_slug(key, "latest"))
+            }
+            Self::Portfolio => "portfolio".to_owned(),
+        }
+    }
+
+    /// Localized scope badge label shown in the Alan Canvas header.
+    pub fn label_for(&self, lang: UiLang) -> String {
+        match self {
+            Self::Company(ticker) => {
+                let upper = ticker.trim().to_ascii_uppercase();
+                if upper.is_empty() {
+                    lang.t("公司", "Company").to_owned()
+                } else {
+                    upper
+                }
+            }
+            Self::Industry(slug) => {
+                let trimmed = slug.trim();
+                if trimmed.is_empty() {
+                    lang.t("行业", "Industry").to_owned()
+                } else {
+                    trimmed.to_owned()
+                }
+            }
+            Self::Briefing(id) => {
+                let trimmed = id.trim();
+                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("latest") {
+                    lang.t("简报", "Briefing").to_owned()
+                } else {
+                    format!("{} · {trimmed}", lang.t("简报", "Briefing"))
+                }
+            }
+            Self::Portfolio => lang.t("全局能力圈", "Portfolio").to_owned(),
+        }
+    }
+
+    /// Builds a grounded, bounded deterministic context preamble for this scope
+    /// from local workspace files and read-only DuckDB tables.
+    pub fn context_preamble(&self, paths: &WorkspacePaths, lang: UiLang) -> String {
+        match self {
+            Self::Company(ticker) => build_company_context_preamble(paths, ticker, lang),
+            Self::Industry(slug) => build_industry_context_preamble(paths, slug, lang),
+            Self::Briefing(id) => build_briefing_context_preamble(paths, id, lang),
+            Self::Portfolio => build_portfolio_context_preamble(paths, lang),
+        }
+    }
+
+    /// Composes a full interrogation turn combining [`AlanScope::context_preamble`]
+    /// with the user's question.
+    pub fn compose_interrogation_turn(
+        &self,
+        paths: &WorkspacePaths,
+        lang: UiLang,
+        question: &str,
+    ) -> String {
+        let preamble = self.context_preamble(paths, lang);
+        format!("{preamble}\n\n{}", question.trim())
+    }
 }
 
 /// Events streamed into the M3 UI and CLI consumers.
@@ -152,6 +315,8 @@ struct TreeSnapshot {
     versions: VersionTable,
 }
 
+const RECENT_EVENTS_MOUNT_CAP: usize = 40;
+
 impl TreeSnapshot {
     fn from_paths(paths: &WorkspacePaths) -> Self {
         let mut files = BTreeMap::new();
@@ -188,7 +353,7 @@ impl TreeSnapshot {
             }
         }
 
-        let dossiers_dir = paths.workbench_dir.join("dossiers");
+        let dossiers_dir = paths.dossiers_dir();
         if let Ok(entries) = std::fs::read_dir(&dossiers_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
@@ -201,22 +366,162 @@ impl TreeSnapshot {
             }
         }
 
+        // Read-only industries/*.json + generated industries/index.json.
+        let industries_dir = paths.industries_dir();
+        if let Ok(entries) = std::fs::read_dir(&industries_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("json")
+                    && let Some(fname) = p.file_name().and_then(|n| n.to_str())
+                    && fname != "index.json"
+                    && let Ok(bytes) = std::fs::read(&p)
+                {
+                    files.insert(format!("industries/{fname}"), bytes);
+                }
+            }
+        }
+        let industry_profiles = industry::list_industries(paths).unwrap_or_default();
+        let industry_index_rows: Vec<Value> = industry_profiles
+            .iter()
+            .map(|p| {
+                let safe = crate::market::safe_symbol_filename(&p.slug);
+                if !files.contains_key(&format!("industries/{safe}.json"))
+                    && let Ok(bytes) = serde_json::to_vec_pretty(p)
+                {
+                    files.insert(format!("industries/{safe}.json"), bytes);
+                }
+                json!({
+                    "slug": p.slug,
+                    "title": p.title,
+                    "status": p.status,
+                    "sic_codes": p.sic_codes,
+                    "keywords": p.keywords,
+                    "bound_tickers": p.bound_tickers,
+                    "multiple_low": p.multiple_low.map(|d| d.normalize().to_string()),
+                    "multiple_high": p.multiple_high.map(|d| d.normalize().to_string()),
+                    "updated_at_ms": p.updated_at_ms,
+                    "has_primer": paths.industry_primer_path(&p.slug).is_file(),
+                })
+            })
+            .collect();
+        if let Ok(bytes) = serde_json::to_vec_pretty(&json!({
+            "count": industry_index_rows.len(),
+            "industries": industry_index_rows,
+        })) {
+            files.insert("industries/index.json".to_string(), bytes);
+        }
+
+        // Read-only memos/<TICKER>.md and memos/<TICKER>-feynman.md.
+        let memos_dir = paths.workbench_dir.join("memos");
+        if let Ok(entries) = std::fs::read_dir(&memos_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("md")
+                    && let Some(fname) = p.file_name().and_then(|n| n.to_str())
+                    && let Ok(bytes) = std::fs::read(&p)
+                {
+                    files.insert(format!("memos/{fname}"), bytes);
+                }
+            }
+        }
+
+        // Read-only briefings/latest.json and events/recent.json from DuckDB with graceful fallback.
+        let (briefing_payload, events_payload) = match LakeDb::open_read_only_if_exists(paths) {
+            Ok(Some(db)) => {
+                let briefing_json = match db.latest_circle_briefing(None) {
+                    Ok(Some(b)) => json!({
+                        "available": true,
+                        "briefing": b,
+                    }),
+                    Ok(None) => json!({
+                        "available": false,
+                        "briefing": Value::Null,
+                        "note": "No persisted circle briefing found yet.",
+                    }),
+                    Err(err) => json!({
+                        "available": false,
+                        "briefing": Value::Null,
+                        "note": format!("Failed to read latest briefing: {err}"),
+                    }),
+                };
+                let signals = db
+                    .list_inbox_signals(None, None, RECENT_EVENTS_MOUNT_CAP)
+                    .unwrap_or_default();
+                let triages = db
+                    .list_signal_triages(None, None, RECENT_EVENTS_MOUNT_CAP)
+                    .unwrap_or_default();
+                let events_json = json!({
+                    "available": true,
+                    "cap": RECENT_EVENTS_MOUNT_CAP,
+                    "count": signals.len(),
+                    "signals": signals,
+                    "triage_count": triages.len(),
+                    "triages": triages,
+                });
+                (briefing_json, events_json)
+            }
+            Ok(None) => (
+                json!({
+                    "available": false,
+                    "briefing": Value::Null,
+                    "note": "Lake database not initialized yet.",
+                }),
+                json!({
+                    "available": false,
+                    "cap": RECENT_EVENTS_MOUNT_CAP,
+                    "count": 0,
+                    "signals": [],
+                    "triage_count": 0,
+                    "triages": [],
+                }),
+            ),
+            Err(err) => (
+                json!({
+                    "available": false,
+                    "briefing": Value::Null,
+                    "note": format!("Lake database unavailable: {err}"),
+                }),
+                json!({
+                    "available": false,
+                    "cap": RECENT_EVENTS_MOUNT_CAP,
+                    "count": 0,
+                    "signals": [],
+                    "triage_count": 0,
+                    "triages": [],
+                    "note": format!("Lake database unavailable: {err}"),
+                }),
+            ),
+        };
+        if let Ok(bytes) = serde_json::to_vec_pretty(&briefing_payload) {
+            files.insert("briefings/latest.json".to_string(), bytes);
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&events_payload) {
+            files.insert("events/recent.json".to_string(), bytes);
+        }
+
+        const TOP_DIRS: [&str; 6] = [
+            "computed",
+            "dossiers",
+            "industries",
+            "memos",
+            "briefings",
+            "events",
+        ];
         let mut dirs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         {
             let root = dirs.entry(String::new()).or_default();
-            root.insert("computed".to_string());
-            root.insert("dossiers".to_string());
+            for dir in TOP_DIRS {
+                root.insert(dir.to_string());
+            }
         }
-        dirs.entry("computed".to_string()).or_default();
-        dirs.entry("dossiers".to_string()).or_default();
-
         let mut path_ids = HashMap::new();
         path_ids.insert(String::new(), 0);
         let mut next_id = 1u64;
-        path_ids.insert("computed".to_string(), next_id);
-        next_id += 1;
-        path_ids.insert("dossiers".to_string(), next_id);
-        next_id += 1;
+        for dir in TOP_DIRS {
+            dirs.entry(dir.to_string()).or_default();
+            path_ids.insert(dir.to_string(), next_id);
+            next_id += 1;
+        }
 
         for rel in files.keys() {
             let parts: Vec<&str> = rel.split('/').collect();
@@ -651,6 +956,43 @@ impl M3ToolPolicyHook {
         }
         None
     }
+
+    fn inspect_write_readonly_mount(value: &Value) -> Option<&'static str> {
+        match value {
+            Value::Object(map) => {
+                for (k, v) in map {
+                    let lk = k.to_ascii_lowercase();
+                    if matches!(lk.as_str(), "briefings" | "briefings_dir" | "briefing_path") {
+                        return Some("briefings/");
+                    }
+                    if matches!(lk.as_str(), "events_path" | "recent_events") {
+                        return Some("events/");
+                    }
+                    if let Some(hit) = Self::inspect_write_readonly_mount(v) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            Value::Array(items) => items.iter().find_map(Self::inspect_write_readonly_mount),
+            Value::String(s) => {
+                let lower = s.trim().to_ascii_lowercase().replace('\\', "/");
+                if Self::matches_path_segment(&lower, "briefings") {
+                    return Some("briefings/");
+                }
+                if Self::matches_path_segment(&lower, "events")
+                    || lower.contains("events/recent.json")
+                {
+                    return Some("events/");
+                }
+                if lower == "/mnt/m3" || lower.starts_with("/mnt/m3/") {
+                    return Some("/mnt/m3");
+                }
+                None
+            }
+            _ => None,
+        }
+    }
 }
 
 impl ToolPolicyHook for M3ToolPolicyHook {
@@ -697,6 +1039,11 @@ impl ToolPolicyHook for M3ToolPolicyHook {
         match capability {
             ToolCapability::Read => HookDecision::Allow,
             ToolCapability::Write => {
+                if let Some(target) = Self::inspect_write_readonly_mount(args) {
+                    return HookDecision::Deny(format!(
+                        "红线拦截：{target} 属于只读事实挂载区，严禁 Alan 写入或覆盖。"
+                    ));
+                }
                 if tool_name != "m3_update_draft" {
                     return HookDecision::Deny(format!(
                         "红线拦截：仅允许通过 m3_update_draft 更新 AI 草稿区，拒绝执行 {tool_name}。"
@@ -2073,6 +2420,11 @@ enum InterrogatorCommand {
         bucket: Bucket,
         question: String,
     },
+    SubmitScoped {
+        scope: AlanScope,
+        lang: UiLang,
+        question: String,
+    },
     SubmitPrompt {
         display_prompt: String,
         full_prompt: String,
@@ -2083,9 +2435,10 @@ enum InterrogatorCommand {
     Shutdown,
 }
 
-/// Asynchronous controller hosting `EmbeddedAlan` V2 for `2 Alan 审讯台`.
+/// Asynchronous controller hosting Alan V2 across Company, Industry, Briefing, and Portfolio scopes.
 #[derive(Clone)]
 pub struct M3InterrogatorHandle {
+    paths: WorkspacePaths,
     fs: Arc<M3WorkbenchFs>,
     cmd_tx: tokio_mpsc::UnboundedSender<InterrogatorCommand>,
     events: Arc<StdMutex<Vec<InterrogatorEvent>>>,
@@ -2093,12 +2446,15 @@ pub struct M3InterrogatorHandle {
     usage: Arc<StdMutex<(u64, u64)>>,
 }
 
+/// Canonical alias for [`M3InterrogatorHandle`].
+pub type M3AlanInterrogator = M3InterrogatorHandle;
+
 impl M3InterrogatorHandle {
     pub fn start_shared_credentials(paths: WorkspacePaths) -> Self {
         Self::start_with_llm(paths, LlmSource::SharedProductCredentials)
     }
 
-    /// Starts EmbeddedAlan with an async wakeup notifier fired whenever an event is pushed.
+    /// Starts Alan with an async wakeup notifier fired whenever an event is pushed.
     pub fn start_shared_credentials_notified(
         paths: WorkspacePaths,
         notify: Arc<tokio::sync::Notify>,
@@ -2120,6 +2476,7 @@ impl M3InterrogatorHandle {
         let events = Arc::new(StdMutex::new(Vec::new()));
         let usage = Arc::new(StdMutex::new((0u64, 0u64)));
         let fs_worker = Arc::clone(&fs);
+        let worker_paths = paths.clone();
         let events_worker = EventSink {
             events: Arc::clone(&events),
             notify: notify.clone(),
@@ -2151,21 +2508,24 @@ impl M3InterrogatorHandle {
                 };
 
                 rt.block_on(async move {
-                    let app =
-                        match boot_m3_embedded(paths, Arc::clone(&fs_worker), llm).await {
-                            Ok(app) => app,
-                            Err(err) => {
-                                push_event(
-                                    &events_worker,
-                                    InterrogatorEvent::Error {
-                                        message: friendly_m3_credentials_error(&format!(
-                                            "{err:#}"
-                                        )),
-                                    },
-                                );
-                                return;
-                            }
-                        };
+                    let app = match boot_m3_embedded(
+                        worker_paths.clone(),
+                        Arc::clone(&fs_worker),
+                        llm,
+                    )
+                    .await
+                    {
+                        Ok(app) => app,
+                        Err(err) => {
+                            push_event(
+                                &events_worker,
+                                InterrogatorEvent::Error {
+                                    message: friendly_m3_credentials_error(&format!("{err:#}")),
+                                },
+                            );
+                            return;
+                        }
+                    };
 
                     let mut client: RootAgentClient = app.root_agent();
                     let mut stream = match client.event_stream().await {
@@ -2196,6 +2556,24 @@ impl M3InterrogatorHandle {
                                         fs_worker.refresh();
                                         let prompt = compose_interrogation_turn(&ticker, &name, bucket, &question);
                                         match client.submit_text(prompt.clone()).await {
+                                            Ok(submission_id) => {
+                                                active_submission = Some(submission_id.clone());
+                                                push_event(&events_worker, InterrogatorEvent::UserSubmitted {
+                                                    submission_id,
+                                                    prompt: question,
+                                                });
+                                            }
+                                            Err(err) => {
+                                                push_event(&events_worker, InterrogatorEvent::Error {
+                                                    message: friendly_m3_credentials_error(&format!("{err:#}")),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    InterrogatorCommand::SubmitScoped { scope, lang, question } => {
+                                        fs_worker.refresh();
+                                        let prompt = scope.compose_interrogation_turn(&worker_paths, lang, &question);
+                                        match client.submit_text(prompt).await {
                                             Ok(submission_id) => {
                                                 active_submission = Some(submission_id.clone());
                                                 push_event(&events_worker, InterrogatorEvent::UserSubmitted {
@@ -2342,11 +2720,16 @@ impl M3InterrogatorHandle {
         }
 
         Self {
+            paths,
             fs,
             cmd_tx,
             events,
             usage,
         }
+    }
+
+    pub fn paths(&self) -> &WorkspacePaths {
+        &self.paths
     }
 
     #[allow(dead_code)]
@@ -2374,6 +2757,20 @@ impl M3InterrogatorHandle {
             ticker: ticker.into(),
             name: name.into(),
             bucket,
+            question: q,
+        });
+    }
+
+    /// Submits a scoped interrogation turn across any [`AlanScope`] variant using
+    /// the shared `/mnt/m3` mount, deterministic tools, and [`M3ToolPolicyHook`].
+    pub fn submit_scoped(&self, scope: &AlanScope, lang: UiLang, question: impl Into<String>) {
+        let q = question.into();
+        if q.trim().is_empty() {
+            return;
+        }
+        let _ = self.cmd_tx.send(InterrogatorCommand::SubmitScoped {
+            scope: scope.normalized(),
+            lang,
             question: q,
         });
     }
@@ -2485,6 +2882,309 @@ pub fn compose_feynman_quiz_turn(profile: &IndustryProfile, primer_excerpt: &str
          行业手册参考：\n{excerpt}",
         profile.title, profile.slug
     )
+}
+
+fn fmt_opt_dec(v: Option<Decimal>, dp: u32) -> String {
+    v.map(|d| d.round_dp(dp).normalize().to_string())
+        .unwrap_or_else(|| "—".to_owned())
+}
+
+fn build_company_context_preamble(paths: &WorkspacePaths, ticker: &str, lang: UiLang) -> String {
+    let upper = ticker.trim().to_ascii_uppercase();
+    let safe = crate::market::safe_symbol_filename(&upper);
+    let rep_opt = store::read_json::<MungerReport>(&paths.computed_report_path(&upper))
+        .ok()
+        .or_else(|| store::load_or_recompute_ticker(paths, &upper).ok());
+    let dossier_opt = store::load_dossier(paths, &upper).ok().flatten();
+    let has_memo = paths
+        .workbench_dir
+        .join("memos")
+        .join(format!("{safe}.md"))
+        .is_file();
+    let has_feynman = paths
+        .workbench_dir
+        .join("memos")
+        .join(format!("{safe}-feynman.md"))
+        .is_file();
+
+    let mut lines = Vec::new();
+    match rep_opt {
+        Some(rep) => {
+            let val = rep.ttm_valuation.as_ref().or(rep.fy_valuation.as_ref());
+            let price = fmt_opt_dec(rep.price.as_ref().map(|p| p.price), 2);
+            let strike = fmt_opt_dec(val.and_then(|v| v.strike_price), 2);
+            let gap = fmt_opt_dec(val.and_then(|v| v.distance_to_strike_pct), 2);
+            let roic = fmt_opt_dec(rep.roic_5y_avg_pct, 2);
+            lines.push(match lang {
+                UiLang::Zh => format!(
+                    "[当前研究范围：公司 {upper} · {} | 分桶 {} | 状态 {} | 现价 {price} {} | 击球价 {strike} ({gap}%) | 5Y ROIC {roic}% | 预警 {} 项]",
+                    rep.name,
+                    rep.bucket.code(),
+                    rep.status.label_for(lang),
+                    rep.currency,
+                    rep.warnings.len(),
+                ),
+                UiLang::En => format!(
+                    "[Active Scope: Company {upper} · {} | Bucket {} | Status {} | Price {price} {} | Strike {strike} ({gap}%) | 5Y ROIC {roic}% | Warnings {}]",
+                    rep.name,
+                    rep.bucket.code(),
+                    rep.status.label_for(lang),
+                    rep.currency,
+                    rep.warnings.len(),
+                ),
+            });
+        }
+        None => {
+            lines.push(match lang {
+                UiLang::Zh => format!("[当前研究范围：公司 {upper}（观察池/计算报告尚未生成）]"),
+                UiLang::En => {
+                    format!("[Active Scope: Company {upper} (no saved computed report yet)]")
+                }
+            });
+        }
+    }
+
+    if let Some(d) = dossier_opt {
+        let stance = d.human_judgment.my_stance.as_deref().unwrap_or("UNDECIDED");
+        let excerpt = truncate_chars(d.three_sentence_business.trim(), 240);
+        lines.push(match lang {
+            UiLang::Zh => format!(
+                "现有档案摘要（人类立场只读 {stance} | 待人类答辩 {}）：{excerpt}",
+                d.human_judgment.pending_human_review
+            ),
+            UiLang::En => format!(
+                "Existing dossier (read-only human stance {stance} | pending_review={}): {excerpt}",
+                d.human_judgment.pending_human_review
+            ),
+        });
+    }
+
+    lines.push(match lang {
+        UiLang::Zh => format!(
+            "请优先调用 `m3_report`、`m3_dossier`、`m3_events_for_ticker` 或读取 `/mnt/m3/computed/{safe}.json`、`/mnt/m3/dossiers/{safe}.json`{}{}; 引用依据时请标注 `[report:{upper}]`、`[xbrl:{upper}]`、`[dossier:{upper}]`，严禁修改 `human_judgment` 或直接给出买卖指令。",
+            if has_memo { format!("、`/mnt/m3/memos/{safe}.md`") } else { String::new() },
+            if has_feynman { format!("、`/mnt/m3/memos/{safe}-feynman.md`") } else { String::new() },
+        ),
+        UiLang::En => format!(
+            "Verify facts via `m3_report`, `m3_dossier`, `m3_events_for_ticker`, or read-only `/mnt/m3/computed/{safe}.json` and `/mnt/m3/dossiers/{safe}.json`{}{}; cite `[report:{upper}]`, `[xbrl:{upper}]`, `[dossier:{upper}]`. Never modify `human_judgment` or issue buy/sell commands.",
+            if has_memo { format!(", `/mnt/m3/memos/{safe}.md`") } else { String::new() },
+            if has_feynman { format!(", `/mnt/m3/memos/{safe}-feynman.md`") } else { String::new() },
+        ),
+    });
+
+    lines.join("\n")
+}
+
+fn build_industry_context_preamble(paths: &WorkspacePaths, slug: &str, lang: UiLang) -> String {
+    let trimmed = slug.trim();
+    if let Ok(profile) = industry::load_industry(paths, trimmed) {
+        let primer = industry::load_industry_primer_md(paths, trimmed).unwrap_or_default();
+        let tickers = if profile.bound_tickers.is_empty() {
+            lang.t("暂无绑定标的", "none bound").to_owned()
+        } else {
+            profile.bound_tickers.join(", ")
+        };
+        let anchor = profile
+            .valuation_anchor_label()
+            .unwrap_or_else(|| lang.t("尚未设定", "not set").to_owned());
+        let excerpt = if primer.trim().is_empty() {
+            lang.t("（暂无行业活手册正文）", "(No industry living primer yet)")
+                .to_owned()
+        } else {
+            truncate_chars(&primer, 1600)
+        };
+        return match lang {
+            UiLang::Zh => format!(
+                "[当前研究范围：行业 {} (slug: `{}`) | 状态 {} | 代表公司池：{tickers} | 人类估值锚：{anchor}]\n\
+                 请使用 `m3_industry_matrix`、`m3_events_for_ticker`、`m3_web_search` 及只读 `/mnt/m3/industries/{}.json` 核对事实；严格区分 `[SEC 10-K: TICKER]` 与 `[Web: 标题 (URL)]`，禁止修改人类判断。\n\
+                 行业活手册摘要：\n{excerpt}",
+                profile.title,
+                profile.slug,
+                profile.status.label_for(lang),
+                profile.slug
+            ),
+            UiLang::En => format!(
+                "[Active Scope: Industry {} (slug: `{}`) | Status {} | Bound Tickers: {tickers} | Human Valuation Anchor: {anchor}]\n\
+                 Verify facts via `m3_industry_matrix`, `m3_events_for_ticker`, `m3_web_search`, and read-only `/mnt/m3/industries/{}.json`; distinguish `[SEC 10-K: TICKER]` from `[Web: Title (URL)]`. Never alter human judgment.\n\
+                 Primer Excerpt:\n{excerpt}",
+                profile.title,
+                profile.slug,
+                profile.status.label_for(lang),
+                profile.slug
+            ),
+        };
+    }
+
+    match lang {
+        UiLang::Zh => format!(
+            "[当前研究范围：行业 `{trimmed}`]\n\
+             未找到该行业档案，可先读取只读 `/mnt/m3/industries/index.json` 或调用 `m3_universe_query` 核对。"
+        ),
+        UiLang::En => format!(
+            "[Active Scope: Industry `{trimmed}`]\n\
+             Industry profile not found on disk; inspect read-only `/mnt/m3/industries/index.json` or call `m3_universe_query`."
+        ),
+    }
+}
+
+fn build_briefing_context_preamble(
+    paths: &WorkspacePaths,
+    briefing_id: &str,
+    lang: UiLang,
+) -> String {
+    let trimmed = briefing_id.trim();
+    let target_id = if trimmed.is_empty() {
+        "latest"
+    } else {
+        trimmed
+    };
+
+    let mut briefing_opt = None;
+    let mut recent_signals_count = 0usize;
+    let mut recent_triages_count = 0usize;
+    if let Ok(Some(db)) = LakeDb::open_read_only_if_exists(paths) {
+        if target_id.eq_ignore_ascii_case("latest") {
+            briefing_opt = db.latest_circle_briefing(None).ok().flatten();
+        } else if let Ok(list) = db.list_circle_briefings(None, 25) {
+            briefing_opt = list
+                .into_iter()
+                .find(|b| b.briefing_id == target_id || b.period_key == target_id);
+        }
+        recent_signals_count = db
+            .list_inbox_signals(None, None, RECENT_EVENTS_MOUNT_CAP)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        recent_triages_count = db
+            .list_signal_triages(None, None, RECENT_EVENTS_MOUNT_CAP)
+            .map(|v| v.len())
+            .unwrap_or(0);
+    }
+
+    match briefing_opt {
+        Some(b) => {
+            let radar_tickers: Vec<&str> = b
+                .strike_radar
+                .iter()
+                .take(8)
+                .map(|r| r.ticker.as_str())
+                .collect();
+            let radar_label = if radar_tickers.is_empty() {
+                lang.t("无", "none").to_owned()
+            } else {
+                radar_tickers.join(", ")
+            };
+            let exec_summary = b
+                .executive_summary
+                .as_deref()
+                .map(|s| truncate_chars(s.trim(), 500))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    lang.t(
+                        "（静默期或未生成 LLM 摘要）",
+                        "(Quiet period or deterministic preview)",
+                    )
+                    .to_owned()
+                });
+            match lang {
+                UiLang::Zh => format!(
+                    "[当前研究范围：能力圈简报 {} ({}) | 击球雷达 {} 项: {radar_label} | 财报异动 {} 项 | L1.5 哨兵命中 {} 项 | 近 40 条信号 {recent_signals_count} / 研判 {recent_triages_count}]\n\
+                     简报标题：{}\n\
+                     摘要：{exec_summary}\n\
+                     请结合只读 `/mnt/m3/briefings/latest.json`、`/mnt/m3/events/recent.json` 与 `m3_report` / `m3_events_for_ticker` 回答，并用 `[report:TICKER]` / `[xbrl:TICKER]` 标注相关标的。",
+                    b.period_key,
+                    b.period.as_str(),
+                    b.strike_radar.len(),
+                    b.filing_deltas.len(),
+                    b.watchdog_hits.len(),
+                    b.headline,
+                ),
+                UiLang::En => format!(
+                    "[Active Scope: Circle Briefing {} ({}) | Strike Radar {}: {radar_label} | Filing Deltas {} | Watchdog Hits {} | Recent signals {recent_signals_count} / triages {recent_triages_count}]\n\
+                     Headline: {}\n\
+                     Summary: {exec_summary}\n\
+                     Use read-only `/mnt/m3/briefings/latest.json`, `/mnt/m3/events/recent.json`, `m3_report`, and `m3_events_for_ticker`, citing `[report:TICKER]` / `[xbrl:TICKER]`.",
+                    b.period_key,
+                    b.period.as_str(),
+                    b.strike_radar.len(),
+                    b.filing_deltas.len(),
+                    b.watchdog_hits.len(),
+                    b.headline,
+                ),
+            }
+        }
+        None => match lang {
+            UiLang::Zh => format!(
+                "[当前研究范围：能力圈简报 `{target_id}`（暂未持久化简报）| 近 40 条信号 {recent_signals_count} / 研判 {recent_triages_count}]\n\
+                 请读取只读 `/mnt/m3/briefings/latest.json`、`/mnt/m3/events/recent.json` 及 `m3_status` 核对最新观察池与事件动态。"
+            ),
+            UiLang::En => format!(
+                "[Active Scope: Circle Briefing `{target_id}` (no persisted briefing yet) | Recent signals {recent_signals_count} / triages {recent_triages_count}]\n\
+                 Inspect read-only `/mnt/m3/briefings/latest.json`, `/mnt/m3/events/recent.json`, and `m3_status` for current circle and event state."
+            ),
+        },
+    }
+}
+
+fn build_portfolio_context_preamble(paths: &WorkspacePaths, lang: UiLang) -> String {
+    let wl = store::load_watchlist(paths).ok();
+    let journal = store::load_journal(paths).ok();
+    let reports = store::load_or_compute_reports(paths).unwrap_or_default();
+    let industries = industry::list_industries(paths).unwrap_or_default();
+
+    let (core_n, watch_n, out_n, hard_n) = wl.as_ref().map_or((0, 0, 0, 0), |w| {
+        let mut c = 0usize;
+        let mut wa = 0usize;
+        let mut o = 0usize;
+        let mut h = 0usize;
+        for co in &w.companies {
+            match co.bucket {
+                Bucket::Core => c += 1,
+                Bucket::Watch => wa += 1,
+                Bucket::Out => o += 1,
+                Bucket::TooHard => h += 1,
+            }
+        }
+        (c, wa, o, h)
+    });
+
+    let strike_tickers: Vec<String> = reports
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.status,
+                crate::model::StrikeZoneStatus::InStrikeZone
+                    | crate::model::StrikeZoneStatus::NearStrikeZone
+            )
+        })
+        .take(8)
+        .map(|r| r.ticker.clone())
+        .collect();
+    let strike_summary = if strike_tickers.is_empty() {
+        lang.t("暂无接近或进入击球区标的", "none in/near strike zone")
+            .to_owned()
+    } else {
+        strike_tickers.join(", ")
+    };
+
+    let (positions_n, cash_label) = journal.as_ref().map_or((0, "—".to_owned()), |j| {
+        (
+            j.positions.len(),
+            format!("{} {}", j.cash_balance.round_dp(2).normalize(), j.currency),
+        )
+    });
+
+    match lang {
+        UiLang::Zh => format!(
+            "[当前研究范围：全局能力圈组合 | 观察池 IN={core_n}, WATCH={watch_n}, OUT={out_n}, TOO_HARD={hard_n} | 击球雷达：{strike_summary} | 模拟持仓 {positions_n} 笔 · 现金 {cash_label} | 行业研究 {} 个]\n\
+             请调用 `m3_status`、`m3_universe_query`、`m3_industry_matrix` 或读取只读 `/mnt/m3/watchlist.json`、`/mnt/m3/journal.json`、`/mnt/m3/industries/index.json` 核对全盘数据；引用标的时标注 `[report:TICKER]`、`[xbrl:TICKER]`、`[dossier:TICKER]`，严禁篡改 `watchlist.json`、`journal.json` 或 `human_judgment`。",
+            industries.len()
+        ),
+        UiLang::En => format!(
+            "[Active Scope: Circle Portfolio | Watchlist IN={core_n}, WATCH={watch_n}, OUT={out_n}, TOO_HARD={hard_n} | Strike Radar: {strike_summary} | Paper Positions: {positions_n} · Cash {cash_label} | Industry Studies: {}]\n\
+             Call `m3_status`, `m3_universe_query`, `m3_industry_matrix`, or read `/mnt/m3/watchlist.json`, `/mnt/m3/journal.json`, `/mnt/m3/industries/index.json`; cite `[report:TICKER]`, `[xbrl:TICKER]`, `[dossier:TICKER]`. Never mutate `watchlist.json`, `journal.json`, or `human_judgment`.",
+            industries.len()
+        ),
+    }
 }
 
 /// Builds and boots Project-M3's isolated `EmbeddedAlan` V2 instance.
@@ -2768,6 +3468,182 @@ fn build_evidence_token(
             }
         }
     }
+}
+
+/// Resolves clickable [`AcmeEvidenceToken`]s into deterministic, deduplicated
+/// [`InlineEvidenceCard`]s using saved computed reports, watchlist entries,
+/// dossiers, and read-only DuckDB universe snapshots (zero LLM calls).
+pub fn resolve_inline_evidence_cards(
+    paths: &WorkspacePaths,
+    tokens: &[AcmeEvidenceToken],
+) -> Vec<InlineEvidenceCard> {
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+
+    struct GroupedTicker {
+        ticker: String,
+        source_kind: AcmeEvidenceKind,
+        has_dossier_token: bool,
+    }
+
+    let mut grouped: Vec<GroupedTicker> = Vec::new();
+    let mut ticker_idx: HashMap<String, usize> = HashMap::new();
+    for tok in tokens {
+        let upper = tok.ticker.trim().to_ascii_uppercase();
+        if upper.is_empty() {
+            continue;
+        }
+        if let Some(&idx) = ticker_idx.get(&upper) {
+            if tok.kind == AcmeEvidenceKind::Report {
+                grouped[idx].source_kind = AcmeEvidenceKind::Report;
+            } else if tok.kind == AcmeEvidenceKind::Xbrl
+                && grouped[idx].source_kind == AcmeEvidenceKind::Dossier
+            {
+                grouped[idx].source_kind = AcmeEvidenceKind::Xbrl;
+            }
+            if tok.kind == AcmeEvidenceKind::Dossier {
+                grouped[idx].has_dossier_token = true;
+            }
+        } else {
+            ticker_idx.insert(upper.clone(), grouped.len());
+            grouped.push(GroupedTicker {
+                ticker: upper,
+                source_kind: tok.kind.clone(),
+                has_dossier_token: tok.kind == AcmeEvidenceKind::Dossier,
+            });
+        }
+    }
+
+    if grouped.is_empty() {
+        return Vec::new();
+    }
+
+    let watchlist = store::load_watchlist(paths).ok();
+    let mut lake_rows: HashMap<String, UniverseRow> = HashMap::new();
+    let mut lake_loaded = false;
+
+    let mut cards = Vec::with_capacity(grouped.len());
+    for item in grouped {
+        let ticker = &item.ticker;
+        let wl_entry = watchlist.as_ref().and_then(|wl| {
+            wl.companies
+                .iter()
+                .find(|c| c.ticker.eq_ignore_ascii_case(ticker))
+        });
+
+        let report = store::read_json::<MungerReport>(&paths.computed_report_path(ticker))
+            .ok()
+            .or_else(|| {
+                wl_entry
+                    .is_some()
+                    .then(|| store::load_or_recompute_ticker(paths, ticker).ok())
+                    .flatten()
+            });
+
+        let dossier = store::load_dossier(paths, ticker).ok().flatten();
+        let has_dossier = dossier.is_some() || item.has_dossier_token;
+
+        if let Some(rep) = report {
+            let val = rep.ttm_valuation.as_ref().or(rep.fy_valuation.as_ref());
+            let fcf_yield =
+                val.and_then(|v| v.strict_fcf_yield_mcap_pct.or(v.strict_fcf_yield_ev_pct));
+            cards.push(InlineEvidenceCard {
+                ticker: rep.ticker,
+                name: rep.name,
+                bucket: Some(rep.bucket),
+                currency: Some(rep.currency),
+                latest_price: rep.price.as_ref().map(|p| p.price),
+                strike_price: val.and_then(|v| v.strike_price),
+                strike_gap_pct: val.and_then(|v| v.distance_to_strike_pct),
+                roic_5y: rep.roic_5y_avg_pct,
+                fcf_conversion_or_yield: fcf_yield,
+                warning_count: rep.warnings.len(),
+                source_kind: item.source_kind,
+                has_dossier,
+            });
+            continue;
+        }
+
+        if !lake_loaded {
+            lake_loaded = true;
+            if let Ok(Some(db)) = LakeDb::open_read_only_if_exists(paths) {
+                let all_tickers: Vec<String> = vec![ticker.clone()];
+                if let Ok(rows) = db.load_universe_rows_by_tickers(&all_tickers) {
+                    for r in rows {
+                        lake_rows.insert(r.ticker.to_ascii_uppercase(), r);
+                    }
+                }
+            }
+        } else if !lake_rows.contains_key(ticker)
+            && let Ok(Some(db)) = LakeDb::open_read_only_if_exists(paths)
+            && let Ok(rows) = db.load_universe_rows_by_tickers(std::slice::from_ref(ticker))
+        {
+            for r in rows {
+                lake_rows.insert(r.ticker.to_ascii_uppercase(), r);
+            }
+        }
+
+        if let Some(row) = lake_rows.get(ticker) {
+            cards.push(InlineEvidenceCard {
+                ticker: row.ticker.clone(),
+                name: wl_entry
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| row.name.clone()),
+                bucket: wl_entry.map(|c| c.bucket).or(row.bucket_opt),
+                currency: wl_entry
+                    .map(|c| c.currency.clone())
+                    .or(Some("USD".to_owned())),
+                latest_price: row.latest_price,
+                strike_price: row.strike_price,
+                strike_gap_pct: row.distance_to_strike_pct,
+                roic_5y: row.roic_5y_avg_pct,
+                fcf_conversion_or_yield: row.strict_fcf_yield_pct,
+                warning_count: row.warnings_count,
+                source_kind: item.source_kind,
+                has_dossier,
+            });
+            continue;
+        }
+
+        if let Some(company) = wl_entry {
+            let price_snap = store::read_json::<PriceSnapshot>(&paths.price_path(ticker)).ok();
+            cards.push(InlineEvidenceCard {
+                ticker: company.ticker.clone(),
+                name: company.name.clone(),
+                bucket: Some(company.bucket),
+                currency: Some(company.currency.clone()),
+                latest_price: price_snap.map(|p| p.price),
+                strike_price: None,
+                strike_gap_pct: None,
+                roic_5y: None,
+                fcf_conversion_or_yield: None,
+                warning_count: 0,
+                source_kind: item.source_kind,
+                has_dossier,
+            });
+            continue;
+        }
+
+        if let Some(d) = dossier {
+            cards.push(InlineEvidenceCard {
+                ticker: d.ticker,
+                name: d.name,
+                bucket: None,
+                currency: None,
+                latest_price: None,
+                strike_price: None,
+                strike_gap_pct: None,
+                roic_5y: None,
+                fcf_conversion_or_yield: None,
+                warning_count: 0,
+                source_kind: item.source_kind,
+                has_dossier: true,
+            });
+        }
+    }
+
+    cards
 }
 
 #[cfg(test)]
@@ -3755,5 +4631,490 @@ mod tests {
         );
         assert_eq!(hits[1].title, "SEC Filing Note");
         assert_eq!(hits[1].url, "https://sec.gov/example");
+    }
+
+    #[test]
+    fn expanded_mnt_m3_exposes_industries_memos_briefings_events_read_only() {
+        let handle = std::thread::Builder::new()
+            .name("m3-test-mnt-expanded".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    use crate::industry::IndustryStatus;
+                    use crate::lake_l1::{
+                        SignalEvidence, SignalInboxRow, SignalKind, SignalStatus,
+                    };
+                    use crate::proactive::{
+                        BriefingPeriod, CircleBriefing, SignalTriageRecord, StrikeRadarItem,
+                        TriageQuote, TriageVerdict,
+                    };
+
+                    let (dir, paths) = temp_m3_workspace("mnt_expanded");
+
+                    // 1. Seed industry + memos
+                    let profile = IndustryProfile {
+                        slug: "retail".to_owned(),
+                        title: "Membership Warehouse Retail".to_owned(),
+                        status: IndustryStatus::InsideCircle,
+                        sic_codes: vec![5331],
+                        keywords: vec!["club".to_owned()],
+                        bound_tickers: vec!["AAPL".to_owned()],
+                        multiple_low: Some(Decimal::from(18)),
+                        multiple_high: Some(Decimal::from(24)),
+                        key_kpis: vec!["Renewal Rate".to_owned()],
+                        feynman_questions: vec!["Why do members renew at >90%?".to_owned()],
+                        feynman_checked: vec![true],
+                        human_notes: "Patiently wait for 20x".to_owned(),
+                        created_at_ms: 1_700_000_000_000,
+                        updated_at_ms: 1_700_000_100_000,
+                        last_research_run_id: None,
+                    };
+                    industry::save_industry(&paths, &profile).unwrap();
+
+                    let memos_dir = paths.workbench_dir.join("memos");
+                    std::fs::create_dir_all(&memos_dir).unwrap();
+                    std::fs::write(memos_dir.join("AAPL.md"), "# AAPL Memo\nCore moat.").unwrap();
+                    std::fs::write(
+                        memos_dir.join("AAPL-feynman.md"),
+                        "# AAPL Feynman Defense\nRound 1 passed.",
+                    )
+                    .unwrap();
+
+                    // First verify graceful fallback when DuckDB does not exist yet.
+                    async fn read_vfs(fs: &M3WorkbenchFs, path: &[&str]) -> Vec<u8> {
+                        let parts: Vec<String> = path.iter().map(|s| (*s).to_string()).collect();
+                        let fid = Fid(10);
+                        fs.walk(Fid::ROOT, fid, &parts).await.unwrap();
+                        fs.open(fid, OpenMode::Read).await.unwrap();
+                        let bytes = fs.read(fid, 0, 1_048_576).await.unwrap();
+                        fs.clunk(fid).await.unwrap();
+                        bytes
+                    }
+                    let fs_no_lake = M3WorkbenchFs::new(paths.clone());
+                    let fallback_briefing: Value = serde_json::from_slice(
+                        &read_vfs(&fs_no_lake, &["briefings", "latest.json"]).await,
+                    )
+                    .unwrap();
+                    assert_eq!(fallback_briefing["available"], false);
+                    assert!(fallback_briefing["briefing"].is_null());
+
+                    let fallback_events: Value = serde_json::from_slice(
+                        &read_vfs(&fs_no_lake, &["events", "recent.json"]).await,
+                    )
+                    .unwrap();
+                    assert_eq!(fallback_events["available"], false);
+                    assert_eq!(fallback_events["count"], 0);
+
+                    // 2. Populate DuckDB with briefing + >40 L1 signals + L1.5 triage.
+                    {
+                        let db = LakeDb::open(&paths).unwrap();
+                        let briefing = CircleBriefing {
+                            briefing_id: "br-2026-11-26".to_owned(),
+                            period: BriefingPeriod::Daily,
+                            period_key: "2026-11-26".to_owned(),
+                            generated_at_ms: 1_795_000_000_000,
+                            lang: UiLang::Zh,
+                            is_quiet: false,
+                            headline: "AAPL approaching strike zone".to_owned(),
+                            executive_summary: Some("Quiet compounder update.".to_owned()),
+                            summary_tokens_used: 120,
+                            summary_cost_usd: Decimal::new(2, 3),
+                            strike_radar: vec![StrikeRadarItem {
+                                ticker: "AAPL".to_owned(),
+                                name: "Apple Inc.".to_owned(),
+                                bucket: Bucket::Core,
+                                currency: "USD".to_owned(),
+                                latest_price: Some(Decimal::from(180)),
+                                strike_price: Some(Decimal::from(175)),
+                                distance_to_strike_pct: Some(Decimal::new(286, 2)),
+                                status: crate::model::StrikeZoneStatus::NearStrikeZone,
+                                in_strike_zone: false,
+                            }],
+                            filing_deltas: Vec::new(),
+                            watchdog_hits: Vec::new(),
+                        };
+                        db.upsert_circle_briefing(&briefing).unwrap();
+
+                        let mut signals = Vec::new();
+                        for idx in 0..45u64 {
+                            signals.push(SignalInboxRow {
+                                signal_id: format!("sig-{idx:03}"),
+                                kind: SignalKind::Strike,
+                                score: 90.0 - idx as f64 * 0.1,
+                                primary_ticker: "AAPL".to_owned(),
+                                tickers: vec!["AAPL".to_owned()],
+                                title: format!("Signal {idx}"),
+                                summary: "10-K filing delta".to_owned(),
+                                evidence: vec![SignalEvidence {
+                                    chunk_id: Some("chk-aapl-1".to_owned()),
+                                    ticker: "AAPL".to_owned(),
+                                    doc_type: "10-K".to_owned(),
+                                    section: "item_1".to_owned(),
+                                    filing_date: Some("2025-11-01".to_owned()),
+                                    title: "AAPL 10-K".to_owned(),
+                                    quote: "Ecosystem retention".to_owned(),
+                                    source_url: "https://sec.gov/aapl".to_owned(),
+                                    similarity: 0.92,
+                                }],
+                                status: SignalStatus::Unread,
+                                event_id: Some(format!("ev-{idx:03}")),
+                                created_at_ms: 1_795_000_000_000 + idx,
+                                updated_at_ms: 1_795_000_000_000 + idx,
+                            });
+                        }
+                        db.upsert_signals(&signals).unwrap();
+                        db.upsert_signal_triage(&SignalTriageRecord {
+                            signal_id: "sig-000".to_owned(),
+                            ticker: "AAPL".to_owned(),
+                            verdict: TriageVerdict::Material,
+                            headline: "Services margin expanded".to_owned(),
+                            rationale: "72% gross margin".to_owned(),
+                            matched_metrics: vec!["services_gm".to_owned()],
+                            suggested_metrics: Vec::new(),
+                            quotes: vec![TriageQuote {
+                                section: "item_7".to_owned(),
+                                filing_date: Some("2025-11-01".to_owned()),
+                                quote: "Services margin increased.".to_owned(),
+                                source_url: "https://sec.gov/aapl".to_owned(),
+                            }],
+                            fallback_no_metrics_warning: false,
+                            model_used: "mock".to_owned(),
+                            tokens_used: 50,
+                            cost_usd: Decimal::ZERO,
+                            created_at_ms: 1_795_000_000_100,
+                        })
+                        .unwrap();
+                    }
+
+                    let fs = M3WorkbenchFs::new(paths.clone());
+
+                    let ind_idx: Value =
+                        serde_json::from_slice(&read_vfs(&fs, &["industries", "index.json"]).await)
+                            .unwrap();
+                    assert_eq!(ind_idx["count"], 1);
+                    assert_eq!(ind_idx["industries"][0]["slug"], "retail");
+
+                    let ind_detail: Value = serde_json::from_slice(
+                        &read_vfs(&fs, &["industries", "retail.json"]).await,
+                    )
+                    .unwrap();
+                    assert_eq!(ind_detail["title"], "Membership Warehouse Retail");
+
+                    let memo =
+                        String::from_utf8(read_vfs(&fs, &["memos", "AAPL.md"]).await).unwrap();
+                    assert!(memo.contains("Core moat."));
+
+                    let feynman_memo =
+                        String::from_utf8(read_vfs(&fs, &["memos", "AAPL-feynman.md"]).await)
+                            .unwrap();
+                    assert!(feynman_memo.contains("Round 1 passed."));
+
+                    let latest_briefing: Value =
+                        serde_json::from_slice(&read_vfs(&fs, &["briefings", "latest.json"]).await)
+                            .unwrap();
+                    assert_eq!(latest_briefing["available"], true);
+                    assert_eq!(latest_briefing["briefing"]["briefing_id"], "br-2026-11-26");
+
+                    let recent_events: Value =
+                        serde_json::from_slice(&read_vfs(&fs, &["events", "recent.json"]).await)
+                            .unwrap();
+                    assert_eq!(recent_events["available"], true);
+                    assert_eq!(recent_events["count"], RECENT_EVENTS_MOUNT_CAP);
+                    assert_eq!(recent_events["signals"].as_array().unwrap().len(), 40);
+                    assert_eq!(recent_events["triage_count"], 1);
+
+                    // Verify VFS strictly denies writes / creates / removes on new paths.
+                    let fid = Fid(99);
+                    fs.walk(Fid::ROOT, fid, &["briefings".into(), "latest.json".into()])
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        fs.open(fid, OpenMode::Write).await,
+                        Err(ErrorCode::NoAccess)
+                    );
+                    assert_eq!(fs.write(fid, 0, b"{}").await, Err(ErrorCode::NoAccess));
+                    assert_eq!(fs.remove(fid).await, Err(ErrorCode::NoAccess));
+                    fs.clunk(fid).await.unwrap();
+
+                    // Verify M3ToolPolicyHook blocks writes to briefings/, events/, and /mnt/m3/.
+                    let hook = M3ToolPolicyHook;
+                    for p in [
+                        "briefings/latest.json",
+                        "events/recent.json",
+                        "/mnt/m3/briefings/latest.json",
+                        "/mnt/m3/events/recent.json",
+                        "/mnt/m3/industries/retail.json",
+                        "/mnt/m3/memos/AAPL.md",
+                    ] {
+                        assert!(
+                            matches!(
+                                hook.evaluate(
+                                    "write_file",
+                                    &json!({"path": p, "content": "hack"}),
+                                    ToolCapability::Write
+                                ),
+                                HookDecision::Deny(_)
+                            ),
+                            "expected policy write deny for {p}"
+                        );
+                    }
+                    // Read queries on events or /mnt/m3 briefings remain allowed.
+                    assert!(matches!(
+                        hook.evaluate(
+                            "m3_semantic_neighbors",
+                            &json!({"query": "events"}),
+                            ToolCapability::Read
+                        ),
+                        HookDecision::Allow
+                    ));
+
+                    let _ = std::fs::remove_dir_all(&dir);
+                });
+            })
+            .expect("spawn test thread");
+        handle.join().expect("expanded mnt_m3 test panicked");
+    }
+
+    #[test]
+    fn alan_scope_keys_labels_serde_preamble_and_scoped_interrogation() {
+        let (dir, paths) = temp_m3_workspace("scopes");
+
+        let scopes = [
+            (
+                AlanScope::Company(" cost ".to_owned()),
+                "company-COST",
+                "COST",
+                "COST",
+            ),
+            (
+                AlanScope::Industry("retail".to_owned()),
+                "industry-retail",
+                "retail",
+                "retail",
+            ),
+            (
+                AlanScope::Briefing("latest".to_owned()),
+                "briefing-latest",
+                "简报",
+                "Briefing",
+            ),
+            (AlanScope::Portfolio, "portfolio", "全局能力圈", "Portfolio"),
+        ];
+
+        for (scope, expected_key, expected_zh, expected_en) in scopes {
+            assert_eq!(scope.scope_key(), expected_key);
+            assert_eq!(scope.label_for(UiLang::Zh), expected_zh);
+            assert_eq!(scope.label_for(UiLang::En), expected_en);
+
+            let serialized = serde_json::to_string(&scope).unwrap();
+            let roundtrip: AlanScope = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(roundtrip, scope);
+
+            let turn = scope.compose_interrogation_turn(&paths, UiLang::Zh, "核对护城河");
+            assert!(turn.contains("核对护城河"));
+            assert!(!scope.context_preamble(&paths, UiLang::En).is_empty());
+        }
+
+        // Unsafe path traversal characters in scope_key are neutralized.
+        let dirty = AlanScope::Industry("../etc/passwd".to_owned());
+        assert!(!dirty.scope_key().contains(".."));
+        assert!(!dirty.scope_key().contains('/'));
+
+        // End-to-end M3InterrogatorHandle::submit_scoped with MockLlmProvider.
+        let provider = MockLlmProvider::new().with_responses(vec![text_response(
+            "Portfolio 能力圈总览已核对 [report:AAPL]。",
+        )]);
+        let interrogator = M3InterrogatorHandle::start_with_llm(
+            paths.clone(),
+            LlmSource::Client(LlmClient::new(provider.clone())),
+        );
+        interrogator.submit_scoped(&AlanScope::Portfolio, UiLang::Zh, "总结当前能力圈击球区");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut saw_done = false;
+        let mut prose = String::new();
+        while std::time::Instant::now() < deadline {
+            for ev in interrogator.drain_events() {
+                match ev {
+                    InterrogatorEvent::TextDelta { chunk, .. } => prose.push_str(&chunk),
+                    InterrogatorEvent::TurnDone { completed, .. } => {
+                        assert!(completed);
+                        saw_done = true;
+                    }
+                    InterrogatorEvent::Error { message } => {
+                        panic!("unexpected interrogator error: {message}");
+                    }
+                    _ => {}
+                }
+            }
+            if saw_done {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(saw_done);
+        assert!(prose.contains("[report:AAPL]"));
+        interrogator.shutdown();
+
+        let recorded = provider.recorded_requests();
+        assert!(recorded.iter().any(|req| {
+            req.messages.iter().any(|m| {
+                m.content.contains("全局能力圈组合") && m.content.contains("总结当前能力圈击球区")
+            })
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_inline_evidence_cards_dedupes_by_ticker_and_computes_zero_llm_summary() {
+        let (dir, paths) = temp_m3_workspace("evidence_cards");
+        let now = store::now_ms();
+        let fresh_price = PriceSnapshot {
+            schema_version: 1,
+            symbol: "AAPL".into(),
+            price: Decimal::from(180),
+            previous_close: Some(Decimal::from(179)),
+            currency: "USD".into(),
+            exchange: "NMS".into(),
+            market_time_ms: Some(now),
+            fetched_at_ms: now,
+            source_url: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL".into(),
+        };
+        store::write_json_atomic(&paths.price_path("AAPL"), &fresh_price).unwrap();
+
+        let annuals: Vec<AnnualFinancials> = (2021..=2025)
+            .map(|fy| AnnualFinancials {
+                fiscal_year: fy,
+                period_end: format!("{fy}-09-27"),
+                filed: Some(format!("{fy}-11-01")),
+                revenue: Decimal::from(400_000_000_000i64),
+                gross_profit: Decimal::from(185_000_000_000i64),
+                ebit: Decimal::from(125_000_000_000i64),
+                tax_expense: Decimal::from(20_000_000_000i64),
+                pretax_income: Decimal::from(124_000_000_000i64),
+                ocf: Decimal::from(118_000_000_000i64),
+                capex: Decimal::from(10_000_000_000i64),
+                sbc: Decimal::from(12_000_000_000i64),
+                buybacks: Decimal::from(90_000_000_000i64),
+                cash_and_st: Some(Decimal::from(65_000_000_000i64)),
+                total_debt: Decimal::from(100_000_000_000i64),
+                equity: Decimal::from(60_000_000_000i64),
+                diluted_shares: Decimal::from(15_200_000_000i64),
+                ending_shares: Decimal::from(15_000_000_000i64),
+                provenance: Vec::new(),
+            })
+            .collect();
+        let facts = RawCompanyFactsSummary {
+            schema_version: crate::edgar::SEC_FACTS_SCHEMA_VERSION,
+            extractor_version: crate::edgar::SEC_EXTRACTOR_VERSION,
+            ticker: "AAPL".into(),
+            entity_name: "Apple Inc.".into(),
+            cik: "0000320193".into(),
+            source_url: "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json".into(),
+            raw_sha256: "deadbeef12345678".into(),
+            fetched_at_ms: now,
+            annuals,
+            ttm: None,
+            manual_note: None,
+        };
+        store::write_json_atomic(&paths.sec_facts_summary_path("AAPL"), &facts).unwrap();
+
+        // Ensure computed report for AAPL exists on disk with fresh price & 5Y ROIC.
+        let rep = store::recompute_ticker(&paths, "AAPL").unwrap();
+        assert!(rep.price.is_some());
+        assert!(rep.roic_5y_avg_pct.is_some());
+
+        // Add a dossier-only company MSFT to verify fallback without computed report.
+        let msft_dossier = Dossier {
+            schema_version: 1,
+            ticker: "MSFT".into(),
+            name: "Microsoft Corp.".into(),
+            updated_at: "2026-11-26".into(),
+            draft_source: "manual".into(),
+            three_sentence_business: "Enterprise cloud & productivity".into(),
+            latticework: Latticework {
+                microeconomics: String::new(),
+                ecology: String::new(),
+                psychology_incentives: String::new(),
+                capital_allocation: String::new(),
+            },
+            premortem: Vec::new(),
+            open_questions: Vec::new(),
+            human_judgment: HumanJudgment {
+                pending_human_review: true,
+                my_stance: None,
+                weight_rationale: None,
+                falsification_metrics: Vec::new(),
+                feynman_checked_at: None,
+            },
+        };
+        store::write_json_atomic(&paths.dossier_path("MSFT"), &msft_dossier).unwrap();
+
+        let tokens = vec![
+            AcmeEvidenceToken {
+                id: "xbrl:AAPL".into(),
+                kind: AcmeEvidenceKind::Xbrl,
+                ticker: "AAPL".into(),
+                label: "[xbrl:AAPL]".into(),
+                summary: "XBRL".into(),
+            },
+            AcmeEvidenceToken {
+                id: "report:AAPL".into(),
+                kind: AcmeEvidenceKind::Report,
+                ticker: "aapl".into(),
+                label: "[report:AAPL]".into(),
+                summary: "Report".into(),
+            },
+            AcmeEvidenceToken {
+                id: "dossier:AAPL".into(),
+                kind: AcmeEvidenceKind::Dossier,
+                ticker: "AAPL".into(),
+                label: "[dossier:AAPL]".into(),
+                summary: "Dossier".into(),
+            },
+            AcmeEvidenceToken {
+                id: "dossier:MSFT".into(),
+                kind: AcmeEvidenceKind::Dossier,
+                ticker: "MSFT".into(),
+                label: "[dossier:MSFT]".into(),
+                summary: "Dossier".into(),
+            },
+            AcmeEvidenceToken {
+                id: "report:NOEXIST".into(),
+                kind: AcmeEvidenceKind::Report,
+                ticker: "NOEXIST".into(),
+                label: "[report:NOEXIST]".into(),
+                summary: "Missing".into(),
+            },
+        ];
+
+        let cards = resolve_inline_evidence_cards(&paths, &tokens);
+        assert_eq!(cards.len(), 2);
+
+        let aapl = &cards[0];
+        assert_eq!(aapl.ticker, "AAPL");
+        assert_eq!(aapl.name, "Apple Inc.");
+        assert_eq!(aapl.bucket, Some(Bucket::Core));
+        assert_eq!(aapl.latest_price, Some(Decimal::from(180)));
+        assert!(aapl.strike_price.is_some());
+        assert!(aapl.strike_gap_pct.is_some());
+        assert!(aapl.roic_5y.is_some());
+        assert!(aapl.fcf_conversion_or_yield.is_some());
+        assert_eq!(aapl.source_kind, AcmeEvidenceKind::Report);
+        assert!(aapl.has_dossier);
+
+        let msft = &cards[1];
+        assert_eq!(msft.ticker, "MSFT");
+        assert_eq!(msft.name, "Microsoft Corp.");
+        assert_eq!(msft.bucket, None);
+        assert_eq!(msft.source_kind, AcmeEvidenceKind::Dossier);
+        assert!(msft.has_dossier);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

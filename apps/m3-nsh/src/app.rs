@@ -9,8 +9,8 @@ use crate::format::{
     compact_sidebar_version_label, fmt_price, fmt_time_cn_for,
 };
 use crate::icons::{
-    ICON_ALERT, ICON_ARROW_CIRCLE_UP, ICON_ARROW_LEFT, ICON_BELL, ICON_CIRCLE_CHECK, ICON_CLOSE,
-    ICON_INBOX, ICON_JOURNAL, ICON_LAYERS, ICON_RADAR, ICON_REFRESH, ICON_SETTINGS,
+    ICON_ALAN, ICON_ALERT, ICON_ARROW_CIRCLE_UP, ICON_ARROW_LEFT, ICON_BELL, ICON_CIRCLE_CHECK,
+    ICON_CLOSE, ICON_INBOX, ICON_JOURNAL, ICON_LAYERS, ICON_RADAR, ICON_REFRESH, ICON_SETTINGS,
     ICON_SIDEBAR_LEFT, ICON_TARGET, icon,
 };
 use crate::palette::{
@@ -23,10 +23,12 @@ use crate::platform_desktop::{
     show_company_context_menu, titlebar_left_inset,
 };
 use crate::stores::{
-    AppStore, CompanyViewTab, TopbarMessage, TopbarMessageAction, TopbarMessageStatus, WorkspaceTab,
+    AlanCanvasTab, AlanScope, AlanStageMode, AppStore, CompanyViewTab, TopbarMessage,
+    TopbarMessageAction, TopbarMessageStatus, WorkspaceTab,
 };
 use crate::theme::*;
 use crate::views::{
+    agent::alan_canvas_view,
     baskets::baskets_view,
     company::company_view,
     inbox::inbox_view,
@@ -157,6 +159,12 @@ pub fn render_app_root() -> impl IntoElement {
         .on_open_change(move |e| main_open.set(e.open))
         .content(move || {
             let main_win = current_window();
+            let win_for_width = main_win.clone();
+            effect(move || {
+                if let Some(st) = win_for_width.state() {
+                    store.sync_alan_for_window_width(st.content_bounds.size.width.0);
+                }
+            });
             main_win.on_focus_change(move |focused| {
                 if !focused {
                     store.cmd_held.set(false);
@@ -200,38 +208,13 @@ pub fn render_app_root() -> impl IntoElement {
                         .flex()
                         .flex_row()
                         .child(when(
-                            move || !store.sidebar_collapsed.get(),
+                            move || {
+                                !store.sidebar_collapsed.get()
+                                    && store.alan_stage_mode.get() != AlanStageMode::Immersive
+                            },
                             move || render_sidebar(store),
                         ))
-                        .child(
-                            view()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .h_full()
-                                .pl(move || {
-                                    px(if store.sidebar_collapsed.get() {
-                                        8.0
-                                    } else {
-                                        0.0
-                                    })
-                                })
-                                .pr(px(8.0))
-                                .pb(px(8.0))
-                                .child(
-                                    view()
-                                        .w_full()
-                                        .h_full()
-                                        .rounded_lg()
-                                        .bg(rgb(BG_VIEWPORT))
-                                        .border_1()
-                                        .border_color(rgb(BORDER_VIEWPORT))
-                                        .overflow_hidden()
-                                        .flex()
-                                        .flex_col()
-                                        .child(render_main_viewport(store))
-                                        .child(render_statusline(store)),
-                                ),
-                        ),
+                        .child(render_dual_canvas_stage(store)),
                 )
                 .child(when(
                     move || store.message_box_open.get(),
@@ -413,6 +396,90 @@ fn render_graduation_soft_gate_modal(store: AppStore) -> impl IntoElement {
                         )),
                 )
         }))
+}
+
+fn render_dual_canvas_stage(store: AppStore) -> impl IntoElement {
+    view()
+        .flex_1()
+        .min_w(px(0.0))
+        .h_full()
+        .pl(move || {
+            let immersive = store.alan_stage_mode.get() == AlanStageMode::Immersive;
+            px(if immersive || store.sidebar_collapsed.get() {
+                8.0
+            } else {
+                0.0
+            })
+        })
+        .pr(px(8.0))
+        .pb(px(8.0))
+        .flex()
+        .flex_row()
+        .gap(px(8.0))
+        .child(when(
+            move || store.alan_stage_mode.get() != AlanStageMode::Immersive,
+            move || {
+                view()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full()
+                    .rounded_lg()
+                    .bg(rgb(BG_VIEWPORT))
+                    .border_1()
+                    .border_color(rgb(BORDER_VIEWPORT))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(render_main_viewport(store))
+                    .child(render_statusline(store))
+            },
+        ))
+        .child(when(
+            move || store.alan_stage_mode.get() == AlanStageMode::Split,
+            move || {
+                view()
+                    .w(px(430.0))
+                    .max_w(percentage(44.0))
+                    .min_w(px(340.0))
+                    .flex_shrink_0()
+                    .h_full()
+                    .rounded_lg()
+                    .bg(rgb(BG_VIEWPORT))
+                    .border_1()
+                    .border_color(rgba(BORDER_GLASS_STRONG))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(alan_canvas_view(store))
+            },
+        ))
+        .child(when(
+            move || store.alan_stage_mode.get() == AlanStageMode::Immersive,
+            move || {
+                view()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        view()
+                            .w_full()
+                            .max_w(px(760.0))
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .rounded_lg()
+                            .bg(rgb(BG_VIEWPORT))
+                            .border_1()
+                            .border_color(rgba(BORDER_GLASS_STRONG))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .child(alan_canvas_view(store)),
+                    )
+            },
+        ))
 }
 
 fn render_main_viewport(store: AppStore) -> impl IntoElement {
@@ -925,6 +992,56 @@ fn render_sidebar_toggle_button(store: AppStore) -> View {
         .child(cmd_kbd_bottom_corner(store, "⌘B"))
 }
 
+fn render_alan_toggle_button(store: AppStore) -> View {
+    let alan_active = computed(move || store.alan_stage_mode.get().is_open());
+    view()
+        .relative()
+        .window_drag(false)
+        .w(px(28.0))
+        .h(px(26.0))
+        .rounded_md()
+        .cursor_pointer()
+        .bg(move || {
+            if alan_active.get() {
+                rgba(VIOLET_BG)
+            } else {
+                rgba(0x00000000)
+            }
+        })
+        .border_1()
+        .border_color(move || {
+            if alan_active.get() {
+                rgba(VIOLET_BORDER)
+            } else {
+                rgba(0x00000000)
+            }
+        })
+        .hover(|s| s.bg(rgba(RAIL_HOVER)))
+        .active(|s| s.bg(rgba(RAIL_ACTIVE)))
+        .flex()
+        .items_center()
+        .justify_center()
+        .tooltip(topbar_tooltip(move || {
+            store
+                .lang
+                .get()
+                .t("切换 Alan 双画布 (⌘L)", "Toggle Alan Dual Canvas (⌘L)")
+                .to_owned()
+        }))
+        .on_press(move || {
+            animate_shell_spring();
+            store.toggle_alan_split();
+        })
+        .child(icon(ICON_ALAN, 15.0).text_color(move || {
+            rgb(if alan_active.get() {
+                VIOLET_FG
+            } else {
+                INK_SECONDARY
+            })
+        }))
+        .child(cmd_kbd_bottom_corner(store, "⌘L"))
+}
+
 fn render_unified_topbar(store: AppStore) -> impl IntoElement {
     let mark_clicks = stored((0u8, None::<std::time::Instant>));
     let settings_active = computed(move || store.settings_open.get());
@@ -1032,6 +1149,7 @@ fn render_unified_topbar(store: AppStore) -> impl IntoElement {
                         .items_center()
                         .gap(px(5.0))
                         .window_drag(false)
+                        .child(render_alan_toggle_button(store))
                         .child(render_topbar_message_box_button(store))
                         .child(
                             view()
@@ -1490,15 +1608,15 @@ fn render_statusline(store: AppStore) -> impl IntoElement {
             );
         }
         if store.company_open.get() {
-            let is_alan = store.company_view_tab.get() == CompanyViewTab::DeepResearchAlan;
+            let alan_open = store.alan_stage_mode.get().is_open();
             return (
-                if is_alan { VIOLET_FG } else { EMERALD_FG },
+                if alan_open { VIOLET_FG } else { EMERALD_FG },
                 l.t(
-                    "1 财报与活研报 · 2 深度研究与 Alan · 3 XBRL · t TTM/FY · j/k 换股 · esc 返回",
-                    "1 Financials & Memo · 2 Deep Research & Alan · 3 XBRL · t TTM/FY · j/k switch · esc back",
+                    "1 财报与活研报 · 2 XBRL · ⌘L Alan · t TTM/FY · j/k 换股 · esc 返回",
+                    "1 Financials & Memo · 2 XBRL · ⌘L Alan · t TTM/FY · j/k switch · esc back",
                 ),
-                if is_alan {
-                    "ALAN · PAPER ONLY"
+                if alan_open {
+                    "ALAN · SPLIT"
                 } else {
                     "ZERO-LLM · PAPER ONLY"
                 },
@@ -1718,6 +1836,14 @@ fn register_keyboard_shortcuts(store: AppStore) {
         animate_shell_spring();
         store.toggle_palette();
     });
+    on_key("mod+l", move |_| {
+        animate_shell_spring();
+        store.toggle_alan_split();
+    });
+    on_key("mod+shift+l", move |_| {
+        animate_shell_spring();
+        store.toggle_alan_immersive();
+    });
     on_key("mod+r", move |_| store.start_sync());
     on_key("mod+shift+r", move |_| store.trigger_l1_catchup());
     on_key("mod+[", move |_| store.close_company_overlay());
@@ -1756,6 +1882,11 @@ fn register_keyboard_shortcuts(store: AppStore) {
             if store.pending_graduation_ticker.get_untracked().is_some() {
                 animate_shell_spring();
                 store.cancel_graduation_gate();
+                return;
+            }
+            if store.alan_stage_mode.get_untracked() == AlanStageMode::Immersive {
+                animate_shell_spring();
+                store.set_alan_stage_mode(AlanStageMode::Split);
                 return;
             }
             if store.company_open.get_untracked() {
@@ -2042,14 +2173,31 @@ fn register_keyboard_shortcuts(store: AppStore) {
     });
 
     on_key_with("a", not_editing, move |_| {
+        animate_shell_spring();
         if store.company_open.get_untracked() {
-            store.company_view_tab.set(CompanyViewTab::DeepResearchAlan);
+            let ticker = store
+                .selected_ticker
+                .get_untracked()
+                .trim()
+                .to_ascii_uppercase();
+            let scope = if ticker.is_empty() {
+                AlanScope::Portfolio
+            } else {
+                AlanScope::Company(ticker)
+            };
+            store.open_alan_for_scope(scope, AlanCanvasTab::Interrogate);
         } else if store.active_tab.get_untracked() == WorkspaceTab::Baskets {
             let tickers = store.visible_linear_tickers();
             let idx = store.baskets_cursor_index.get_untracked();
             if let Some(t) = tickers.get(idx) {
-                store.open_company(t, CompanyViewTab::DeepResearchAlan);
+                store.open_company(t, CompanyViewTab::FinancialsMemo);
+                store.open_alan_for_scope(
+                    AlanScope::Company(t.trim().to_ascii_uppercase()),
+                    AlanCanvasTab::Interrogate,
+                );
             }
+        } else {
+            store.toggle_alan_split();
         }
     });
 }

@@ -1,12 +1,12 @@
-//! Company Dossier overlay (`1 Financials & Memo`, `2 Deep Research & Alan`, `3 XBRL Ledger`).
+//! Company Dossier overlay (`1 Financials & Memo`, `2 XBRL Ledger`).
 
-use super::agent::{agent_view, cross_company_context_strip, living_research_memo_card};
+use super::agent::cross_company_context_strip;
 use super::chart::chart_placeholder;
 use crate::components::{
-    action_button, badge_pill, card_title, concept_hint_static, icon_button, icon_label_button,
-    inspector_kv, kv_line, mono_right, obsidian_card, prop_section, prose_block, ratio_bar,
-    render_warning_panel_for, roic_sparkline_for, section_header, seg_group, seg_tab,
-    stepper_inline, styled_input, v_divider,
+    action_button, animate_shell_spring, badge_pill, card_title, concept_hint_static, icon_button,
+    icon_label_button, inspector_kv, kv_line, mono_right, obsidian_card, prop_section, prose_block,
+    ratio_bar, roic_sparkline_for, section_header, seg_group, seg_tab, stepper_inline,
+    styled_input, v_divider,
 };
 use crate::format::{
     civil_ym_from_ms, currency_prefix, fmt_money_compact, fmt_money_compact_opt, fmt_pct_clean,
@@ -14,14 +14,17 @@ use crate::format::{
 };
 use crate::icons::{ICON_ARROW_LEFT, ICON_CHEVRON_LEFT, ICON_CHEVRON_RIGHT, ICON_CLOSE, icon};
 use crate::platform_desktop::{copy_text_with_notice, open_external_url};
-use crate::stores::{AppStore, ChartTimeframe, CompanyViewTab, WorkspaceTab};
+use crate::stores::{
+    AlanCanvasTab, AlanScope, AppStore, ChartTimeframe, CompanyViewTab, DeepResearchPerspectiveUi,
+    MemoSection, PerspectiveUiStatus, WorkspaceTab, default_deep_research_perspectives,
+};
 use crate::theme::*;
 use m3_core::calculator;
 use m3_core::edgar;
 use m3_core::i18n::UiLang;
 use m3_core::model::{
-    AnnualMetricRow, Bucket, MungerReport, ValuationSnapshot, WarningSeverity, primary_circle_tag,
-    secondary_circle_detail,
+    AnnualMetricRow, Bucket, MungerReport, ValuationSnapshot, WarningFlag, WarningSeverity,
+    primary_circle_tag, secondary_circle_detail,
 };
 use nsh_core::prelude::*;
 use rust_decimal::Decimal;
@@ -113,7 +116,7 @@ pub fn company_view(store: AppStore) -> impl IntoElement {
             };
 
             let body_pane = match store.company_view_tab.get() {
-                CompanyViewTab::FinancialsMemo => scroll()
+                CompanyViewTab::FinancialsMemo | CompanyViewTab::DeepResearchAlan => scroll()
                     .flex_1()
                     .min_w(px(0.0))
                     .min_h(px(0.0))
@@ -126,7 +129,6 @@ pub fn company_view(store: AppStore) -> impl IntoElement {
                         metric_draft,
                     ))
                     .into_element(),
-                CompanyViewTab::DeepResearchAlan => agent_view(store).into_element(),
                 CompanyViewTab::XbrlInspector => scroll()
                     .flex_1()
                     .min_w(px(0.0))
@@ -384,20 +386,13 @@ fn rich_top_bar(store: AppStore) -> View {
                 seg_group()
                     .child(seg_tab(
                         l.t("1 财报与活研报", "1 Financials & Memo"),
-                        cur_tab == CompanyViewTab::FinancialsMemo,
+                        cur_tab != CompanyViewTab::XbrlInspector,
                         None,
                         false,
                         move || store.company_view_tab.set(CompanyViewTab::FinancialsMemo),
                     ))
                     .child(seg_tab(
-                        l.t("2 深度研究与 Alan", "2 Deep Research & Alan"),
-                        cur_tab == CompanyViewTab::DeepResearchAlan,
-                        Some((VIOLET_FG, VIOLET_BG)),
-                        false,
-                        move || store.company_view_tab.set(CompanyViewTab::DeepResearchAlan),
-                    ))
-                    .child(seg_tab(
-                        l.t("3 XBRL 底表", "3 XBRL Ledger"),
+                        l.t("2 XBRL 底表", "2 XBRL Ledger"),
                         cur_tab == CompanyViewTab::XbrlInspector,
                         None,
                         false,
@@ -433,10 +428,26 @@ fn financials_memo_body(
     let mut canvas_col = view().p(px(20.0)).flex().flex_col().gap(px(16.0));
 
     if !rep.warnings.is_empty() {
-        canvas_col = canvas_col.child(render_warning_panel_for(&rep.warnings, l));
+        canvas_col = canvas_col.child(render_warnings_with_alan_anchors(
+            store,
+            &rep.ticker,
+            &rep.warnings,
+            l,
+        ));
     }
 
     if let Some(reason) = &rep.too_hard_reason {
+        let tk_reason = rep.ticker.clone();
+        let reason_seed = match l {
+            UiLang::Zh => format!(
+                "请帮我复核 {} 的能力圈边界理由「{}」，哪些事实改变后才值得重新评估？",
+                rep.ticker, reason
+            ),
+            UiLang::En => format!(
+                "Help review the boundary rationale for {}: '{}'. What primary facts would need to change to revisit?",
+                rep.ticker, reason
+            ),
+        };
         canvas_col = canvas_col.child(
             view()
                 .px(px(16.0))
@@ -445,13 +456,27 @@ fn financials_memo_body(
                 .bg(rgba(SLATE_BG))
                 .border_1()
                 .border_color(rgba(SLATE_BORDER))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
                 .child(
-                    text(format!("{}: {reason}", l.t("边界理由", "Boundary Note")))
-                        .font_family(FONT_UI)
-                        .text_size(px(TEXT_BASE))
-                        .line_height(px(20.0))
-                        .text_color(rgb(INK_PRIMARY)),
-                ),
+                    view().flex_1().min_w(px(0.0)).child(
+                        text(format!("{}: {reason}", l.t("边界理由", "Boundary Note")))
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_BASE))
+                            .line_height(px(20.0))
+                            .text_color(rgb(INK_PRIMARY)),
+                    ),
+                )
+                .child(ask_alan_anchor_button(
+                    store,
+                    tk_reason,
+                    l.t("边界理由", "Boundary Note").to_owned(),
+                    reason_seed,
+                    l,
+                )),
         );
     }
 
@@ -469,13 +494,595 @@ fn financials_memo_body(
     // 4. Historical Multi-Year Financials Table
     canvas_col = canvas_col.child(render_multi_year_table(rep, l));
 
-    // 5. Living Research Memo Preview (Summary + ## Human Notes read-only)
-    canvas_col = canvas_col.child(living_research_memo_card(store, true));
+    // 5. Living Research Memo & Folded 4-Lens Deep Research (async trigger, zero inline chat)
+    canvas_col = canvas_col.child(living_memo_and_deep_research_card(store, &rep.ticker));
 
     // 6. Human Judgment · Feynman Gate & Pre-Falsification Metrics CRUD
     canvas_col = canvas_col.child(human_judgment_card(store, &rep.ticker, metric_draft));
 
     canvas_col
+}
+
+fn ask_alan_anchor_button(
+    store: AppStore,
+    ticker: String,
+    anchor_label: String,
+    seed_prompt: String,
+    l: UiLang,
+) -> View {
+    view()
+        .flex_shrink_0()
+        .px(px(8.0))
+        .py(px(3.0))
+        .rounded_xs()
+        .cursor_pointer()
+        .bg(rgba(VIOLET_BG))
+        .border_1()
+        .border_color(rgba(VIOLET_BORDER))
+        .hover(|s| s.bg(rgb(BG_HOVER)))
+        .on_press(move || {
+            animate_shell_spring();
+            store.open_alan_with_anchor(
+                AlanScope::Company(ticker.clone()),
+                &anchor_label,
+                &seed_prompt,
+            );
+        })
+        .child(
+            text(l.t("问 Alan ↗", "Ask Alan ↗"))
+                .font_family(FONT_UI)
+                .text_size(px(TEXT_2XS))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(VIOLET_FG))
+                .number_of_lines(1),
+        )
+}
+
+fn render_warnings_with_alan_anchors(
+    store: AppStore,
+    ticker: &str,
+    warnings: &[WarningFlag],
+    lang: UiLang,
+) -> View {
+    let norm_ticker = ticker.trim().to_ascii_uppercase();
+    view()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .children(warnings.iter().map(|w| {
+            let (fg, bg, br) = match w.severity {
+                WarningSeverity::Red => (CORAL_FG, CORAL_BG, CORAL_BORDER),
+                WarningSeverity::Amber => (GOLD_FG, GOLD_BG, GOLD_BORDER),
+                WarningSeverity::Info => (SLATE_FG, SLATE_BG, SLATE_BORDER),
+            };
+            let sev_label = match w.severity {
+                WarningSeverity::Red => lang.t("红灯预警", "Red Flag"),
+                WarningSeverity::Amber => lang.t("黄灯关注", "Watch Flag"),
+                WarningSeverity::Info => lang.t("提示", "Info"),
+            };
+            let seed_prompt = match lang {
+                UiLang::Zh => format!(
+                    "请核查 {} 的{}「{}」：{}。结合一手 XBRL 口径与 10-K 附注判断是否存在结构性会计/经营风险。",
+                    norm_ticker, sev_label, w.title, w.detail
+                ),
+                UiLang::En => format!(
+                    "Investigate {} {} '{}': {}. Inspect primary XBRL and 10-K footnotes to evaluate structural risk.",
+                    norm_ticker, sev_label, w.title, w.detail
+                ),
+            };
+            view()
+                .rounded_md()
+                .bg(rgba(bg))
+                .border_1()
+                .border_color(rgba(br))
+                .px(px(12.0))
+                .py(px(8.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(10.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .flex_wrap()
+                        .gap(px(10.0))
+                        .child(badge_pill(sev_label.to_owned(), fg, bg, br))
+                        .child(
+                            text(w.title.clone())
+                                .font_family(FONT_UI)
+                                .text_size(px(TEXT_SM))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(fg)),
+                        )
+                        .child(
+                            text(format!("— {}", w.detail))
+                                .font_family(FONT_UI)
+                                .text_size(px(TEXT_SM))
+                                .text_color(rgb(INK_PRIMARY)),
+                        ),
+                )
+                .child(ask_alan_anchor_button(
+                    store,
+                    norm_ticker.clone(),
+                    format!("{sev_label} · {}", w.title),
+                    seed_prompt,
+                    lang,
+                ))
+        }))
+}
+
+fn perspective_title_for(id: &str, fallback_cn: &str, lang: UiLang) -> String {
+    match (lang, id) {
+        (UiLang::En, "moat") => "Moat".to_owned(),
+        (UiLang::En, "accounting") => "Accounting".to_owned(),
+        (UiLang::En, "latent_peers") => "Latent Peers".to_owned(),
+        (UiLang::En, "premortem") => "5Y Pre-Mortem".to_owned(),
+        _ => fallback_cn.to_owned(),
+    }
+}
+
+fn living_memo_and_deep_research_card(store: AppStore, ticker: &str) -> View {
+    let norm_ticker = ticker.trim().to_ascii_uppercase();
+    obsidian_card().child(dynamic(move || {
+        let l = store.lang.get();
+        let active_ticker = {
+            let sel = store.selected_ticker.get();
+            if sel.trim().is_empty() {
+                norm_ticker.clone()
+            } else {
+                sel
+            }
+        };
+        let memo_rel = format!("workbench/memos/{active_ticker}.md");
+        let raw_opt = store.selected_memo_raw.get();
+        let parsed_opt = store.selected_memo_parsed.get();
+        let running = store.deep_research_running.get();
+        let active_for_ticker = store
+            .deep_research_ticker
+            .get()
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case(&active_ticker));
+        let blocked_reason = if active_for_ticker {
+            store.deep_research_budget_blocked.get()
+        } else {
+            None
+        };
+        let status_note = if active_for_ticker {
+            store.deep_research_status_note.get()
+        } else {
+            None
+        };
+        let last_completed = active_for_ticker
+            && store
+                .deep_research_last_result
+                .with(|r| r.as_ref().is_some_and(|x| x.status == "completed"));
+
+        let status_pill = if active_for_ticker && running {
+            Some(badge_pill(
+                l.t("4 视角并行生成中…", "4-Lens Running…"),
+                VIOLET_FG,
+                VIOLET_BG,
+                VIOLET_BORDER,
+            ))
+        } else if blocked_reason.is_some() {
+            Some(badge_pill(
+                l.t("预算闸门已拦截", "Budget Blocked"),
+                CORAL_FG,
+                CORAL_BG,
+                CORAL_BORDER,
+            ))
+        } else if last_completed {
+            Some(badge_pill(
+                l.t("4 视角已完成", "4-Lens Complete"),
+                EMERALD_FG,
+                EMERALD_BG,
+                EMERALD_BORDER,
+            ))
+        } else {
+            None
+        };
+
+        let mut actions = view()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_wrap()
+            .gap(px(8.0));
+        if let Some(md) = raw_opt {
+            let t_copy = active_ticker.clone();
+            actions = actions.child(action_button(
+                l.t("复制 Markdown", "Copy Markdown"),
+                false,
+                move || {
+                    copy_text_with_notice(store, md.clone(), &format!("Memo {t_copy}"));
+                },
+            ));
+        }
+        let t_refresh = active_ticker.clone();
+        actions = actions.child(action_button(l.t("刷新", "Refresh"), false, move || {
+            store.reload_research_desk_context(&t_refresh);
+            let cur_l = store.lang.get_untracked();
+            store.set_info_notice(match cur_l {
+                UiLang::Zh => format!("已从磁盘刷新 {t_refresh} Memo"),
+                UiLang::En => format!("Reloaded {t_refresh} Memo from disk"),
+            });
+        }));
+        let memo_seed = match l {
+            UiLang::Zh => format!(
+                "请结合 {} 的 Living Research Memo 与一手 10-K 原文，挑出当前最关键的护城河假设与 5 年证伪风险。",
+                active_ticker
+            ),
+            UiLang::En => format!(
+                "Review {}'s Living Research Memo and primary 10-K filings to stress-test the core moat assumptions and 5-year falsification risks.",
+                active_ticker
+            ),
+        };
+        actions = actions
+            .child(ask_alan_anchor_button(
+                store,
+                active_ticker.clone(),
+                l.t("活研报总览", "Living Memo").to_owned(),
+                memo_seed,
+                l,
+            ))
+            .child(action_button(
+                if active_for_ticker && running {
+                    l.t("4 视角深研中…", "4-Lens Running…")
+                } else {
+                    l.t("生成 / 刷新 4 视角深研", "Generate / Refresh 4-Lens Research")
+                },
+                !(active_for_ticker && running),
+                move || store.run_deep_research_selected(),
+            ));
+
+        let mut title_row = view()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_wrap()
+            .gap(px(8.0))
+            .child(view().w(px(6.0)).h(px(6.0)).rounded_full().bg(rgb(EMERALD_FG)))
+            .child(
+                text(format!("Living Research Memo · {memo_rel}"))
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(INK_HERO)),
+            );
+        if let Some(pill) = status_pill {
+            title_row = title_row.child(pill);
+        }
+
+        let header = view()
+            .px(px(16.0))
+            .py(px(10.0))
+            .bg(rgb(BG_WELL))
+            .border_b_1()
+            .border_color(rgb(BORDER_HAIRLINE))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .flex_wrap()
+            .gap(px(12.0))
+            .child(title_row)
+            .child(actions);
+
+        let mut card = view().flex().flex_col().child(header);
+
+        if let Some(reason) = blocked_reason {
+            card = card.child(
+                view()
+                    .px(px(16.0))
+                    .py(px(10.0))
+                    .bg(rgba(CORAL_BG))
+                    .border_b_1()
+                    .border_color(rgba(CORAL_BORDER))
+                    .child(
+                        text(match l {
+                            UiLang::Zh => {
+                                format!("预算硬闸门已拦截（0 LLM Token 消耗）：{reason}")
+                            }
+                            UiLang::En => {
+                                format!("Hard budget gate blocked (0 LLM tokens used): {reason}")
+                            }
+                        })
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_XS))
+                        .text_color(rgb(CORAL_FG)),
+                    ),
+            );
+        } else if let Some(note) = status_note {
+            card = card.child(
+                view()
+                    .px(px(16.0))
+                    .py(px(8.0))
+                    .bg(rgb(BG_ROW_ALT))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .child(
+                        text(note)
+                            .font_family(FONT_MONO_TERM)
+                            .text_size(px(TEXT_XS))
+                            .text_color(rgb(INK_SECONDARY)),
+                    ),
+            );
+        }
+
+        if active_for_ticker && (running || last_completed) {
+            let perspectives: Vec<DeepResearchPerspectiveUi> = {
+                let live = store.deep_research_perspectives.get();
+                if live.is_empty() {
+                    default_deep_research_perspectives()
+                } else {
+                    live
+                }
+            };
+            card = card.child(
+                view()
+                    .px(px(16.0))
+                    .py(px(10.0))
+                    .bg(rgb(BG_SURFACE))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(8.0))
+                    .children(perspectives.into_iter().map(|p| {
+                        let (fg, bg, br) = match p.status {
+                            PerspectiveUiStatus::Pending => (INK_MUTED, BG_WELL, BORDER_SUBTLE),
+                            PerspectiveUiStatus::Running => (VIOLET_FG, VIOLET_BG, VIOLET_BORDER),
+                            PerspectiveUiStatus::Completed => {
+                                (EMERALD_FG, EMERALD_BG, EMERALD_BORDER)
+                            }
+                            PerspectiveUiStatus::Failed => (CORAL_FG, CORAL_BG, CORAL_BORDER),
+                        };
+                        view()
+                            .flex_1()
+                            .min_w(px(160.0))
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .rounded_sm()
+                            .bg(rgb(BG_VIEWPORT))
+                            .border_1()
+                            .border_color(rgb(BORDER_HAIRLINE))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(6.0))
+                            .child(
+                                text(perspective_title_for(&p.id, &p.title_cn, l))
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(INK_HERO)),
+                            )
+                            .child(badge_pill(p.status.label_for(l), fg, bg, br))
+                    })),
+            );
+        }
+
+        let Some(memo) = parsed_opt else {
+            return card.child(
+                view().p(px(16.0)).child(
+                    text(match l {
+                        UiLang::Zh => format!(
+                            "尚未生成 {memo_rel}。点击右上角「生成 / 刷新 4 视角深研」或运行 `m3 research run {active_ticker}` 后，完整 4 视角报告与一手 10-K 引用将直接呈现在此（进度同步显示于顶部消息盒）。"
+                        ),
+                        UiLang::En => format!(
+                            "{memo_rel} has not been generated yet. Click 'Generate / Refresh 4-Lens Research' or run `m3 research run {active_ticker}` to fold the 4-lens report and 10-K citations here (progress streams in the topbar Message Box)."
+                        ),
+                    })
+                    .font_family(FONT_UI)
+                    .text_size(px(TEXT_XS))
+                    .line_height(px(19.0))
+                    .text_color(rgb(INK_MUTED)),
+                ),
+            );
+        };
+
+        if !memo.metadata.is_empty() {
+            card = card.child(
+                view()
+                    .px(px(16.0))
+                    .py(px(8.0))
+                    .bg(rgb(BG_ROW_ALT))
+                    .border_b_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .flex_wrap()
+                    .gap(px(12.0))
+                    .children(memo.metadata.iter().map(|(k, v)| {
+                        view()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                text(format!("{k}:"))
+                                    .font_family(FONT_MONO_TERM)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_MUTED)),
+                            )
+                            .child(
+                                text(v.clone())
+                                    .font_family(FONT_MONO_NUM)
+                                    .text_size(px(TEXT_2XS))
+                                    .text_color(rgb(INK_PRIMARY)),
+                            )
+                    })),
+            );
+        }
+
+        let perspective_sections: Vec<&MemoSection> = memo
+            .sections
+            .iter()
+            .filter(|s| matches!(s.id.as_str(), "moat" | "accounting" | "latent_peers" | "premortem"))
+            .collect();
+        let display_sections: Vec<&MemoSection> = if perspective_sections.is_empty() {
+            memo.sections.iter().collect()
+        } else {
+            perspective_sections
+        };
+
+        let mut body = view().p(px(16.0)).flex().flex_col().gap(px(12.0));
+        for sec in display_sections {
+            let sec_seed = match l {
+                UiLang::Zh => format!(
+                    "围绕 {} Living Memo 中的「{}」章节，请结合一手 10-K 证据核验关键论据与潜在盲区。",
+                    active_ticker, sec.heading
+                ),
+                UiLang::En => format!(
+                    "Focusing on the '{}' section of {}'s Living Memo, verify key claims and blind spots against primary 10-K filings.",
+                    sec.heading, active_ticker
+                ),
+            };
+            body = body.child(
+                view()
+                    .p(px(12.0))
+                    .rounded_sm()
+                    .bg(rgb(BG_VIEWPORT))
+                    .border_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        view()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .child(
+                                text(sec.heading.clone())
+                                    .font_family(FONT_UI)
+                                    .text_size(px(TEXT_XS))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(INK_HERO)),
+                            )
+                            .child(ask_alan_anchor_button(
+                                store,
+                                active_ticker.clone(),
+                                sec.heading.clone(),
+                                sec_seed,
+                                l,
+                            )),
+                    )
+                    .child(
+                        text(sec.body.clone())
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_XS))
+                            .line_height(px(20.0))
+                            .text_color(rgb(INK_SECONDARY))
+                            .selectable(true),
+                    ),
+            );
+        }
+
+        if !memo.citations.is_empty() {
+            body = body.child(
+                view()
+                    .p(px(12.0))
+                    .rounded_sm()
+                    .bg(rgb(BG_VIEWPORT))
+                    .border_1()
+                    .border_color(rgb(BORDER_HAIRLINE))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        text(format!(
+                            "{} ({})",
+                            l.t("10-K 原文与一手引用证据", "10-K & PRIMARY CITATIONS"),
+                            memo.citations.len()
+                        ))
+                        .font_family(FONT_MONO_TERM)
+                        .text_size(px(TEXT_2XS))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(SKY_FG)),
+                    )
+                    .children(memo.citations.iter().take(12).map(|cite| {
+                        let cite_seed = match l {
+                            UiLang::Zh => format!(
+                                "请核对 {} 这条 10-K / 一手引用证据原文及上下文含义：{}",
+                                active_ticker, cite
+                            ),
+                            UiLang::En => format!(
+                                "Verify the context and implications of this 10-K / primary citation for {}: {}",
+                                active_ticker, cite
+                            ),
+                        };
+                        view()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .child(
+                                view().flex_1().min_w(px(0.0)).child(
+                                    text(cite.clone())
+                                        .font_family(FONT_UI)
+                                        .text_size(px(TEXT_XS))
+                                        .line_height(px(17.0))
+                                        .text_color(rgb(INK_SECONDARY))
+                                        .selectable(true),
+                                ),
+                            )
+                            .child(ask_alan_anchor_button(
+                                store,
+                                active_ticker.clone(),
+                                l.t("10-K 原文引用", "10-K Excerpt").to_owned(),
+                                cite_seed,
+                                l,
+                            ))
+                    })),
+            );
+        }
+
+        if let Some(notes) = &memo.human_notes {
+            body = body.child(
+                view()
+                    .p(px(12.0))
+                    .rounded_sm()
+                    .bg(rgba(GOLD_BG))
+                    .border_1()
+                    .border_color(rgba(GOLD_BORDER))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        text(l.t(
+                            "人类主权区（深度研究永不覆盖）",
+                            "## Human Notes (Human-Owned · Never Overwritten by Deep Research)",
+                        ))
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_XS))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(GOLD_FG)),
+                    )
+                    .child(
+                        text(notes.clone())
+                            .font_family(FONT_UI)
+                            .text_size(px(TEXT_XS))
+                            .line_height(px(19.0))
+                            .text_color(rgb(INK_PRIMARY))
+                            .selectable(true),
+                    ),
+            );
+        }
+
+        card.child(body)
+    }))
 }
 
 fn human_judgment_card(store: AppStore, ticker: &str, metric_draft: Signal<String>) -> View {
@@ -643,8 +1250,8 @@ fn human_judgment_card(store: AppStore, ticker: &str, metric_draft: Signal<Strin
                                 )
                                 .child(
                                     text(l.t(
-                                        "仅本人确认 · AI 草稿见「2 深度研究与 Alan」",
-                                        "Human-Owned Only · AI drafts live under Tab 2",
+                                        "仅本人确认 · AI 审讯与答辩在右侧 Alan 画布",
+                                        "Human-Owned Only · AI defense & drafts live in Alan Canvas",
                                     ))
                                     .font_family(FONT_UI)
                                     .text_size(px(TEXT_XS))
@@ -2466,7 +3073,8 @@ fn properties_rail(store: AppStore) -> Scroll {
                                         .text_color(rgb(fin_col)),
                                 ),
                         )
-                        .child(
+                        .child({
+                            let tk_feynman_rail = rep.ticker.clone();
                             view()
                                 .flex()
                                 .flex_row()
@@ -2476,7 +3084,11 @@ fn properties_rail(store: AppStore) -> Scroll {
                                 .cursor_pointer()
                                 .hover(|s| s.bg(rgba(RAIL_HOVER)))
                                 .on_press(move || {
-                                    store.company_view_tab.set(CompanyViewTab::DeepResearchAlan);
+                                    animate_shell_spring();
+                                    store.open_alan_for_scope(
+                                        AlanScope::Company(tk_feynman_rail.clone()),
+                                        AlanCanvasTab::Feynman,
+                                    );
                                 })
                                 .child(
                                     text(l.t("费曼答辩", "Feynman Gate"))
@@ -2495,8 +3107,8 @@ fn properties_rail(store: AppStore) -> Scroll {
                                     .text_color(rgb(
                                         if pending_feynman { GOLD_FG } else { EMERALD_FG },
                                     )),
-                                ),
-                        )
+                                )
+                        })
                         .child(
                             view()
                                 .flex()

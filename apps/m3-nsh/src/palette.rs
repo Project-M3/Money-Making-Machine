@@ -5,13 +5,14 @@ use crate::format::{
     build_alan_interrogation_prompt_for, collect_circle_tags, filter_palette_items,
 };
 use crate::icons::{
-    ICON_ALERT, ICON_ARROW_CIRCLE_UP, ICON_CHECK, ICON_CLOSE, ICON_ENTER, ICON_INBOX, ICON_JOURNAL,
-    ICON_LAYERS, ICON_RADAR, ICON_REFRESH, ICON_SEARCH, ICON_SETTINGS, ICON_TARGET, icon,
+    ICON_ALAN, ICON_ALERT, ICON_ARROW_CIRCLE_UP, ICON_CHECK, ICON_CLOSE, ICON_ENTER, ICON_INBOX,
+    ICON_JOURNAL, ICON_LAYERS, ICON_RADAR, ICON_REFRESH, ICON_SEARCH, ICON_SETTINGS, ICON_TARGET,
+    icon,
 };
 use crate::platform_desktop::{copy_text_with_notice, restart_after_update};
 use crate::stores::{
-    AppStore, BasketsViewMode, CompanyViewTab, PaletteAction, PaletteItem, UniverseSearchMode,
-    WorkspaceTab,
+    AlanCanvasTab, AlanScope, AppStore, BasketsViewMode, CompanyViewTab, PaletteAction,
+    PaletteItem, UniverseSearchMode, WorkspaceTab,
 };
 use crate::theme::*;
 use m3_core::i18n::UiLang;
@@ -30,7 +31,7 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
     let update_applied = store.update_applied_version.get();
     let update_notice = store.update_notice.get();
 
-    let mut items = Vec::with_capacity(reports.len() * 2 + 28);
+    let mut items = Vec::with_capacity(reports.len() * 2 + 30);
     for rep in &reports {
         let (bc_fg, _, _) = bucket_colors(rep.bucket);
         items.push(PaletteItem {
@@ -46,6 +47,32 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
             action: PaletteAction::OpenDossier(rep.ticker.clone()),
         });
     }
+    items.push(PaletteItem {
+        group: "ALAN".into(),
+        title: l.t("切换 Alan 双画布", "Toggle Alan Dual Canvas").into(),
+        subtitle: l
+            .t(
+                "在右侧展开或收起统一 Alan 审讯与费曼答辩画布",
+                "Open or close the unified Alan Split Canvas beside M3",
+            )
+            .into(),
+        shortcut: Some("⌘L"),
+        dot_color: VIOLET_FG,
+        action: PaletteAction::ToggleAlanSplit,
+    });
+    items.push(PaletteItem {
+        group: "ALAN".into(),
+        title: l.t("Alan 全屏沉浸", "Alan Immersive Studio").into(),
+        subtitle: l
+            .t(
+                "切换居中 760px 沉浸式 Alan 研究画布",
+                "Toggle centered 760px Immersive Alan reading studio",
+            )
+            .into(),
+        shortcut: Some("⇧⌘L"),
+        dot_color: VIOLET_FG,
+        action: PaletteAction::ToggleAlanImmersive,
+    });
     for rep in &reports {
         items.push(PaletteItem {
             group: "ALAN".into(),
@@ -160,17 +187,20 @@ pub fn build_palette_items_from_store(store: AppStore) -> Vec<PaletteItem> {
             action: PaletteAction::OpenCompanyTab(CompanyViewTab::FinancialsMemo),
         });
         items.push(PaletteItem {
-            group: "VIEW".into(),
-            title: format!("Research Desk · Deep Research & Alan ({selected_ticker})"),
+            group: "ALAN".into(),
+            title: format!(
+                "{} ({selected_ticker})",
+                l.t("打开 Alan 审讯画布", "Open Alan Canvas")
+            ),
             subtitle: l
                 .t(
-                    "4 视角并行深研、Living Research Memo 与费曼审讯",
-                    "4-perspective Deep Research, Living Memo, and Feynman chat",
+                    "在双画布中针对当前公司发起审讯对话或 3 轮费曼答辩",
+                    "Open unified Alan Dual Canvas scoped to this company",
                 )
                 .into(),
-            shortcut: None,
+            shortcut: Some("⌘L"),
             dot_color: VIOLET_FG,
-            action: PaletteAction::OpenCompanyTab(CompanyViewTab::DeepResearchAlan),
+            action: PaletteAction::OpenAgent(selected_ticker.clone()),
         });
         items.push(PaletteItem {
             group: "RESEARCH".into(),
@@ -613,10 +643,17 @@ pub fn execute_palette_action(store: AppStore, action: PaletteAction) {
             store.open_company(&ticker, CompanyViewTab::FinancialsMemo);
         }
         PaletteAction::OpenAgent(ticker) => {
-            store.open_company(&ticker, CompanyViewTab::DeepResearchAlan);
+            store.open_company(&ticker, CompanyViewTab::FinancialsMemo);
+            store.open_alan_for_scope(AlanScope::Company(ticker), AlanCanvasTab::Interrogate);
+        }
+        PaletteAction::ToggleAlanSplit => {
+            store.toggle_alan_split();
+        }
+        PaletteAction::ToggleAlanImmersive => {
+            store.toggle_alan_immersive();
         }
         PaletteAction::RunDeepResearch(ticker) => {
-            store.open_company(&ticker, CompanyViewTab::DeepResearchAlan);
+            store.open_company(&ticker, CompanyViewTab::FinancialsMemo);
             store.start_deep_research(&ticker, None, "manual");
         }
         PaletteAction::ShowBudgetStatus => {
@@ -703,6 +740,8 @@ fn is_view_palette_item(item: &PaletteItem) -> bool {
             | PaletteAction::OpenSettings
             | PaletteAction::OpenCompanyTab(_)
             | PaletteAction::FocusBasket(None)
+            | PaletteAction::ToggleAlanSplit
+            | PaletteAction::ToggleAlanImmersive
     )
 }
 
@@ -735,7 +774,10 @@ fn palette_item_icon(item: &PaletteItem) -> &'static str {
         | PaletteAction::FocusBasket(_)
         | PaletteAction::MoveCompanyBucket(_, _)
         | PaletteAction::FilterCircle(_) => ICON_TARGET,
-        PaletteAction::OpenAgent(_) | PaletteAction::RunDeepResearch(_) => ICON_LAYERS,
+        PaletteAction::OpenAgent(_)
+        | PaletteAction::RunDeepResearch(_)
+        | PaletteAction::ToggleAlanSplit
+        | PaletteAction::ToggleAlanImmersive => ICON_ALAN,
         PaletteAction::SyncNow
         | PaletteAction::CatchupEvents
         | PaletteAction::SyncUniverseNow
