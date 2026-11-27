@@ -150,37 +150,256 @@ pub fn company_view(store: AppStore) -> impl IntoElement {
 }
 
 fn empty_company_state(store: AppStore, l: UiLang) -> View {
-    view().p(px(24.0)).child(
-        obsidian_card()
-            .p(px(24.0))
-            .flex()
-            .flex_col()
-            .gap(px(12.0))
-            .child(
-                text(l.t("未选择公司", "No Company Selected"))
+    let ticker = store.selected_ticker.get();
+    let clean_ticker = ticker.trim().to_ascii_uppercase();
+    if clean_ticker.is_empty() {
+        return view().p(px(24.0)).child(
+            obsidian_card()
+                .p(px(24.0))
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .child(
+                    text(l.t("未选择公司", "No Company Selected"))
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_SM))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(INK_HERO)),
+                )
+                .child(
+                    text(l.t(
+                        "当前能力圈中暂无已选标的，请先从「全市场雷达」将公司加入能力圈，或在「能力圈总览」中选择一家标的。",
+                        "No holding is selected in your Circle. Promote a company from Universe Radar or pick one in Circle Overview.",
+                    ))
                     .font_family(FONT_UI)
-                    .text_size(px(TEXT_SM))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(INK_HERO)),
-            )
-            .child(
-                text(l.t(
-                    "当前能力圈中暂无已选标的，请先从「全市场雷达」将公司加入能力圈，或在「能力圈总览」中选择一家标的。",
-                    "No holding is selected in your Circle. Promote a company from Universe Radar or pick one in Circle Overview.",
-                ))
+                    .text_size(px(TEXT_XS))
+                    .line_height(px(18.0))
+                    .text_color(rgb(INK_SECONDARY)),
+                )
+                .child(view().pt(px(4.0)).flex().flex_row().gap(px(8.0)).child(
+                    action_button(
+                        l.t("前往全市场雷达", "Open Universe Radar"),
+                        true,
+                        move || store.open_tab(WorkspaceTab::Universe),
+                    ),
+                )),
+        );
+    }
+
+    let paths = store.paths.get_untracked();
+    let cached_rep =
+        m3_core::store::read_json::<MungerReport>(&paths.computed_report_path(&clean_ticker)).ok();
+    let dossier = store
+        .selected_dossier
+        .get()
+        .filter(|d| d.ticker.eq_ignore_ascii_case(&clean_ticker))
+        .or_else(|| {
+            m3_core::store::load_dossier(&paths, &clean_ticker)
+                .ok()
+                .flatten()
+        });
+    let uni_row = store
+        .universe_selected_row
+        .get()
+        .filter(|r| r.ticker.eq_ignore_ascii_case(&clean_ticker));
+
+    let name_hint = cached_rep
+        .as_ref()
+        .map(|r| r.name.clone())
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            dossier
+                .as_ref()
+                .map(|d| d.name.clone())
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            uni_row
+                .as_ref()
+                .map(|r| r.name.clone())
+                .filter(|s| !s.trim().is_empty())
+        });
+    let cik_hint = cached_rep.as_ref().and_then(|r| r.cik.clone()).or_else(|| {
+        uni_row
+            .as_ref()
+            .map(|r| r.cik.clone())
+            .filter(|s| !s.trim().is_empty())
+    });
+    let circle_hint = cached_rep
+        .as_ref()
+        .map(|r| r.circle.clone())
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            uni_row
+                .as_ref()
+                .and_then(|r| r.sic_description.clone())
+                .filter(|s| !s.trim().is_empty())
+        });
+
+    let heading = match name_hint.as_deref() {
+        Some(name) => format!(
+            "{} · {} ({})",
+            l.t("尚未加入能力圈", "Not Yet in Circle"),
+            clean_ticker,
+            name
+        ),
+        None => format!(
+            "{} · {}",
+            l.t("尚未加入能力圈", "Not Yet in Circle"),
+            clean_ticker
+        ),
+    };
+
+    let mut card = obsidian_card()
+        .p(px(24.0))
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .child(
+            text(heading)
                 .font_family(FONT_UI)
-                .text_size(px(TEXT_XS))
-                .line_height(px(18.0))
-                .text_color(rgb(INK_SECONDARY)),
-            )
-            .child(view().pt(px(4.0)).flex().flex_row().gap(px(8.0)).child(
-                action_button(
-                    l.t("前往全市场雷达", "Open Universe Radar"),
-                    true,
-                    move || store.open_tab(WorkspaceTab::Universe),
+                .text_size(px(TEXT_SM))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(INK_HERO)),
+        )
+        .child(
+            text(l.t(
+                "该标的尚未写入你的能力圈观察池（WATCH / IN / OUT / TOO HARD）。加入 [WATCH] 后即可查看完整 5 年财务底表、K 线估值沙盒、4 视角深研与 XBRL 溯源。",
+                "This ticker is not in your Circle watchlist yet. Add it to [WATCH] to unlock the full 5-year financials, K-line valuation sandbox, 4-lens deep research, and XBRL provenance.",
+            ))
+            .font_family(FONT_UI)
+            .text_size(px(TEXT_XS))
+            .line_height(px(18.0))
+            .text_color(rgb(INK_SECONDARY)),
+        );
+
+    if let Some(rep) = cached_rep.as_ref() {
+        let (roic, _) = fmt_pct_clean(rep.roic_5y_avg_pct, false);
+        let (gm, _) = fmt_pct_clean(rep.gross_margin_5y_avg_pct, false);
+        let (share_d, _) = fmt_pct_clean(rep.share_change_3y_pct, true);
+        let warns = rep.warnings.len();
+        let warn_col = if warns > 0 { GOLD_FG } else { EMERALD_FG };
+        card = card.child(
+            view()
+                .p(px(12.0))
+                .rounded_md()
+                .bg(rgb(BG_SURFACE))
+                .border_1()
+                .border_color(rgb(BORDER_HAIRLINE))
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap(px(16.0))
+                .child(kv_line(l.t("5Y ROIC", "5Y ROIC"), roic, INK_PRIMARY))
+                .child(kv_line(
+                    l.t("5Y 毛利率", "5Y Gross Margin"),
+                    gm,
+                    INK_PRIMARY,
+                ))
+                .child(kv_line(
+                    l.t("3Y 股本变化", "3Y Share Δ"),
+                    share_d,
+                    INK_PRIMARY,
+                ))
+                .child(kv_line(
+                    l.t("预警项", "Warnings"),
+                    format!("{warns}"),
+                    warn_col,
+                )),
+        );
+    }
+
+    if let Some(d) = dossier.as_ref()
+        && !d.three_sentence_business.trim().is_empty()
+    {
+        card = card.child(
+            view()
+                .p(px(12.0))
+                .rounded_md()
+                .bg(rgb(BG_SURFACE))
+                .border_1()
+                .border_color(rgb(BORDER_HAIRLINE))
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(
+                    text(l.t("商业模式档案摘要", "Dossier Business Summary"))
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_XS))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(INK_PRIMARY)),
+                )
+                .child(
+                    text(d.three_sentence_business.trim().to_owned())
+                        .font_family(FONT_UI)
+                        .text_size(px(TEXT_XS))
+                        .line_height(px(18.0))
+                        .text_color(rgb(INK_SECONDARY)),
                 ),
+        );
+    }
+
+    let promote_ticker = clean_ticker.clone();
+    let promote_name = name_hint.clone();
+    let promote_cik = cik_hint.clone();
+    let promote_circle = circle_hint.clone();
+
+    let ask_ticker = clean_ticker.clone();
+    let ask_anchor_label = name_hint
+        .as_ref()
+        .map(|n| format!("{clean_ticker} · {n}"))
+        .unwrap_or_else(|| clean_ticker.clone());
+    let ask_seed = match l {
+        UiLang::Zh => format!(
+            "请结合 /mnt/m3/dossiers/{clean_ticker}.json 与 /mnt/m3/computed/{clean_ticker}.json，帮我快速评估 {clean_ticker} 的商业模式与 5 年 ROIC，值不值得加入 WATCH 观察池？"
+        ),
+        UiLang::En => format!(
+            "Inspect /mnt/m3/dossiers/{clean_ticker}.json and /mnt/m3/computed/{clean_ticker}.json and summarize whether {clean_ticker} merits adding to WATCH."
+        ),
+    };
+
+    card = card.child(
+        view()
+            .pt(px(4.0))
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(8.0))
+            .child(action_button(
+                l.t(
+                    "+ WATCH · 加入观察池并查看完整研报",
+                    "+ WATCH · Add & Open Full Desk",
+                ),
+                true,
+                move || {
+                    store.promote_ticker_to_watch(
+                        &promote_ticker,
+                        promote_name.as_deref(),
+                        promote_cik.as_deref(),
+                        promote_circle.as_deref(),
+                    );
+                },
+            ))
+            .child(action_button(
+                l.t("问 Alan ↗", "Ask Alan ↗"),
+                false,
+                move || {
+                    animate_shell_spring();
+                    store.open_alan_with_anchor(
+                        AlanScope::Company(ask_ticker.clone()),
+                        &ask_anchor_label,
+                        &ask_seed,
+                    );
+                },
+            ))
+            .child(action_button(
+                l.t("前往全市场雷达", "Open Universe Radar"),
+                false,
+                move || store.open_tab(WorkspaceTab::Universe),
             )),
-    )
+    );
+
+    view().p(px(24.0)).child(card)
 }
 
 fn rich_top_bar(store: AppStore) -> View {

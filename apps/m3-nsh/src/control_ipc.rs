@@ -419,6 +419,14 @@ fn handle_set_alan(
         } else {
             if let Some(m) = parsed_mode {
                 store.set_alan_stage_mode(m);
+            } else if store.alan_stage_mode.get_untracked() == AlanStageMode::Closed
+                && (parsed_tab.is_some()
+                    || prompt.as_deref().is_some_and(|p| !p.trim().is_empty())
+                    || anchor_label
+                        .as_deref()
+                        .is_some_and(|a| !a.trim().is_empty()))
+            {
+                store.set_alan_stage_mode(AlanStageMode::Split);
             }
             if let Some(t) = parsed_tab {
                 store.set_alan_canvas_tab(t);
@@ -620,6 +628,10 @@ fn capture_process_window_to_path(out_path: &Path) -> Result<u32, String> {
             format!(
                 "`screencapture -l {wid} -o -x` exited with status {}",
                 output.status
+            )
+        } else if detail.contains("could not create image from window") {
+            format!(
+                "`screencapture` failed: {detail} (grant M3 Screen Recording access in System Settings -> Privacy & Security -> Screen & System Audio Recording)"
             )
         } else {
             format!("`screencapture` failed: {detail}")

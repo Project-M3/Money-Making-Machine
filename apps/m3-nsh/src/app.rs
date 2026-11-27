@@ -64,13 +64,42 @@ fn topbar_breadcrumb(store: AppStore) -> Memo<String> {
             if ticker.is_empty() {
                 return "Research Desk".to_owned();
             }
-            let name = store.reports.with(|reps| {
+            let mut name = store.reports.with(|reps| {
                 reps.iter()
-                    .find(|r| r.ticker == ticker)
+                    .find(|r| r.ticker.eq_ignore_ascii_case(&ticker))
                     .map(|r| r.name.clone())
                     .unwrap_or_default()
             });
-            return format!("{ticker} · {name} · Research Desk");
+            if name.trim().is_empty() {
+                name = store
+                    .selected_dossier
+                    .get()
+                    .filter(|d| d.ticker.eq_ignore_ascii_case(&ticker))
+                    .map(|d| d.name)
+                    .unwrap_or_default();
+            }
+            if name.trim().is_empty() {
+                name = store
+                    .universe_selected_row
+                    .get()
+                    .filter(|row| row.ticker.eq_ignore_ascii_case(&ticker))
+                    .map(|row| row.name)
+                    .unwrap_or_default();
+            }
+            if name.trim().is_empty() {
+                let paths = store.paths.get_untracked();
+                name = m3_core::store::read_json::<m3_core::model::MungerReport>(
+                    &paths.computed_report_path(&ticker),
+                )
+                .map(|r| r.name)
+                .unwrap_or_default();
+            }
+            let clean_name = name.trim();
+            return if clean_name.is_empty() {
+                format!("{ticker} · Research Desk")
+            } else {
+                format!("{ticker} · {clean_name} · Research Desk")
+            };
         }
         match store.active_tab.get() {
             WorkspaceTab::Inbox => l

@@ -855,7 +855,9 @@ impl AppStore {
         match snap.reports_res {
             Ok(list) => {
                 let cur = self.selected_ticker.get_untracked();
-                let next_sel = if list.is_empty() {
+                let next_sel = if self.company_open.get_untracked() && !cur.trim().is_empty() {
+                    cur
+                } else if list.is_empty() {
                     String::new()
                 } else if list.iter().any(|r| r.ticker.eq_ignore_ascii_case(&cur)) {
                     cur
@@ -1080,7 +1082,9 @@ impl AppStore {
         match store::load_or_compute_reports(&paths) {
             Ok(list) => {
                 let cur = self.selected_ticker.get_untracked();
-                let next_sel = if list.is_empty() {
+                let next_sel = if self.company_open.get_untracked() && !cur.trim().is_empty() {
+                    cur
+                } else if list.is_empty() {
                     String::new()
                 } else if list.iter().any(|r| r.ticker.eq_ignore_ascii_case(&cur)) {
                     cur
@@ -3729,9 +3733,19 @@ impl AppStore {
         }
     }
 
+    /// Promotes a non-watchlist ticker (from Company Desk preview / external trigger)
+    /// into `[WATCH]` and reloads deterministic reports so full Research Desk renders.
+    pub fn promote_ticker_to_watch(
+        self,
+        ticker: &str,
+        name_hint: Option<&str>,
+        cik_hint: Option<&str>,
+        circle_hint: Option<&str>,
+    ) {
+        self.add_company_to_watch_inner(ticker, name_hint, cik_hint, circle_hint);
+    }
+
     pub fn add_universe_company_to_watch(self, row: &UniverseRow) {
-        let paths = self.paths.get_untracked();
-        let l = self.lang.get_untracked();
         let circle = match (row.sic, row.sic_description.as_deref()) {
             (Some(sic), Some(desc)) if !desc.trim().is_empty() => {
                 Some(format!("{} / SIC {sic}", desc.trim()))
@@ -3741,13 +3755,36 @@ impl AppStore {
             _ => None,
         };
         let verified_cik = (!row.cik.trim().is_empty()).then_some(row.cik.as_str());
-        match store::add_or_update_company_with_cik(
-            &paths,
+        self.add_company_to_watch_inner(
             &row.ticker,
-            Bucket::Watch,
             Some(&row.name),
             verified_cik,
             circle.as_deref(),
+        );
+    }
+
+    fn add_company_to_watch_inner(
+        self,
+        ticker: &str,
+        name_hint: Option<&str>,
+        cik_hint: Option<&str>,
+        circle_hint: Option<&str>,
+    ) {
+        let clean_ticker = ticker.trim().to_ascii_uppercase();
+        if clean_ticker.is_empty() {
+            return;
+        }
+        let clean_name = name_hint.map(str::trim).filter(|s| !s.is_empty());
+        let display_name = clean_name.unwrap_or(&clean_ticker).to_owned();
+        let paths = self.paths.get_untracked();
+        let l = self.lang.get_untracked();
+        match store::add_or_update_company_with_cik(
+            &paths,
+            &clean_ticker,
+            Bucket::Watch,
+            clean_name,
+            cik_hint.map(str::trim).filter(|s| !s.is_empty()),
+            circle_hint.map(str::trim).filter(|s| !s.is_empty()),
             None,
         ) {
             Ok(_) => {
@@ -3765,18 +3802,20 @@ impl AppStore {
                     self.reload_universe_from_lake();
                 }
                 if let Some(err) = lake_err {
-                    self.set_error_notice(format!("{} ({}): {err}", row.ticker, row.name));
+                    self.set_error_notice(format!("{clean_ticker} ({display_name}): {err}"));
                 } else {
                     self.set_info_notice(match l {
-                        UiLang::Zh => format!("已将 {}（{}）加入 [WATCH]", row.ticker, row.name),
-                        UiLang::En => format!("Added {} ({}) to [WATCH]", row.ticker, row.name),
+                        UiLang::Zh => format!("已将 {clean_ticker}（{display_name}）加入 [WATCH]"),
+                        UiLang::En => {
+                            format!("Added {clean_ticker} ({display_name}) to [WATCH]")
+                        }
                     });
                 }
             }
             Err(err) => {
                 self.set_error_notice(match l {
-                    UiLang::Zh => format!("加入观察池失败 ({})：{err:#}", row.ticker),
-                    UiLang::En => format!("Failed to add {} to Watch: {err:#}", row.ticker),
+                    UiLang::Zh => format!("加入观察池失败 ({clean_ticker})：{err:#}"),
+                    UiLang::En => format!("Failed to add {clean_ticker} to Watch: {err:#}"),
                 });
             }
         }
@@ -4775,8 +4814,11 @@ impl AppStore {
     fn apply_alan_sidebar_layout(self, mode: AlanStageMode) {
         match mode {
             AlanStageMode::Split => {
-                let should_collapse =
-                    self.is_deep_research_view() || self.alan_window_width.get_untracked() < 1260.0;
+                let is_radar = !self.company_open.get_untracked()
+                    && self.active_tab.get_untracked() == WorkspaceTab::Universe;
+                let should_collapse = self.is_deep_research_view()
+                    || is_radar
+                    || self.alan_window_width.get_untracked() < 1260.0;
                 if should_collapse {
                     if !self.sidebar_collapsed.get_untracked() {
                         self.sidebar_collapsed.set(true);
@@ -4817,12 +4859,9 @@ impl AppStore {
             {
                 self.alan_stage_mode.set(AlanStageMode::Split);
                 self.apply_alan_sidebar_layout(AlanStageMode::Split);
-            } else if cur_mode == AlanStageMode::Split
-                && !self.alan_deep_research_split_pref.get_untracked()
-                && !pinned
-            {
-                self.alan_stage_mode.set(AlanStageMode::Closed);
-                self.apply_alan_sidebar_layout(AlanStageMode::Closed);
+            } else if cur_mode == AlanStageMode::Split {
+                self.alan_deep_research_split_pref.set(true);
+                self.apply_alan_sidebar_layout(AlanStageMode::Split);
             } else {
                 self.apply_alan_sidebar_layout(cur_mode);
             }

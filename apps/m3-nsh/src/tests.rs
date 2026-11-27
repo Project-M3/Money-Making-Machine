@@ -3379,6 +3379,18 @@ fn alan_split_preference_remembered_in_deep_research_vs_overview_tabs() {
             assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
             assert!(!store.alan_deep_research_split_pref.get_untracked());
 
+            // Keeping Split open on an overview tab and navigating into Company Desk inherits Split.
+            store.close_company_overlay();
+            store.open_tab(WorkspaceTab::Universe);
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+            store.open_company("AAPL", CompanyViewTab::FinancialsMemo);
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+            assert!(store.alan_deep_research_split_pref.get_untracked());
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+            assert!(!store.alan_deep_research_split_pref.get_untracked());
+
             store.close_company_overlay();
             store.open_tab(WorkspaceTab::Industry);
             assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
@@ -3778,6 +3790,103 @@ fn control_ipc_socket_bind_replaces_stale_socket_and_sets_0600() {
     let err = bind_control_listener(&non_sock).expect_err("must not remove regular file");
     assert!(err.to_string().contains("non-socket"));
     assert!(non_sock.exists());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn reload_preserves_open_non_watchlist_ticker_and_set_alan_tab_opens_split() {
+    use crate::control_ipc::dispatch_app_control_request;
+    use m3_core::app_control::AppControlRequest;
+
+    let root = temp_workspace("preserve_ticker_and_set_alan");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            // Empty watchlist must not clear `selected_ticker` while viewing a company overlay.
+            store.open_company("COST", CompanyViewTab::FinancialsMemo);
+            assert!(store.company_open.get_untracked());
+            assert_eq!(store.selected_ticker.get_untracked(), "COST");
+
+            store.reload_from_disk();
+            assert!(store.company_open.get_untracked());
+            assert_eq!(store.selected_ticker.get_untracked(), "COST");
+
+            // Switching to `feynman` tab while `Closed` opens `Split` automatically.
+            store.set_alan_stage_mode(AlanStageMode::Closed);
+            let resp = dispatch_app_control_request(
+                store,
+                AppControlRequest::SetAlan {
+                    mode: None,
+                    tab: Some("feynman".to_owned()),
+                    scope: None,
+                    pin: Some(true),
+                    anchor_label: None,
+                    prompt: None,
+                    submit: false,
+                },
+            );
+            assert!(resp.ok);
+            let st = resp.state.expect("set alan state");
+            assert_eq!(st.alan_stage_mode, "split");
+            assert_eq!(st.alan_canvas_tab, "feynman");
+            assert!(st.alan_context_pinned);
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn universe_split_auto_collapses_sidebar_and_promote_ticker_adds_to_watch() {
+    let root = temp_workspace("universe_split_and_promote");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+    let mut dossier = m3_core::store::load_or_init_dossier(&paths, "COST").expect("init dossier");
+    dossier.name = "Costco Wholesale Corp.".to_owned();
+    dossier.human_judgment.my_stance = Some("Keep intact".to_owned());
+    m3_core::store::save_dossier(&paths, &dossier).expect("save dossier");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            // Opening Split on Universe auto-collapses the left sidebar to protect table width;
+            // closing Split restores it cleanly.
+            store.open_tab(WorkspaceTab::Universe);
+            assert!(!store.sidebar_collapsed.get_untracked());
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Split);
+            assert!(store.sidebar_collapsed.get_untracked());
+            store.toggle_alan_split();
+            assert_eq!(store.alan_stage_mode.get_untracked(), AlanStageMode::Closed);
+            assert!(!store.sidebar_collapsed.get_untracked());
+
+            // Promoting a non-watchlist ticker from Company Desk adds it to WATCH and preserves human_judgment.
+            store.promote_ticker_to_watch(
+                "COST",
+                Some("Costco Wholesale Corp."),
+                Some("0000909832"),
+                Some("Retail"),
+            );
+            let paths = store.paths.get_untracked();
+            let wl = m3_core::store::load_watchlist(&paths).expect("watchlist");
+            assert!(wl.companies.iter().any(|c| {
+                c.ticker == "COST"
+                    && c.bucket == m3_core::model::Bucket::Watch
+                    && c.name == "Costco Wholesale Corp."
+            }));
+            let dossier_after = m3_core::store::load_dossier(&paths, "COST")
+                .expect("load dossier")
+                .expect("dossier exists");
+            assert_eq!(
+                dossier_after.human_judgment.my_stance.as_deref(),
+                Some("Keep intact")
+            );
+        },
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
