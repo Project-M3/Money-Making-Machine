@@ -3,13 +3,16 @@ pub mod mcp;
 
 use anyhow::{Context, Result, ensure};
 use m3_core::{
-    app_config,
+    UiLang, alan_connection,
+    alan_interrogator::{self, AlanScope},
+    alan_session, app_config,
+    app_control::{self, AppControlRequest},
     budget::{self, ThemesFile},
     events::{self, EventCatchupOptions},
     industry,
     lake::{LakeDb, UniverseFilter, UniverseSortBy, UniverseSummary},
     lake_l1::{L1Summary, SignalKind, SignalStatus, SimilarSearchFilter},
-    lake_l2,
+    lake_l2::{self, DEFAULT_STALE_RESEARCH_RUN_MS, ResearchRunStatus},
     model::{Bucket, JournalAction, SyncStatusFile, parse_decimal_token},
     proactive::{self, BriefingPeriod, TriageVerdict},
     research::{self, DeepResearchRequest},
@@ -22,7 +25,7 @@ use rust_decimal::Decimal;
 use serde_json::json;
 use std::{
     io::{IsTerminal, Write as _},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     time::{Duration, Instant},
 };
@@ -77,6 +80,16 @@ fn flag_takes_value(args: &[String], flag_idx: usize) -> bool {
             | "--workspace"
             | "--period"
             | "--verdict"
+            | "--scope"
+            | "--lang"
+            | "--timeout"
+            | "--profile"
+            | "--tab"
+            | "--industry"
+            | "--mode"
+            | "--pin"
+            | "--anchor"
+            | "--prompt"
     )
 }
 
@@ -207,7 +220,7 @@ fn print_cli_result(result: Result<serde_json::Value>, format: OutputFormat) -> 
     code
 }
 
-/// Execute workspace-independent CLI subcommands (`version`, `workspace`, `update`, `doctor`).
+/// Execute workspace-independent CLI subcommands (`version`, `workspace`, `update`, `doctor`, `app`, `alan status|test`).
 /// Returns `None` if the subcommand requires an initialized M3 workspace.
 pub fn run_standalone(args: &[String]) -> Option<Result<serde_json::Value>> {
     let sub = args.first().map(String::as_str)?;
@@ -217,6 +230,11 @@ pub fn run_standalone(args: &[String]) -> Option<Result<serde_json::Value>> {
         "workspace" => Some(cmd_workspace(rest)),
         "update" => Some(cmd_update(rest)),
         "doctor" => Some(cmd_doctor(rest)),
+        "app" => Some(cmd_app(rest)),
+        "alan" => match rest.first().map(String::as_str).unwrap_or("status") {
+            "status" | "test" => Some(cmd_alan_standalone(rest)),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -243,6 +261,7 @@ pub fn run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
         "briefing" => cmd_briefing(paths, rest),
         "triage" => cmd_triage(paths, rest),
         "falsification" => cmd_falsification(paths, rest),
+        "alan" => cmd_alan(paths, rest),
         "themes" => cmd_themes(paths, rest),
         "storage" => cmd_storage(paths, rest),
         "start" => cmd_start(paths),
@@ -338,7 +357,15 @@ fn cmd_sync(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value
         }
         i += 1;
     }
-    let sync = store::sync_all(paths, ticker.as_deref(), prices_only)?;
+    execute_sync(paths, ticker.as_deref(), prices_only)
+}
+
+pub(crate) fn execute_sync(
+    paths: &WorkspacePaths,
+    ticker: Option<&str>,
+    prices_only: bool,
+) -> Result<serde_json::Value> {
+    let sync = store::sync_all(paths, ticker, prices_only)?;
     Ok(json!({
         "schema_version": 1,
         "ok": true,
@@ -373,6 +400,27 @@ pub(crate) fn cmd_dossier(paths: &WorkspacePaths, args: &[String]) -> Result<ser
     }))
 }
 
+pub(crate) fn parse_bucket_token(raw: &str) -> Result<Bucket> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "core" | "in" => Ok(Bucket::Core),
+        "watch" => Ok(Bucket::Watch),
+        "out" => Ok(Bucket::Out),
+        "too_hard" => Ok(Bucket::TooHard),
+        _ => anyhow::bail!("invalid bucket {raw}; use core|in|watch|out|too_hard"),
+    }
+}
+
+pub(crate) fn parse_journal_action_token(raw: &str) -> Result<JournalAction> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "wait" => Ok(JournalAction::Wait),
+        "out" => Ok(JournalAction::Out),
+        "too_hard" => Ok(JournalAction::TooHard),
+        "paper_buy" => Ok(JournalAction::PaperBuy),
+        "paper_sell" => Ok(JournalAction::PaperSell),
+        _ => anyhow::bail!("invalid action {raw}"),
+    }
+}
+
 fn cmd_add(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
     let sym = args
         .first()
@@ -388,13 +436,7 @@ fn cmd_add(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
             "--bucket" => {
                 i += 1;
                 let raw = args.get(i).context("--bucket requires value")?;
-                bucket = match raw.to_ascii_lowercase().as_str() {
-                    "core" | "in" => Bucket::Core,
-                    "watch" => Bucket::Watch,
-                    "out" => Bucket::Out,
-                    "too_hard" => Bucket::TooHard,
-                    _ => anyhow::bail!("invalid bucket {raw}; use core|in|watch|out|too_hard"),
-                };
+                bucket = parse_bucket_token(raw)?;
             }
             "--name" => {
                 i += 1;
@@ -413,14 +455,25 @@ fn cmd_add(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
         i += 1;
     }
 
-    let entry = store::add_or_update_company(
+    execute_watchlist_add(
         paths,
         sym,
         bucket,
         name.as_deref(),
         circle.as_deref(),
         reason.as_deref(),
-    )?;
+    )
+}
+
+pub(crate) fn execute_watchlist_add(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    bucket: Bucket,
+    name: Option<&str>,
+    circle: Option<&str>,
+    reason: Option<&str>,
+) -> Result<serde_json::Value> {
+    let entry = store::add_or_update_company(paths, ticker, bucket, name, circle, reason)?;
 
     if paths.lake_db_path().exists() {
         let db = LakeDb::open(paths).context(
@@ -440,14 +493,7 @@ fn cmd_add(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value>
 fn cmd_journal(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
     let sub = args.first().map(String::as_str).unwrap_or("list");
     match sub {
-        "list" => {
-            let journal = store::load_journal(paths)?;
-            Ok(json!({
-                "schema_version": 1,
-                "ok": true,
-                "data": journal
-            }))
-        }
+        "list" => execute_journal_list(paths),
         "record" => {
             let mut ticker: Option<String> = None;
             let mut action: Option<JournalAction> = None;
@@ -465,14 +511,7 @@ fn cmd_journal(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Va
                     "--action" => {
                         i += 1;
                         let raw = args.get(i).context("--action requires value")?;
-                        action = Some(match raw.to_ascii_lowercase().as_str() {
-                            "wait" => JournalAction::Wait,
-                            "out" => JournalAction::Out,
-                            "too_hard" => JournalAction::TooHard,
-                            "paper_buy" => JournalAction::PaperBuy,
-                            "paper_sell" => JournalAction::PaperSell,
-                            _ => anyhow::bail!("invalid action {raw}"),
-                        });
+                        action = Some(parse_journal_action_token(raw)?);
                     }
                     "--note" => {
                         i += 1;
@@ -498,25 +537,44 @@ fn cmd_journal(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Va
                 i += 1;
             }
 
-            let entry = store::record_journal_entry(
+            execute_journal_record(
                 paths,
                 ticker.as_deref().context("--ticker is required")?,
                 action.context("--action is required")?,
                 note.as_deref().context("--note is required")?,
                 shares,
                 falsification.as_deref(),
-            )?;
-
-            Ok(json!({
-                "schema_version": 1,
-                "ok": true,
-                "data": entry
-            }))
+            )
         }
         _ => anyhow::bail!(
             "usage: m3 journal list | record --ticker SYM --action wait|out|too_hard|paper_buy|paper_sell --note ..."
         ),
     }
+}
+
+pub(crate) fn execute_journal_list(paths: &WorkspacePaths) -> Result<serde_json::Value> {
+    let journal = store::load_journal(paths)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": journal
+    }))
+}
+
+pub(crate) fn execute_journal_record(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    action: JournalAction,
+    note: &str,
+    shares: Option<Decimal>,
+    falsification: Option<&str>,
+) -> Result<serde_json::Value> {
+    let entry = store::record_journal_entry(paths, ticker, action, note, shares, falsification)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": entry
+    }))
 }
 
 const MAX_PRICES_TOP: usize = 1_000;
@@ -892,10 +950,34 @@ fn cmd_events_list(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json
         i += 1;
     }
 
+    execute_events_list(
+        paths,
+        ticker.as_deref(),
+        event_type.as_deref(),
+        unprocessed_only,
+        limit,
+    )
+}
+
+pub(crate) fn execute_events_list(
+    paths: &WorkspacePaths,
+    ticker: Option<&str>,
+    event_type: Option<&str>,
+    unprocessed_only: bool,
+    limit: usize,
+) -> Result<serde_json::Value> {
+    let normalized_ticker = ticker
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_uppercase);
+    let normalized_type = event_type
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
     let events = match LakeDb::open_read_only_if_exists(paths)? {
         Some(db) => db.list_events(
-            ticker.as_deref(),
-            event_type.as_deref(),
+            normalized_ticker.as_deref(),
+            normalized_type.as_deref(),
             unprocessed_only,
             limit,
         )?,
@@ -1027,13 +1109,22 @@ fn cmd_inbox_triage(paths: &WorkspacePaths, args: &[String]) -> Result<serde_jso
         .context("usage: m3 inbox triage <SIGNAL_ID> --status unread|researching|watch|too_hard|archived [--promote-watch]")?;
     let target_status = status.context("--status is required for inbox triage")?;
 
+    execute_inbox_triage(paths, &signal_id, target_status, promote_watch)
+}
+
+pub(crate) fn execute_inbox_triage(
+    paths: &WorkspacePaths,
+    signal_id: &str,
+    target_status: SignalStatus,
+    promote_watch: bool,
+) -> Result<serde_json::Value> {
     ensure!(
         LakeDb::open_read_only_if_exists(paths)?.is_some(),
         "universe lake has not been synced yet; run `m3 universe sync` first"
     );
     let db = LakeDb::open(paths)?;
     let now_ms = store::now_ms();
-    let updated = db.triage_signal(&signal_id, target_status, now_ms)?;
+    let updated = db.triage_signal(signal_id, target_status, now_ms)?;
     ensure!(updated, "signal '{signal_id}' not found in signal_inbox");
 
     let signal = db
@@ -1095,7 +1186,7 @@ fn cmd_inbox_triage(paths: &WorkspacePaths, args: &[String]) -> Result<serde_jso
     }))
 }
 
-const MAX_RESEARCH_STATUS_LIMIT: usize = 500;
+pub(crate) const MAX_RESEARCH_STATUS_LIMIT: usize = 500;
 pub(crate) const MAX_BRIEFING_LIST_LIMIT: usize = 50;
 pub(crate) const MAX_TRIAGE_LIMIT: usize = 100;
 
@@ -1156,10 +1247,26 @@ fn cmd_research_run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_jso
     let ticker = ticker.context(
         "usage: m3 research run <TICKER> [--focus \"...\"] [--trigger manual|inbox|cli]",
     )?;
+    execute_research_run(paths, &ticker, focus, &trigger)
+}
+
+pub(crate) fn execute_research_run(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    focus: Option<String>,
+    trigger: &str,
+) -> Result<serde_json::Value> {
+    let normalized = ticker.trim().to_ascii_uppercase();
+    ensure!(!normalized.is_empty(), "ticker cannot be empty");
+    let norm_trigger = trigger.trim().to_ascii_lowercase();
+    ensure!(
+        matches!(norm_trigger.as_str(), "manual" | "inbox" | "cli"),
+        "invalid trigger '{trigger}'; expected manual|inbox|cli"
+    );
     let req = DeepResearchRequest {
-        ticker,
+        ticker: normalized,
         focus,
-        trigger,
+        trigger: norm_trigger,
     };
     let result = research::run_deep_research(paths, &req, None)?;
     if result.status == "completed" {
@@ -1202,14 +1309,48 @@ fn cmd_research_status(paths: &WorkspacePaths, args: &[String]) -> Result<serde_
         i += 1;
     }
 
-    let (runs, budget) = match LakeDb::open_read_only_if_exists(paths)? {
-        Some(db) => (
-            db.list_research_runs(ticker.as_deref(), limit)?,
-            db.budget_status_report(paths)?,
-        ),
-        None => (Vec::new(), lake_l2::fallback_budget_status_report(paths)?),
+    execute_research_status(paths, ticker.as_deref(), limit)
+}
+
+pub(crate) fn execute_research_status(
+    paths: &WorkspacePaths,
+    ticker: Option<&str>,
+    limit: usize,
+) -> Result<serde_json::Value> {
+    let normalized_ticker = ticker
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_uppercase);
+    let mut reclaimed_stale_runs: usize = 0;
+
+    // Opportunistically reclaim stale `running` rows when opening RW DuckDB safely;
+    // ignore harmless lock/RO conflicts gracefully if another process (e.g. desktop app) holds RW lock.
+    let (runs, budget) = if paths.lake_db_path().exists() {
+        match LakeDb::open(paths) {
+            Ok(db) => {
+                if let Ok(reclaimed) =
+                    db.reclaim_stale_running_runs(store::now_ms(), DEFAULT_STALE_RESEARCH_RUN_MS)
+                {
+                    reclaimed_stale_runs = reclaimed;
+                }
+                (
+                    db.list_research_runs(normalized_ticker.as_deref(), limit)?,
+                    db.budget_status_report(paths)?,
+                )
+            }
+            Err(_) => match LakeDb::open_read_only_if_exists(paths)? {
+                Some(db) => (
+                    db.list_research_runs(normalized_ticker.as_deref(), limit)?,
+                    db.budget_status_report(paths)?,
+                ),
+                None => (Vec::new(), lake_l2::fallback_budget_status_report(paths)?),
+            },
+        }
+    } else {
+        (Vec::new(), lake_l2::fallback_budget_status_report(paths)?)
     };
-    let memo_path = ticker.as_deref().and_then(|sym| {
+
+    let memo_path = normalized_ticker.as_deref().and_then(|sym| {
         let p = research::memo_path_for(paths, sym);
         p.exists().then(|| p.display().to_string())
     });
@@ -1218,8 +1359,9 @@ fn cmd_research_status(paths: &WorkspacePaths, args: &[String]) -> Result<serde_
         "schema_version": 1,
         "ok": true,
         "data": {
-            "ticker_filter": ticker,
+            "ticker_filter": normalized_ticker,
             "memo_path": memo_path,
+            "reclaimed_stale_runs": reclaimed_stale_runs,
             "count": runs.len(),
             "runs": runs,
             "budget": budget,
@@ -1344,6 +1486,14 @@ fn cmd_briefing_run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_jso
         i += 1;
     }
 
+    execute_briefing_run(paths, period, no_llm)
+}
+
+pub(crate) fn execute_briefing_run(
+    paths: &WorkspacePaths,
+    period: BriefingPeriod,
+    no_llm: bool,
+) -> Result<serde_json::Value> {
     let db = LakeDb::open(paths)?;
     let lang = app_config::read_ui_language();
     let briefing =
@@ -1472,6 +1622,14 @@ fn cmd_triage_run(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json:
         i += 1;
     }
 
+    execute_triage_run(paths, limit, dry_run)
+}
+
+pub(crate) fn execute_triage_run(
+    paths: &WorkspacePaths,
+    limit: usize,
+    dry_run: bool,
+) -> Result<serde_json::Value> {
     let db = LakeDb::open(paths)?;
     let summary = proactive::run_l15_circle_triage_blocking(paths, &db, limit, dry_run)?;
     Ok(json!({
@@ -1523,12 +1681,22 @@ fn cmd_falsification(paths: &WorkspacePaths, args: &[String]) -> Result<serde_js
     let action = args.get(1).map(String::as_str).unwrap_or("list");
     let rest = args.get(2..).unwrap_or(&[]);
 
-    let dossier = match action {
+    match action {
         "list" => {
             if let Some(unexpected) = rest.first() {
                 anyhow::bail!("unexpected extra argument for falsification list: {unexpected}");
             }
-            store::load_or_init_dossier(paths, &ticker)?
+            let dossier = store::load_or_init_dossier(paths, &ticker)?;
+            Ok(json!({
+                "schema_version": 1,
+                "ok": true,
+                "data": {
+                    "ticker": dossier.ticker,
+                    "name": dossier.name,
+                    "count": dossier.human_judgment.falsification_metrics.len(),
+                    "falsification_metrics": dossier.human_judgment.falsification_metrics,
+                }
+            }))
         }
         "add" => {
             let text = rest
@@ -1541,7 +1709,7 @@ fn cmd_falsification(paths: &WorkspacePaths, args: &[String]) -> Result<serde_js
                     "unexpected extra argument `{unexpected}`; quote multi-word metric text"
                 );
             }
-            store::add_falsification_metric(paths, &ticker, text)?
+            execute_falsification_update(paths, &ticker, "add", Some(text), None, None)
         }
         "remove" => {
             let idx_raw = rest
@@ -1554,17 +1722,675 @@ fn cmd_falsification(paths: &WorkspacePaths, args: &[String]) -> Result<serde_js
                 .trim()
                 .parse::<usize>()
                 .with_context(|| format!("invalid falsification metric index: {idx_raw}"))?;
-            let existing = store::load_or_init_dossier(paths, &ticker)?;
-            let count = existing.human_judgment.falsification_metrics.len();
-            ensure!(
-                index < count,
-                "falsification metric index {index} out of range (count: {count})"
-            );
-            store::remove_falsification_metric(paths, &ticker, index)?
+            execute_falsification_update(paths, &ticker, "remove", None, Some(index), None)
         }
         other => anyhow::bail!(
             "unknown falsification action `{other}`; expected list | add <TEXT> | remove <INDEX>"
         ),
+    }
+}
+
+pub(crate) const MAX_ALAN_TIMEOUT_SECS: usize = 600;
+pub(crate) const DEFAULT_ALAN_TIMEOUT_SECS: u64 = 120;
+pub(crate) const MAX_APP_TIMEOUT_SECS: usize = 120;
+
+pub(crate) fn parse_alan_scope(raw: &str) -> Result<AlanScope> {
+    let trimmed = raw.trim();
+    ensure!(
+        !trimmed.is_empty(),
+        "scope cannot be empty; expected company:TICKER | industry:SLUG | briefing:latest | portfolio"
+    );
+    if trimmed.eq_ignore_ascii_case("portfolio") {
+        return Ok(AlanScope::Portfolio);
+    }
+    if trimmed.eq_ignore_ascii_case("briefing") {
+        return Ok(AlanScope::Briefing("latest".to_owned()));
+    }
+    let Some((prefix, rest)) = trimmed.split_once(':') else {
+        anyhow::bail!(
+            "invalid scope `{trimmed}`; expected company:TICKER | industry:SLUG | briefing:latest | portfolio"
+        );
+    };
+    let val = rest.trim();
+    match prefix.trim().to_ascii_lowercase().as_str() {
+        "company" => {
+            ensure!(
+                !val.is_empty(),
+                "company scope requires a non-empty ticker (e.g. company:COST)"
+            );
+            Ok(AlanScope::Company(val.to_ascii_uppercase()))
+        }
+        "industry" => {
+            ensure!(
+                !val.is_empty(),
+                "industry scope requires a non-empty slug (e.g. industry:retail)"
+            );
+            Ok(AlanScope::Industry(val.to_owned()))
+        }
+        "briefing" => {
+            let id = if val.is_empty() { "latest" } else { val };
+            Ok(AlanScope::Briefing(id.to_owned()))
+        }
+        _ => anyhow::bail!(
+            "invalid scope `{trimmed}`; expected company:TICKER | industry:SLUG | briefing:latest | portfolio"
+        ),
+    }
+}
+
+pub(crate) fn format_alan_scope_token(scope: &AlanScope) -> String {
+    match scope.normalized() {
+        AlanScope::Company(t) => format!("company:{t}"),
+        AlanScope::Industry(s) => format!("industry:{s}"),
+        AlanScope::Briefing(id) => format!("briefing:{id}"),
+        AlanScope::Portfolio => "portfolio".to_owned(),
+    }
+}
+
+pub(crate) fn parse_ui_lang(raw: &str) -> Result<UiLang> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "zh" | "zh-cn" | "cn" => Ok(UiLang::Zh),
+        "en" | "en-us" => Ok(UiLang::En),
+        _ => anyhow::bail!("invalid language `{raw}`; expected `zh` or `en`"),
+    }
+}
+
+fn cmd_alan_standalone(args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("status");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "status" => {
+            if let Some(unexpected) = rest.first() {
+                anyhow::bail!("unknown alan status argument: {unexpected}");
+            }
+            execute_alan_status()
+        }
+        "test" => cmd_alan_test(rest),
+        _ => anyhow::bail!(
+            "usage: m3 alan <status|test [--profile ID]|ask --scope SCOPE \"QUESTION\" [--lang zh|en] [--timeout SECS]|session <show|clear> --scope SCOPE>"
+        ),
+    }
+}
+
+fn cmd_alan(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("status");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "status" | "test" => cmd_alan_standalone(args),
+        "ask" => cmd_alan_ask(paths, rest),
+        "session" => cmd_alan_session(paths, rest),
+        _ => anyhow::bail!(
+            "usage: m3 alan <status|test [--profile ID]|ask --scope SCOPE \"QUESTION\" [--lang zh|en] [--timeout SECS]|session <show|clear> --scope SCOPE>"
+        ),
+    }
+}
+
+fn cmd_alan_test(args: &[String]) -> Result<serde_json::Value> {
+    let mut profile_id: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--profile" => {
+                i += 1;
+                let raw = args.get(i).context("--profile requires profile ID")?.trim();
+                ensure!(!raw.is_empty(), "--profile cannot be empty");
+                profile_id = Some(raw.to_owned());
+            }
+            other => anyhow::bail!("unknown alan test flag: {other}"),
+        }
+        i += 1;
+    }
+    execute_alan_test(profile_id.as_deref())
+}
+
+fn cmd_alan_ask(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let mut scope: Option<AlanScope> = None;
+    let mut question: Option<String> = None;
+    let mut lang: Option<UiLang> = None;
+    let mut timeout_secs: u64 = DEFAULT_ALAN_TIMEOUT_SECS;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--scope" => {
+                i += 1;
+                let raw = args.get(i).context("--scope requires scope value")?;
+                scope = Some(parse_alan_scope(raw)?);
+            }
+            "--lang" => {
+                i += 1;
+                let raw = args.get(i).context("--lang requires `zh` or `en`")?;
+                lang = Some(parse_ui_lang(raw)?);
+            }
+            "--timeout" => {
+                timeout_secs =
+                    parse_usize_flag(args, &mut i, "--timeout", 1, MAX_ALAN_TIMEOUT_SECS)? as u64;
+            }
+            other if other.starts_with('-') => {
+                anyhow::bail!("unknown alan ask flag: {other}");
+            }
+            text => {
+                ensure!(
+                    question.is_none(),
+                    "unexpected extra argument `{text}`; quote multi-word questions"
+                );
+                let trimmed = text.trim();
+                ensure!(!trimmed.is_empty(), "question cannot be empty");
+                question = Some(trimmed.to_owned());
+            }
+        }
+        i += 1;
+    }
+
+    let scope = scope.context(
+        "usage: m3 alan ask --scope <company:TICKER|industry:SLUG|briefing:latest|portfolio> \"<QUESTION>\" [--lang zh|en] [--timeout SECS]",
+    )?;
+    let question = question.context(
+        "usage: m3 alan ask --scope <company:TICKER|industry:SLUG|briefing:latest|portfolio> \"<QUESTION>\" [--lang zh|en] [--timeout SECS]",
+    )?;
+    let resolved_lang = lang.unwrap_or_else(app_config::read_ui_language);
+    execute_alan_ask(paths, &scope, resolved_lang, &question, timeout_secs)
+}
+
+fn cmd_alan_session(paths: &WorkspacePaths, args: &[String]) -> Result<serde_json::Value> {
+    let (sub, rest) = match args.first().map(String::as_str) {
+        Some(first) if !first.starts_with('-') => (first, &args[1..]),
+        _ => ("show", args),
+    };
+    let mut scope: Option<AlanScope> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--scope" => {
+                i += 1;
+                let raw = rest.get(i).context("--scope requires scope value")?;
+                scope = Some(parse_alan_scope(raw)?);
+            }
+            other => anyhow::bail!("unknown alan session flag: {other}"),
+        }
+        i += 1;
+    }
+    let scope = scope.context("usage: m3 alan session <show|clear> --scope <SCOPE>")?;
+    match sub {
+        "show" => execute_alan_session_show(paths, &scope),
+        "clear" => execute_alan_session_clear(paths, &scope),
+        _ => anyhow::bail!("usage: m3 alan session <show|clear> --scope <SCOPE>"),
+    }
+}
+
+pub(crate) fn execute_alan_status() -> Result<serde_json::Value> {
+    let status = alan_connection::list_alan_connection_status()?;
+    Ok(alan_status_payload(&status))
+}
+
+pub(crate) fn alan_status_payload(
+    status: &alan_connection::AlanConnectionStatus,
+) -> serde_json::Value {
+    let active = status.active_profile().cloned();
+    json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "default_profile": status.default_profile,
+            "active_profile": active,
+            "profiles": status.profiles,
+        }
+    })
+}
+
+pub(crate) fn execute_alan_test(profile_id: Option<&str>) -> Result<serde_json::Value> {
+    let result = alan_connection::test_alan_connection(profile_id)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": result,
+    }))
+}
+
+pub(crate) fn execute_alan_ask(
+    paths: &WorkspacePaths,
+    scope: &AlanScope,
+    lang: UiLang,
+    question: &str,
+    timeout_secs: u64,
+) -> Result<serde_json::Value> {
+    let reply = alan_interrogator::ask_scoped_blocking(
+        paths,
+        scope,
+        lang,
+        question,
+        Duration::from_secs(timeout_secs),
+    )?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": reply,
+    }))
+}
+
+pub(crate) fn execute_alan_session_show(
+    paths: &WorkspacePaths,
+    scope: &AlanScope,
+) -> Result<serde_json::Value> {
+    let norm = scope.normalized();
+    let path = alan_session::alan_session_path(paths, &norm);
+    let session = alan_session::load_alan_session(paths, &norm);
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "session_path": path.display().to_string(),
+            "exists": path.exists(),
+            "message_count": session.messages.len(),
+            "session": session,
+        }
+    }))
+}
+
+pub(crate) fn execute_alan_session_clear(
+    paths: &WorkspacePaths,
+    scope: &AlanScope,
+) -> Result<serde_json::Value> {
+    let norm = scope.normalized();
+    let path = alan_session::alan_session_path(paths, &norm);
+    let cleared = alan_session::clear_alan_session(paths, &norm)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "scope": norm,
+            "scope_key": norm.scope_key(),
+            "session_path": path.display().to_string(),
+            "cleared": cleared,
+        }
+    }))
+}
+
+pub(crate) fn parse_workspace_tab(raw: &str) -> Result<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    ensure!(
+        matches!(
+            normalized.as_str(),
+            "inbox" | "universe" | "industry" | "baskets" | "journal" | "settings"
+        ),
+        "invalid tab `{raw}`; expected inbox|universe|industry|baskets|journal|settings"
+    );
+    Ok(normalized)
+}
+
+pub(crate) fn parse_alan_stage_mode(raw: &str) -> Result<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    ensure!(
+        matches!(normalized.as_str(), "closed" | "split" | "immersive"),
+        "invalid mode `{raw}`; expected closed|split|immersive"
+    );
+    Ok(normalized)
+}
+
+pub(crate) fn parse_alan_canvas_tab(raw: &str) -> Result<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    ensure!(
+        matches!(normalized.as_str(), "interrogate" | "feynman"),
+        "invalid Alan tab `{raw}`; expected interrogate|feynman"
+    );
+    Ok(normalized)
+}
+
+fn parse_bool_token(raw: &str, flag: &str) -> Result<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        _ => anyhow::bail!("invalid {flag} boolean `{raw}`; expected true|false"),
+    }
+}
+
+fn cmd_app(args: &[String]) -> Result<serde_json::Value> {
+    let sub = args.first().map(String::as_str).unwrap_or("state");
+    let rest = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "ping" => {
+            let timeout_secs = parse_app_timeout_only(rest, "ping")?;
+            execute_app_control(&AppControlRequest::Ping, timeout_secs)
+        }
+        "state" => {
+            let timeout_secs = parse_app_timeout_only(rest, "state")?;
+            execute_app_control(&AppControlRequest::GetState, timeout_secs)
+        }
+        "navigate" => cmd_app_navigate(rest),
+        "alan" => cmd_app_alan(rest),
+        "action" => cmd_app_action(rest),
+        "screenshot" => cmd_app_screenshot(rest),
+        _ => anyhow::bail!("usage: m3 app <ping|state|navigate|alan|action|screenshot> [OPTIONS]"),
+    }
+}
+
+fn parse_app_timeout_only(args: &[String], sub: &str) -> Result<u64> {
+    let mut timeout_secs = app_control::DEFAULT_APP_CONTROL_TIMEOUT.as_secs();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--timeout" => {
+                timeout_secs =
+                    parse_usize_flag(args, &mut i, "--timeout", 1, MAX_APP_TIMEOUT_SECS)? as u64;
+            }
+            other => anyhow::bail!("unknown app {sub} flag: {other}"),
+        }
+        i += 1;
+    }
+    Ok(timeout_secs)
+}
+
+fn cmd_app_navigate(args: &[String]) -> Result<serde_json::Value> {
+    let mut tab: Option<String> = None;
+    let mut ticker: Option<String> = None;
+    let mut industry: Option<String> = None;
+    let mut timeout_secs = app_control::DEFAULT_APP_CONTROL_TIMEOUT.as_secs();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--tab" => {
+                i += 1;
+                let raw = args.get(i).context("--tab requires workspace tab name")?;
+                tab = Some(parse_workspace_tab(raw)?);
+            }
+            "--ticker" => {
+                i += 1;
+                let raw = args.get(i).context("--ticker requires symbol or \"\"")?;
+                let trimmed = raw.trim();
+                ticker = Some(if trimmed.is_empty() {
+                    String::new()
+                } else {
+                    trimmed.to_ascii_uppercase()
+                });
+            }
+            "--industry" => {
+                i += 1;
+                let raw = args.get(i).context("--industry requires slug")?.trim();
+                ensure!(!raw.is_empty(), "--industry cannot be empty");
+                industry = Some(raw.to_owned());
+            }
+            "--timeout" => {
+                timeout_secs =
+                    parse_usize_flag(args, &mut i, "--timeout", 1, MAX_APP_TIMEOUT_SECS)? as u64;
+            }
+            other => anyhow::bail!("unknown app navigate flag: {other}"),
+        }
+        i += 1;
+    }
+
+    ensure!(
+        tab.is_some() || ticker.is_some() || industry.is_some(),
+        "usage: m3 app navigate [--tab inbox|universe|industry|baskets|journal|settings] [--ticker T] [--industry SLUG]"
+    );
+
+    execute_app_control(
+        &AppControlRequest::Navigate {
+            tab,
+            ticker,
+            industry,
+        },
+        timeout_secs,
+    )
+}
+
+fn cmd_app_alan(args: &[String]) -> Result<serde_json::Value> {
+    let mut mode: Option<String> = None;
+    let mut tab: Option<String> = None;
+    let mut scope: Option<String> = None;
+    let mut pin: Option<bool> = None;
+    let mut anchor_label: Option<String> = None;
+    let mut prompt: Option<String> = None;
+    let mut submit = false;
+    let mut timeout_secs = app_control::DEFAULT_APP_CONTROL_TIMEOUT.as_secs();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--mode" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .context("--mode requires closed|split|immersive")?;
+                mode = Some(parse_alan_stage_mode(raw)?);
+            }
+            "--tab" => {
+                i += 1;
+                let raw = args.get(i).context("--tab requires interrogate|feynman")?;
+                tab = Some(parse_alan_canvas_tab(raw)?);
+            }
+            "--scope" => {
+                i += 1;
+                let raw = args.get(i).context("--scope requires scope value")?;
+                let parsed = parse_alan_scope(raw)?;
+                scope = Some(format_alan_scope_token(&parsed));
+            }
+            "--pin" => {
+                i += 1;
+                let raw = args.get(i).context("--pin requires true|false")?;
+                pin = Some(parse_bool_token(raw, "--pin")?);
+            }
+            "--anchor" => {
+                i += 1;
+                let raw = args.get(i).context("--anchor requires label text")?.trim();
+                ensure!(!raw.is_empty(), "--anchor cannot be empty");
+                anchor_label = Some(raw.to_owned());
+            }
+            "--prompt" => {
+                i += 1;
+                let raw = args.get(i).context("--prompt requires text")?.trim();
+                ensure!(!raw.is_empty(), "--prompt cannot be empty");
+                prompt = Some(raw.to_owned());
+            }
+            "--submit" => submit = true,
+            "--timeout" => {
+                timeout_secs =
+                    parse_usize_flag(args, &mut i, "--timeout", 1, MAX_APP_TIMEOUT_SECS)? as u64;
+            }
+            other => anyhow::bail!("unknown app alan flag: {other}"),
+        }
+        i += 1;
+    }
+
+    ensure!(
+        mode.is_some()
+            || tab.is_some()
+            || scope.is_some()
+            || pin.is_some()
+            || anchor_label.is_some()
+            || prompt.is_some()
+            || submit,
+        "usage: m3 app alan [--mode closed|split|immersive] [--tab interrogate|feynman] [--scope ...] [--pin true|false] [--anchor LABEL] [--prompt TEXT] [--submit]"
+    );
+
+    execute_app_control(
+        &AppControlRequest::SetAlan {
+            mode,
+            tab,
+            scope,
+            pin,
+            anchor_label,
+            prompt,
+            submit,
+        },
+        timeout_secs,
+    )
+}
+
+fn cmd_app_action(args: &[String]) -> Result<serde_json::Value> {
+    let mut action: Option<String> = None;
+    let mut ticker: Option<String> = None;
+    let mut timeout_secs = app_control::DEFAULT_APP_CONTROL_TIMEOUT.as_secs();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--ticker" => {
+                i += 1;
+                let raw = args.get(i).context("--ticker requires symbol")?.trim();
+                ensure!(!raw.is_empty(), "--ticker cannot be empty");
+                ticker = Some(raw.to_ascii_uppercase());
+            }
+            "--timeout" => {
+                timeout_secs =
+                    parse_usize_flag(args, &mut i, "--timeout", 1, MAX_APP_TIMEOUT_SECS)? as u64;
+            }
+            other if other.starts_with('-') => {
+                anyhow::bail!("unknown app action flag: {other}");
+            }
+            act => {
+                ensure!(
+                    action.is_none(),
+                    "unexpected extra argument for app action: {act}"
+                );
+                let normalized = act.trim().to_ascii_lowercase();
+                ensure!(!normalized.is_empty(), "action cannot be empty");
+                action = Some(normalized);
+            }
+        }
+        i += 1;
+    }
+
+    let action = action.context("usage: m3 app action <ACTION> [--ticker T]")?;
+    execute_app_control(
+        &AppControlRequest::TriggerAction { action, ticker },
+        timeout_secs,
+    )
+}
+
+fn cmd_app_screenshot(args: &[String]) -> Result<serde_json::Value> {
+    let mut output_path: Option<String> = None;
+    let mut timeout_secs = app_control::DEFAULT_APP_CONTROL_TIMEOUT.as_secs();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--timeout" => {
+                timeout_secs =
+                    parse_usize_flag(args, &mut i, "--timeout", 1, MAX_APP_TIMEOUT_SECS)? as u64;
+            }
+            other if other.starts_with('-') => {
+                anyhow::bail!("unknown app screenshot flag: {other}");
+            }
+            path => {
+                ensure!(
+                    output_path.is_none(),
+                    "unexpected extra argument for app screenshot: {path}"
+                );
+                let trimmed = path.trim();
+                ensure!(
+                    !trimmed.is_empty(),
+                    "screenshot output path cannot be empty"
+                );
+                output_path = Some(trimmed.to_owned());
+            }
+        }
+        i += 1;
+    }
+
+    let output_path = output_path.context("usage: m3 app screenshot <PATH>")?;
+    execute_app_control(&AppControlRequest::Screenshot { output_path }, timeout_secs)
+}
+
+pub(crate) fn execute_app_control(
+    req: &AppControlRequest,
+    timeout_secs: u64,
+) -> Result<serde_json::Value> {
+    execute_app_control_at(None, req, timeout_secs)
+}
+
+pub(crate) fn execute_app_control_at(
+    socket_path: Option<&Path>,
+    req: &AppControlRequest,
+    timeout_secs: u64,
+) -> Result<serde_json::Value> {
+    let timeout = Duration::from_secs(timeout_secs.max(1));
+    let resp = match socket_path {
+        Some(path) => app_control::send_app_control_request_at(path, req, timeout)?,
+        None => app_control::send_app_control_request(req, timeout)?,
+    };
+    if resp.ok {
+        Ok(json!({
+            "schema_version": 1,
+            "ok": true,
+            "data": resp,
+        }))
+    } else {
+        let err_msg = resp
+            .error
+            .clone()
+            .unwrap_or_else(|| "M3 desktop app control request failed".to_owned());
+        Ok(json!({
+            "schema_version": 1,
+            "ok": false,
+            "error": err_msg,
+            "data": resp,
+        }))
+    }
+}
+
+pub(crate) fn execute_memo_read(paths: &WorkspacePaths, ticker: &str) -> Result<serde_json::Value> {
+    let upper = ticker.trim().to_ascii_uppercase();
+    ensure!(!upper.is_empty(), "ticker cannot be empty");
+    let memo_path = research::memo_path_for(paths, &upper);
+    let memo_markdown = research::load_research_memo(paths, &upper);
+    let feynman_scope = m3_core::feynman::FeynmanScope::Company {
+        ticker: upper.clone(),
+    };
+    let feynman_path = m3_core::feynman::defense_archive_path(paths, &feynman_scope);
+    let feynman_markdown = m3_core::feynman::load_defense_history(paths, &feynman_scope)
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "ticker": upper,
+            "memo_path": memo_path.display().to_string(),
+            "memo_exists": memo_path.exists(),
+            "memo_markdown": memo_markdown,
+            "feynman_path": feynman_path.display().to_string(),
+            "feynman_exists": feynman_path.exists(),
+            "feynman_markdown": feynman_markdown,
+        }
+    }))
+}
+
+pub(crate) fn execute_falsification_update(
+    paths: &WorkspacePaths,
+    ticker: &str,
+    action: &str,
+    metric: Option<&str>,
+    index: Option<usize>,
+    metrics: Option<Vec<String>>,
+) -> Result<serde_json::Value> {
+    let upper = ticker.trim().to_ascii_uppercase();
+    ensure!(!upper.is_empty(), "ticker cannot be empty");
+    let dossier = match action {
+        "add" => {
+            let text = metric
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .context("metric text is required for `add`")?;
+            store::add_falsification_metric(paths, &upper, text)?
+        }
+        "remove" => {
+            let idx = index.context("index is required for `remove`")?;
+            let existing = store::load_or_init_dossier(paths, &upper)?;
+            let count = existing.human_judgment.falsification_metrics.len();
+            ensure!(
+                idx < count,
+                "falsification metric index {idx} out of range (count: {count})"
+            );
+            store::remove_falsification_metric(paths, &upper, idx)?
+        }
+        "replace" => {
+            let list = metrics.context("metrics array is required for `replace`")?;
+            store::update_falsification_metrics(paths, &upper, list)?
+        }
+        other => {
+            anyhow::bail!("unknown falsification action `{other}`; expected add | remove | replace")
+        }
     };
 
     Ok(json!({
@@ -1575,6 +2401,133 @@ fn cmd_falsification(paths: &WorkspacePaths, args: &[String]) -> Result<serde_js
             "name": dossier.name,
             "count": dossier.human_judgment.falsification_metrics.len(),
             "falsification_metrics": dossier.human_judgment.falsification_metrics,
+        }
+    }))
+}
+
+fn build_company_feynman_summary(
+    ticker: &str,
+    report: Option<&m3_core::model::MungerReport>,
+    dossier: Option<&m3_core::model::Dossier>,
+) -> String {
+    let mut lines = Vec::new();
+    if let Some(rep) = report {
+        lines.push(format!(
+            "Ticker: {} | Name: {} | Bucket: {}",
+            rep.ticker,
+            rep.name,
+            rep.bucket.code()
+        ));
+        if let Some(p) = &rep.price {
+            lines.push(format!("Latest Price: {} {}", rep.currency, p.price));
+        }
+        if let Some(v) = rep.ttm_valuation.as_ref().or(rep.fy_valuation.as_ref())
+            && let Some(strike) = v.strike_price
+        {
+            lines.push(format!(
+                "Strike Price ({}): {} {strike}",
+                v.basis_label, rep.currency
+            ));
+        }
+        if let Some(roic) = rep.roic_5y_avg_pct {
+            lines.push(format!("5Y Avg ROIC: {}%", roic.round_dp(2).normalize()));
+        }
+        if let Some(gm) = rep.gross_margin_5y_avg_pct {
+            lines.push(format!(
+                "5Y Avg Gross Margin: {}%",
+                gm.round_dp(2).normalize()
+            ));
+        }
+    } else {
+        lines.push(format!("Ticker: {ticker}"));
+    }
+    if let Some(dos) = dossier {
+        if !dos.three_sentence_business.trim().is_empty() {
+            lines.push(format!(
+                "3-Sentence Business: {}",
+                dos.three_sentence_business.trim()
+            ));
+        }
+        if !dos.premortem.is_empty() {
+            lines.push(format!("Premortem Risks: {}", dos.premortem.join("; ")));
+        }
+    }
+    lines.join("\n")
+}
+
+pub(crate) fn execute_feynman_round(
+    paths: &WorkspacePaths,
+    scope: &m3_core::feynman::FeynmanScope,
+    round: m3_core::feynman::FeynmanRound,
+    answer: &str,
+    lang: UiLang,
+    draft_metrics: &[String],
+) -> Result<serde_json::Value> {
+    use m3_core::feynman::{self, FeynmanScope};
+
+    let trimmed_answer = answer.trim();
+    ensure!(!trimmed_answer.is_empty(), "answer cannot be empty");
+    let norm_scope = scope.normalized();
+
+    let (question, prompt) = match &norm_scope {
+        FeynmanScope::Company { ticker } => {
+            let report = store::load_or_recompute_ticker(paths, ticker).ok();
+            let dossier = store::load_dossier(paths, ticker).ok().flatten();
+            let subject_label = report
+                .as_ref()
+                .map(|r| format!("{} ({})", r.ticker, r.name))
+                .unwrap_or_else(|| ticker.clone());
+            let question = feynman::round_question_prompt(&norm_scope, round, &subject_label, lang);
+            let report_summary =
+                build_company_feynman_summary(ticker, report.as_ref(), dossier.as_ref());
+            let mut metrics = draft_metrics.to_vec();
+            if metrics.is_empty()
+                && let Some(dos) = &dossier
+            {
+                metrics = dos.human_judgment.falsification_metrics.clone();
+            }
+            let prompt = feynman::compose_company_feynman_critique_prompt(
+                ticker,
+                &report_summary,
+                round,
+                &question,
+                trimmed_answer,
+                &metrics,
+                lang,
+            );
+            (question, prompt)
+        }
+        FeynmanScope::Industry { slug } => {
+            let profile = industry::load_industry(paths, slug)
+                .with_context(|| format!("industry profile `{slug}` not found"))?;
+            let primer_excerpt = industry::load_industry_primer_md(paths, slug).unwrap_or_default();
+            let question = feynman::round_question_prompt(&norm_scope, round, &profile.title, lang);
+            let prompt = feynman::compose_industry_feynman_critique_prompt(
+                &profile,
+                &primer_excerpt,
+                round,
+                &question,
+                trimmed_answer,
+                lang,
+            );
+            (question, prompt)
+        }
+    };
+
+    let (parsed, raw_response) = feynman::evaluate_feynman_round_blocking(paths, prompt, lang)?;
+    Ok(json!({
+        "schema_version": 1,
+        "ok": true,
+        "data": {
+            "scope": norm_scope,
+            "round": round.as_u8(),
+            "round_title": round.title_for(lang),
+            "question": question,
+            "human_answer": trimmed_answer,
+            "critique": parsed.critique,
+            "blind_spots": parsed.blind_spots,
+            "suggested_falsification_metrics": parsed.suggested_falsification_metrics,
+            "raw_response": raw_response,
         }
     }))
 }
@@ -2084,6 +3037,18 @@ pub(crate) fn cmd_doctor_for_workspace(
     workspace: Option<&WorkspacePaths>,
     updater_dir: Option<&std::path::Path>,
 ) -> Result<serde_json::Value> {
+    cmd_doctor_for_workspace_with_alan(
+        workspace,
+        updater_dir,
+        alan_connection::list_alan_connection_status(),
+    )
+}
+
+pub(crate) fn cmd_doctor_for_workspace_with_alan(
+    workspace: Option<&WorkspacePaths>,
+    updater_dir: Option<&std::path::Path>,
+    alan_status_res: Result<alan_connection::AlanConnectionStatus>,
+) -> Result<serde_json::Value> {
     let (effective_channel, channel_source) = update::effective_channel();
     let config_path = app_config::config_path().ok();
     let config_exists = config_path.as_ref().is_some_and(|p| p.exists());
@@ -2100,6 +3065,7 @@ pub(crate) fn cmd_doctor_for_workspace(
         "detail": config_path.as_ref().map(|p| p.display().to_string()),
     }));
 
+    let now_ms = store::now_ms();
     let workspace_info = if let Some(paths) = workspace {
         let ws_exists = paths.repo_root.exists();
         let watchlist_count = store::load_watchlist(paths)
@@ -2113,17 +3079,34 @@ pub(crate) fn cmd_doctor_for_workspace(
             .unwrap_or(0);
         let lake_db_path = paths.lake_db_path();
         let duckdb_exists = lake_db_path.exists();
-        let (l0_companies, l1_signals) = match LakeDb::open_read_only_if_exists(paths) {
-            Ok(Some(db)) => {
-                let l0 = db
-                    .universe_summary()
-                    .map(|u| u.total_companies)
-                    .unwrap_or(0);
-                let l1 = db.l1_summary().map(|s| s.total_signals).unwrap_or(0);
-                (l0, l1)
-            }
-            _ => (0, 0),
-        };
+        let (l0_companies, l1_signals, running_runs, stale_running_runs, lake_lock_note) =
+            match LakeDb::open_read_only_if_exists(paths) {
+                Ok(Some(db)) => {
+                    let l0 = db
+                        .universe_summary()
+                        .map(|u| u.total_companies)
+                        .unwrap_or(0);
+                    let l1 = db.l1_summary().map(|s| s.total_signals).unwrap_or(0);
+                    let runs = db
+                        .list_research_runs(None, MAX_RESEARCH_STATUS_LIMIT)
+                        .unwrap_or_default();
+                    let running_all = runs
+                        .iter()
+                        .filter(|r| r.status == ResearchRunStatus::Running)
+                        .count();
+                    let stale = runs
+                        .iter()
+                        .filter(|r| {
+                            r.status == ResearchRunStatus::Running
+                                && now_ms.saturating_sub(r.started_at_ms)
+                                    >= DEFAULT_STALE_RESEARCH_RUN_MS
+                        })
+                        .count();
+                    (l0, l1, running_all, stale, None)
+                }
+                Ok(None) => (0, 0, 0, 0, None),
+                Err(err) => (0, 0, 0, 0, Some(format!("{err:#}"))),
+            };
         let storage_report = storage::scan_workspace_storage(paths, updater_dir);
 
         checks.push(json!({
@@ -2134,10 +3117,25 @@ pub(crate) fn cmd_doctor_for_workspace(
         checks.push(json!({
             "id": "lakehouse",
             "ok": duckdb_exists,
-            "detail": if duckdb_exists {
+            "detail": if let Some(lock_err) = &lake_lock_note {
+                format!("m3.duckdb present but unreadable ({lock_err})")
+            } else if duckdb_exists {
                 format!("{l0_companies} L0 companies, {l1_signals} L1 signals")
             } else {
                 "m3.duckdb not initialized yet".to_owned()
+            },
+        }));
+        checks.push(json!({
+            "id": "stale_research_runs",
+            "ok": stale_running_runs == 0,
+            "detail": if let Some(lock_err) = &lake_lock_note {
+                format!("skipped stale run inspection ({lock_err})")
+            } else if stale_running_runs == 0 {
+                format!("0 stale running Deep Research runs ({running_runs} active)")
+            } else {
+                format!(
+                    "{stale_running_runs} stale running Deep Research run(s) >= 15m (run `m3 research status` to reclaim)"
+                )
             },
         }));
 
@@ -2151,6 +3149,8 @@ pub(crate) fn cmd_doctor_for_workspace(
             "duckdb_exists": duckdb_exists,
             "l0_companies": l0_companies,
             "l1_signals": l1_signals,
+            "running_research_runs": running_runs,
+            "stale_running_research_runs": stale_running_runs,
             "storage": {
                 "total_bytes": storage_report.total_bytes,
                 "total_human": storage::format_bytes(storage_report.total_bytes),
@@ -2165,6 +3165,78 @@ pub(crate) fn cmd_doctor_for_workspace(
             "detail": "unable to resolve active M3 workspace",
         }));
         None
+    };
+
+    let alan_connection_info = match alan_status_res {
+        Ok(status) => {
+            if let Some(active) = status.active_profile().cloned() {
+                let remediation = if active.has_secret {
+                    None
+                } else {
+                    Some(format!(
+                        "Run `alan connection login {}` / `alan connection set-secret {}` or configure credentials in M3 Settings",
+                        active.id, active.id
+                    ))
+                };
+                let model_label = active.model.as_deref().unwrap_or("-");
+                let hint_label = active.masked_hint.as_deref().unwrap_or("configured");
+                checks.push(json!({
+                    "id": "alan_connection",
+                    "ok": active.has_secret,
+                    "detail": if active.has_secret {
+                        format!(
+                            "default={} ({}, model={}, hint={})",
+                            active.id, active.provider, model_label, hint_label
+                        )
+                    } else {
+                        format!(
+                            "default={} ({}, model={}) missing credentials; {}",
+                            active.id,
+                            active.provider,
+                            model_label,
+                            remediation.as_deref().unwrap_or("configure credentials")
+                        )
+                    },
+                }));
+                json!({
+                    "configured": active.has_secret,
+                    "default_profile": status.default_profile,
+                    "active_profile": active,
+                    "profile_count": status.profiles.len(),
+                    "remediation": remediation,
+                })
+            } else {
+                let remediation = "Run `alan connection add <provider> --profile <id>` and `alan connection default set <id>`, or configure Alan in M3 Settings";
+                checks.push(json!({
+                    "id": "alan_connection",
+                    "ok": false,
+                    "detail": format!("no default Alan connection profile configured; {remediation}"),
+                }));
+                json!({
+                    "configured": false,
+                    "default_profile": status.default_profile,
+                    "active_profile": serde_json::Value::Null,
+                    "profile_count": status.profiles.len(),
+                    "remediation": remediation,
+                })
+            }
+        }
+        Err(err) => {
+            let remediation = "Run `alan connection list` or configure Alan in M3 Settings";
+            checks.push(json!({
+                "id": "alan_connection",
+                "ok": false,
+                "detail": format!("failed to inspect Alan connection store: {err:#}; {remediation}"),
+            }));
+            json!({
+                "configured": false,
+                "default_profile": serde_json::Value::Null,
+                "active_profile": serde_json::Value::Null,
+                "profile_count": 0,
+                "error": format!("{err:#}"),
+                "remediation": remediation,
+            })
+        }
     };
 
     let app_bundle = PathBuf::from("/Applications/M3.app");
@@ -2206,6 +3278,7 @@ pub(crate) fn cmd_doctor_for_workspace(
                 "path": config_path.map(|p| p.display().to_string()),
                 "exists": config_exists,
             },
+            "alan_connection": alan_connection_info,
             "workspace": workspace_info,
             "host_tools": {
                 "app_bundle_path": app_bundle.display().to_string(),
@@ -3801,6 +4874,8 @@ mod tests {
             "briefing",
             "triage",
             "falsification",
+            "alan",
+            "app",
             "mcp",
             "storage",
             "doctor",
@@ -3817,6 +4892,11 @@ mod tests {
             );
         }
         assert!(help::render_command_help("nonexistent-command").is_none());
+        assert!(
+            help::render_command_help("mcp")
+                .unwrap()
+                .contains("--read-only")
+        );
 
         let (fmt_pretty, stripped_pretty) =
             extract_global_format(&["status".into(), "--pretty".into()]);
@@ -4264,6 +5344,432 @@ mod tests {
         assert_eq!(triage_dry["ok"], true);
         assert_eq!(triage_dry["data"]["dry_run"], true);
         assert_eq!(triage_dry["data"]["evaluated"], 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cli_alan_scope_session_and_validation() {
+        use m3_core::alan_session::{
+            AlanMessageRole, PersistedAlanMessage, PersistedAlanSession, save_alan_session,
+        };
+
+        let dir = std::env::temp_dir().join(format!(
+            "m3-cli-alan-{}-{}",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workbench")).unwrap();
+        let paths = WorkspacePaths::from_root(dir.clone());
+
+        assert_eq!(
+            parse_alan_scope("company:cost").unwrap(),
+            AlanScope::Company("COST".into())
+        );
+        assert_eq!(
+            parse_alan_scope("industry:retail").unwrap(),
+            AlanScope::Industry("retail".into())
+        );
+        assert_eq!(
+            parse_alan_scope("briefing:latest").unwrap(),
+            AlanScope::Briefing("latest".into())
+        );
+        assert_eq!(parse_alan_scope("portfolio").unwrap(), AlanScope::Portfolio);
+        assert!(parse_alan_scope("company:").is_err());
+        assert!(parse_alan_scope("unknown:x").is_err());
+
+        // `extract_global_format` preserves `--pretty` inside `--prompt` / `--scope`.
+        let (fmt, cleaned) = extract_global_format(&[
+            "app".into(),
+            "alan".into(),
+            "--prompt".into(),
+            "--pretty".into(),
+            "--json".into(),
+        ]);
+        assert_eq!(fmt, OutputFormat::Compact);
+        assert_eq!(
+            cleaned,
+            vec![
+                "app".to_string(),
+                "alan".to_string(),
+                "--prompt".to_string(),
+                "--pretty".to_string(),
+            ]
+        );
+
+        // `m3 alan status` succeeds cleanly (even when no default profile exists) without secrets.
+        let status = run(&paths, &["alan".into(), "status".into()]).unwrap();
+        assert_eq!(status["ok"], true);
+        assert!(status["data"].get("profiles").is_some());
+
+        // `m3 alan test` & `m3 alan ask` flag validation.
+        assert!(run(&paths, &["alan".into(), "test".into(), "--bogus".into()]).is_err());
+        assert!(run(&paths, &["alan".into(), "ask".into(), "hello".into()]).is_err());
+        assert!(
+            run(
+                &paths,
+                &[
+                    "alan".into(),
+                    "ask".into(),
+                    "--scope".into(),
+                    "company:COST".into()
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                &paths,
+                &[
+                    "alan".into(),
+                    "ask".into(),
+                    "--scope".into(),
+                    "company:COST".into(),
+                    "--lang".into(),
+                    "fr".into(),
+                    "hello".into()
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                &paths,
+                &[
+                    "alan".into(),
+                    "ask".into(),
+                    "--scope".into(),
+                    "company:COST".into(),
+                    "--timeout".into(),
+                    "0".into(),
+                    "hello".into()
+                ]
+            )
+            .is_err()
+        );
+
+        // `m3 alan session show` & `clear` roundtrip.
+        let scope = AlanScope::Company("COST".into());
+        let mut session = PersistedAlanSession::empty(&scope);
+        session.messages.push(PersistedAlanMessage {
+            id: "u-1".into(),
+            role: AlanMessageRole::User,
+            text: "Membership moat?".into(),
+            raw_text: "Membership moat?".into(),
+            created_at_ms: 1_700_000_000_000,
+        });
+        save_alan_session(&paths, &session).unwrap();
+
+        let shown = run(
+            &paths,
+            &[
+                "alan".into(),
+                "session".into(),
+                "show".into(),
+                "--scope".into(),
+                "company:cost".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(shown["ok"], true);
+        assert_eq!(shown["data"]["exists"], true);
+        assert_eq!(shown["data"]["message_count"], 1);
+        assert_eq!(
+            shown["data"]["session"]["messages"][0]["text"],
+            "Membership moat?"
+        );
+
+        let cleared = run(
+            &paths,
+            &[
+                "alan".into(),
+                "session".into(),
+                "clear".into(),
+                "--scope".into(),
+                "company:COST".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(cleared["ok"], true);
+        assert_eq!(cleared["data"]["cleared"], true);
+
+        let shown_after = run(
+            &paths,
+            &[
+                "alan".into(),
+                "session".into(),
+                "show".into(),
+                "--scope".into(),
+                "company:COST".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(shown_after["data"]["exists"], false);
+        assert_eq!(shown_after["data"]["message_count"], 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_app_ipc_roundtrip_and_flag_validation() {
+        use m3_core::app_control::{AppControlResponse, AppControlState};
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let sock_path = PathBuf::from(format!(
+            "/tmp/m3-cli-app-{}-{}.sock",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_file(&sock_path);
+
+        // Validation errors on `m3 app` commands before touching any socket.
+        assert!(cmd_app(&["navigate".into()]).is_err());
+        assert!(cmd_app(&["navigate".into(), "--tab".into(), "bogus".into()]).is_err());
+        assert!(cmd_app(&["alan".into()]).is_err());
+        assert!(cmd_app(&["alan".into(), "--mode".into(), "wide".into()]).is_err());
+        assert!(cmd_app(&["alan".into(), "--pin".into(), "maybe".into()]).is_err());
+        assert!(cmd_app(&["action".into()]).is_err());
+        assert!(cmd_app(&["screenshot".into()]).is_err());
+
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        let server = std::thread::spawn(move || {
+            for stream_res in listener.incoming().take(3) {
+                let mut stream = stream_res.unwrap();
+                let mut line = String::new();
+                {
+                    let mut reader = BufReader::new(&stream);
+                    reader.read_line(&mut line).unwrap();
+                }
+                let req: AppControlRequest = serde_json::from_str(line.trim()).unwrap();
+                let resp = match req {
+                    AppControlRequest::Ping => AppControlResponse {
+                        ok: true,
+                        state: Some(AppControlState {
+                            active_tab: "inbox".into(),
+                            ..Default::default()
+                        }),
+                        message: Some("pong".into()),
+                        ..Default::default()
+                    },
+                    AppControlRequest::SetAlan {
+                        mode,
+                        scope,
+                        pin,
+                        submit,
+                        ..
+                    } => AppControlResponse {
+                        ok: true,
+                        state: Some(AppControlState {
+                            alan_stage_mode: mode.unwrap_or_default(),
+                            alan_scope: scope.unwrap_or_default(),
+                            alan_context_pinned: pin.unwrap_or(false),
+                            alan_streaming: submit,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    AppControlRequest::Screenshot { output_path } => AppControlResponse {
+                        ok: false,
+                        error: Some(format!("no window for {output_path}")),
+                        ..Default::default()
+                    },
+                    _ => AppControlResponse::default(),
+                };
+                let mut out = serde_json::to_string(&resp).unwrap();
+                out.push('\n');
+                stream.write_all(out.as_bytes()).unwrap();
+            }
+        });
+
+        let ping = execute_app_control_at(Some(&sock_path), &AppControlRequest::Ping, 2).unwrap();
+        assert_eq!(ping["ok"], true);
+        assert_eq!(ping["data"]["message"], "pong");
+        assert_eq!(ping["data"]["state"]["active_tab"], "inbox");
+
+        let set_alan = execute_app_control_at(
+            Some(&sock_path),
+            &AppControlRequest::SetAlan {
+                mode: Some("split".into()),
+                tab: Some("interrogate".into()),
+                scope: Some("company:COST".into()),
+                pin: Some(true),
+                anchor_label: None,
+                prompt: Some("Moat?".into()),
+                submit: true,
+            },
+            2,
+        )
+        .unwrap();
+        assert_eq!(set_alan["ok"], true);
+        assert_eq!(set_alan["data"]["state"]["alan_stage_mode"], "split");
+        assert_eq!(set_alan["data"]["state"]["alan_scope"], "company:COST");
+        assert_eq!(set_alan["data"]["state"]["alan_context_pinned"], true);
+
+        let shot_err = execute_app_control_at(
+            Some(&sock_path),
+            &AppControlRequest::Screenshot {
+                output_path: "/tmp/m3.png".into(),
+            },
+            2,
+        )
+        .unwrap();
+        assert_eq!(shot_err["ok"], false);
+        assert!(
+            shot_err["error"]
+                .as_str()
+                .unwrap()
+                .contains("no window for /tmp/m3.png")
+        );
+
+        server.join().unwrap();
+        let _ = fs::remove_file(&sock_path);
+    }
+
+    #[test]
+    fn cli_doctor_checks_alan_connection_and_stale_research_runs() {
+        use m3_core::alan_connection::{AlanConnectionProfileSummary, AlanConnectionStatus};
+        use m3_core::lake_l2::ResearchRunRow;
+
+        let dir = std::env::temp_dir().join(format!(
+            "m3-cli-doctor-enhanced-{}-{}",
+            std::process::id(),
+            store::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workbench")).unwrap();
+        let paths = WorkspacePaths::from_root(dir.clone());
+
+        let now = store::now_ms();
+        {
+            let db = LakeDb::open(&paths).unwrap();
+            db.insert_research_run(&ResearchRunRow {
+                run_id: "run-stale-1".into(),
+                ticker: "COST".into(),
+                trigger: "manual".into(),
+                focus: None,
+                model: "test".into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: Decimal::ZERO,
+                started_at_ms: now.saturating_sub(DEFAULT_STALE_RESEARCH_RUN_MS + 60_000),
+                finished_at_ms: None,
+                status: ResearchRunStatus::Running,
+                error: None,
+                memo_path: None,
+                perspectives_json: "[]".into(),
+                citations_json: "[]".into(),
+            })
+            .unwrap();
+        }
+
+        // 1. Missing default Alan profile -> remediation shown, stale run count = 1.
+        let doc_missing = cmd_doctor_for_workspace_with_alan(
+            Some(&paths),
+            None,
+            Ok(AlanConnectionStatus::default()),
+        )
+        .unwrap();
+        assert_eq!(doc_missing["data"]["alan_connection"]["configured"], false);
+        assert!(
+            doc_missing["data"]["alan_connection"]["remediation"]
+                .as_str()
+                .unwrap()
+                .contains("alan connection add")
+        );
+        let alan_check_missing = doc_missing["data"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "alan_connection")
+            .unwrap();
+        assert_eq!(alan_check_missing["ok"], false);
+        let stale_check = doc_missing["data"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "stale_research_runs")
+            .unwrap();
+        assert_eq!(stale_check["ok"], false);
+        assert_eq!(
+            doc_missing["data"]["workspace"]["stale_running_research_runs"],
+            1
+        );
+
+        // 2. Configured Alan profile -> non-secret hint shown, check ok: true.
+        let configured_status = AlanConnectionStatus {
+            default_profile: Some("openrouter-main".into()),
+            profiles: vec![AlanConnectionProfileSummary {
+                id: "openrouter-main".into(),
+                provider: "openrouter".into(),
+                model: Some("moonshotai/kimi-k2.6".into()),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                project_id: None,
+                location: None,
+                has_secret: true,
+                masked_hint: Some("sk-o••••1234".into()),
+                is_default: true,
+            }],
+        };
+        let doc_ok =
+            cmd_doctor_for_workspace_with_alan(Some(&paths), None, Ok(configured_status)).unwrap();
+        assert_eq!(doc_ok["data"]["alan_connection"]["configured"], true);
+        let alan_check_ok = doc_ok["data"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "alan_connection")
+            .unwrap();
+        assert_eq!(alan_check_ok["ok"], true);
+        assert!(
+            alan_check_ok["detail"]
+                .as_str()
+                .unwrap()
+                .contains("sk-o••••1234")
+        );
+
+        // 3. `m3 research status` opportunistically reclaims the stale running run and preserves fresh runs.
+        let fresh_now = store::now_ms();
+        {
+            let db = LakeDb::open(&paths).unwrap();
+            db.insert_research_run(&ResearchRunRow {
+                run_id: "run-fresh-1".into(),
+                ticker: "COST".into(),
+                trigger: "manual".into(),
+                focus: None,
+                model: "test".into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: Decimal::ZERO,
+                started_at_ms: fresh_now.saturating_sub(30_000),
+                finished_at_ms: None,
+                status: ResearchRunStatus::Running,
+                error: None,
+                memo_path: None,
+                perspectives_json: "[]".into(),
+                citations_json: "[]".into(),
+            })
+            .unwrap();
+        }
+        let r_status = run(
+            &paths,
+            &[
+                "research".into(),
+                "status".into(),
+                "--ticker".into(),
+                "COST".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(r_status["ok"], true);
+        assert_eq!(r_status["data"]["reclaimed_stale_runs"], 1);
+        let runs = r_status["data"]["runs"].as_array().unwrap();
+        let fresh_row = runs.iter().find(|r| r["run_id"] == "run-fresh-1").unwrap();
+        let stale_row = runs.iter().find(|r| r["run_id"] == "run-stale-1").unwrap();
+        assert_eq!(fresh_row["status"], "running");
+        assert_eq!(stale_row["status"], "failed");
 
         let _ = fs::remove_dir_all(&dir);
     }

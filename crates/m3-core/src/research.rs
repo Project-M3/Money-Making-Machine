@@ -29,7 +29,7 @@ use crate::alan_interrogator::{M3WorkbenchFs, boot_m3_embedded, friendly_m3_cred
 use crate::budget::{self, BudgetConfig};
 use crate::lake::{LakeDb, PeerComparison, UniverseRow};
 use crate::lake_l1::{SignalEvidence, SimilarSearchFilter};
-use crate::lake_l2::{ResearchRunRow, ResearchRunStatus};
+use crate::lake_l2::{DEFAULT_STALE_RESEARCH_RUN_MS, ResearchRunRow, ResearchRunStatus};
 use crate::latent::extract_verbatim_snippet;
 use crate::market::safe_symbol_filename;
 use crate::model::{MungerReport, serde_decimal};
@@ -215,8 +215,10 @@ pub fn run_deep_research_with_llm(
     let run_id = format!("dr-{ticker}-{started_at_ms}-{seq}");
 
     // 1. Hard pre-flight budget gate BEFORE booting EmbeddedAlan or invoking any LLM.
+    // Reclaim any stale zombie `running` runs first so crashed runs never masquerade as active.
     let budget_cfg = budget::load_budget_config(paths)?;
     let db = LakeDb::open(paths)?;
+    let _reclaimed = db.reclaim_stale_running_runs(started_at_ms, DEFAULT_STALE_RESEARCH_RUN_MS)?;
     let monthly_usage = db.monthly_budget_usage(started_at_ms)?;
     let monthly_tokens = monthly_usage
         .total_input_tokens
@@ -2134,5 +2136,60 @@ mod tests {
         assert_eq!(runs2[0].input_tokens, res2.input_tokens);
         assert_eq!(runs2[0].output_tokens, res2.output_tokens);
         let _ = fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn deep_research_preflight_reclaims_stale_zombie_running_runs() {
+        let (dir, paths) = temp_workspace("preflight-reclaim");
+        let stale_started = store::now_ms().saturating_sub(DEFAULT_STALE_RESEARCH_RUN_MS + 60_000);
+        {
+            let db = LakeDb::open(&paths).unwrap();
+            db.insert_research_run(&ResearchRunRow {
+                run_id: "zombie-run".to_owned(),
+                ticker: "AAPL".to_owned(),
+                trigger: "manual".to_owned(),
+                focus: None,
+                model: "test".to_owned(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: Decimal::ZERO,
+                started_at_ms: stale_started,
+                finished_at_ms: None,
+                status: ResearchRunStatus::Running,
+                error: None,
+                memo_path: None,
+                perspectives_json: "[]".to_owned(),
+                citations_json: "[]".to_owned(),
+            })
+            .unwrap();
+        }
+
+        // Even when blocked by budget, pre-flight reclaims the zombie running row.
+        let cfg = BudgetConfig {
+            monthly_budget_usd: Decimal::ZERO,
+            ..Default::default()
+        };
+        budget::save_budget_config(&paths, &cfg).unwrap();
+
+        let res = run_deep_research_with_llm(
+            &paths,
+            &DeepResearchRequest {
+                ticker: "AAPL".into(),
+                focus: None,
+                trigger: "manual".into(),
+            },
+            LlmSource::Client(LlmClient::new(MockLlmProvider::new())),
+            None,
+        )
+        .unwrap();
+        assert_eq!(res.status, "blocked_budget");
+
+        let db_ro = LakeDb::open_read_only_if_exists(&paths).unwrap().unwrap();
+        let runs = db_ro.list_research_runs(Some("AAPL"), 10).unwrap();
+        let zombie = runs.iter().find(|r| r.run_id == "zombie-run").unwrap();
+        assert_eq!(zombie.status, ResearchRunStatus::Failed);
+        assert!(zombie.finished_at_ms.is_some());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

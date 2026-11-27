@@ -369,6 +369,29 @@ fn build_current_thread_runtime() -> Result<tokio::runtime::Runtime> {
         .context("build async runtime for Alan connection operation")
 }
 
+fn run_on_current_thread_runtime<T, Fut>(fut: Fut) -> Result<T>
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let handle = std::thread::Builder::new()
+            .name("m3-alan-conn-rt".to_owned())
+            .spawn(move || {
+                let rt = build_current_thread_runtime()?;
+                rt.block_on(fut)
+            })
+            .context("spawn dedicated thread for Alan connection async operation")?;
+        match handle.join() {
+            Ok(res) => res,
+            Err(_) => bail!("Alan connection async worker thread panicked"),
+        }
+    } else {
+        let rt = build_current_thread_runtime()?;
+        rt.block_on(fut)
+    }
+}
+
 fn list_status_with_paths(
     system: &SystemStorePaths,
     host: &HostStorePaths,
@@ -945,8 +968,12 @@ fn test_with_paths(
         });
     }
 
-    let rt = build_current_thread_runtime()?;
-    let (status, latency_ms) = rt.block_on(async {
+    let target_id_owned = target_id.clone();
+    let provider = resolved.provider;
+    let config_owned = config.clone();
+    let managed_auth = host.managed_auth.clone();
+
+    let (status, latency_ms) = run_on_current_thread_runtime(async move {
         let client = reqwest::Client::builder()
             .timeout(CONNECTION_TEST_TIMEOUT)
             .build()
@@ -954,10 +981,10 @@ fn test_with_paths(
 
         let req = build_probe_request(
             &client,
-            &target_id,
-            resolved.provider,
-            &config,
-            &host.managed_auth,
+            &target_id_owned,
+            provider,
+            &config_owned,
+            &managed_auth,
         )
         .await?;
 
@@ -965,7 +992,7 @@ fn test_with_paths(
         let response = req
             .send()
             .await
-            .with_context(|| format!("connection test failed for profile `{target_id}`"))?;
+            .with_context(|| format!("connection test failed for profile `{target_id_owned}`"))?;
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         Ok::<_, anyhow::Error>((response.status(), elapsed_ms))
     })?;
@@ -1664,5 +1691,32 @@ mod tests {
             vertex_express_probe_url("   "),
             "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:countTokens"
         );
+    }
+
+    #[tokio::test]
+    async fn test_alan_connection_runs_cleanly_inside_tokio_runtime() {
+        let stores = TempStores::new("inside-tokio");
+        let (base_ok, handle_ok) = spawn_single_response_server("200 OK", r#"{"data":[]}"#);
+        save_alan_connection_in(
+            &stores.system,
+            &stores.host,
+            &SaveAlanConnectionRequest {
+                provider: AlanConnectionProvider::OpenRouter,
+                profile_id: "tokio-prof".to_owned(),
+                model: "moonshotai/kimi-k2.6".to_owned(),
+                base_url: Some(base_ok),
+                api_key: Some("sk-or-v1-tokio-probe-1234".to_owned()),
+                project_id: None,
+                location: None,
+                set_as_default: true,
+            },
+        )
+        .unwrap();
+
+        let res = test_alan_connection_in(&stores.system, &stores.host, None).unwrap();
+        let captured_req = handle_ok.join().unwrap();
+        assert_eq!(res.profile_id, "tokio-prof");
+        assert_eq!(res.status_code, 200);
+        assert!(captured_req.starts_with("GET /v1/models "));
     }
 }

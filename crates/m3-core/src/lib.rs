@@ -8,6 +8,7 @@ pub mod alan_connection;
 pub mod alan_interrogator;
 pub mod alan_session;
 pub mod app_config;
+pub mod app_control;
 pub mod budget;
 pub mod calculator;
 pub mod edgar;

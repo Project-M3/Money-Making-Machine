@@ -138,6 +138,7 @@ pub fn render_app_root() -> impl IntoElement {
     provide_context(store);
     bind_live_application_menu(store);
     register_keyboard_shortcuts(store);
+    crate::control_ipc::start_control_server(store);
 
     let main_open = signal(true);
     bind_live_system_tray(store, main_open);

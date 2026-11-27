@@ -3474,3 +3474,310 @@ fn alan_pin_lock_vs_auto_follow_scope_and_anchor_handoff() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn control_ipc_dispatch_handles_ping_state_navigate_set_alan_and_actions() {
+    use crate::control_ipc::dispatch_app_control_request;
+    use m3_core::app_control::AppControlRequest;
+
+    let root = temp_workspace("control_ipc_dispatch");
+    let paths = WorkspacePaths::from_root(root.clone());
+    m3_core::app_config::ensure_initialized_workspace(&root).expect("init workspace");
+
+    run_with_reactive_runtime(
+        move || AppStore::new(paths),
+        move |store| {
+            // Ping & GetState
+            let ping = dispatch_app_control_request(store, AppControlRequest::Ping);
+            assert!(ping.ok);
+            assert_eq!(ping.message.as_deref(), Some("pong"));
+            let ping_state = ping.state.expect("ping state");
+            assert_eq!(ping_state.active_tab, "inbox");
+            assert_eq!(ping_state.alan_stage_mode, "closed");
+
+            let state_resp = dispatch_app_control_request(store, AppControlRequest::GetState);
+            assert!(state_resp.ok);
+            assert!(state_resp.message.is_none());
+            assert_eq!(
+                state_resp.state.expect("get_state").alan_scope,
+                "briefing:latest"
+            );
+
+            // Navigate: switch tab, open company overlay, close company overlay, select industry
+            let nav_uni = dispatch_app_control_request(
+                store,
+                AppControlRequest::Navigate {
+                    tab: Some("universe".to_owned()),
+                    ticker: None,
+                    industry: None,
+                },
+            );
+            assert!(nav_uni.ok);
+            let st = nav_uni.state.expect("nav universe state");
+            assert_eq!(st.active_tab, "universe");
+            assert!(!st.company_open);
+
+            let nav_company = dispatch_app_control_request(
+                store,
+                AppControlRequest::Navigate {
+                    tab: Some("baskets".to_owned()),
+                    ticker: Some("aapl".to_owned()),
+                    industry: None,
+                },
+            );
+            assert!(nav_company.ok);
+            let st = nav_company.state.expect("nav company state");
+            assert_eq!(st.active_tab, "baskets");
+            assert!(st.company_open);
+            assert_eq!(st.selected_ticker, "AAPL");
+
+            let nav_close_company = dispatch_app_control_request(
+                store,
+                AppControlRequest::Navigate {
+                    tab: None,
+                    ticker: Some(String::new()),
+                    industry: None,
+                },
+            );
+            assert!(nav_close_company.ok);
+            assert!(!nav_close_company.state.expect("closed").company_open);
+
+            let nav_ind = dispatch_app_control_request(
+                store,
+                AppControlRequest::Navigate {
+                    tab: None,
+                    ticker: None,
+                    industry: Some("specialty-pharma".to_owned()),
+                },
+            );
+            assert!(nav_ind.ok);
+            let st = nav_ind.state.expect("nav industry state");
+            assert_eq!(st.active_tab, "industry");
+            assert_eq!(
+                st.selected_industry_slug.as_deref(),
+                Some("specialty-pharma")
+            );
+            assert_eq!(st.alan_scope, "industry:specialty-pharma");
+
+            let nav_settings = dispatch_app_control_request(
+                store,
+                AppControlRequest::Navigate {
+                    tab: Some("settings".to_owned()),
+                    ticker: None,
+                    industry: None,
+                },
+            );
+            assert!(nav_settings.ok);
+            assert_eq!(nav_settings.state.expect("settings").active_tab, "settings");
+
+            let nav_bad = dispatch_app_control_request(
+                store,
+                AppControlRequest::Navigate {
+                    tab: Some("unknown_tab".to_owned()),
+                    ticker: None,
+                    industry: None,
+                },
+            );
+            assert!(!nav_bad.ok);
+            assert!(nav_bad.error.is_some());
+
+            // SetAlan: split, pin, scope, anchor, prompt -> immersive + feynman -> closed
+            let alan_split = dispatch_app_control_request(
+                store,
+                AppControlRequest::SetAlan {
+                    mode: Some("split".to_owned()),
+                    tab: Some("interrogate".to_owned()),
+                    scope: Some("company:cost".to_owned()),
+                    pin: Some(true),
+                    anchor_label: Some("ROIC".to_owned()),
+                    prompt: Some("Inspect Costco moat".to_owned()),
+                    submit: false,
+                },
+            );
+            assert!(alan_split.ok);
+            let st = alan_split.state.expect("alan split state");
+            assert_eq!(st.alan_stage_mode, "split");
+            assert_eq!(st.alan_canvas_tab, "interrogate");
+            assert_eq!(st.alan_scope, "company:COST");
+            assert!(st.alan_context_pinned);
+            assert_eq!(
+                store.alan_anchor_label.get_untracked().as_deref(),
+                Some("ROIC")
+            );
+            assert_eq!(
+                store.agent_input_draft.get_untracked(),
+                "Inspect Costco moat"
+            );
+
+            let alan_imm = dispatch_app_control_request(
+                store,
+                AppControlRequest::SetAlan {
+                    mode: Some("immersive".to_owned()),
+                    tab: Some("feynman".to_owned()),
+                    scope: None,
+                    pin: None,
+                    anchor_label: None,
+                    prompt: None,
+                    submit: false,
+                },
+            );
+            assert!(alan_imm.ok);
+            let st = alan_imm.state.expect("alan immersive state");
+            assert_eq!(st.alan_stage_mode, "immersive");
+            assert_eq!(st.alan_canvas_tab, "feynman");
+            assert_eq!(st.alan_scope, "company:COST");
+            assert!(store.feynman_mode_active.get_untracked());
+
+            let alan_closed = dispatch_app_control_request(
+                store,
+                AppControlRequest::SetAlan {
+                    mode: Some("closed".to_owned()),
+                    tab: None,
+                    scope: Some("portfolio".to_owned()),
+                    pin: Some(false),
+                    anchor_label: Some(String::new()),
+                    prompt: None,
+                    submit: false,
+                },
+            );
+            assert!(alan_closed.ok);
+            let st = alan_closed.state.expect("alan closed state");
+            assert_eq!(st.alan_stage_mode, "closed");
+            assert_eq!(st.alan_scope, "portfolio");
+            assert!(!st.alan_context_pinned);
+            assert!(store.alan_anchor_label.get_untracked().is_none());
+
+            let alan_bad_scope = dispatch_app_control_request(
+                store,
+                AppControlRequest::SetAlan {
+                    mode: None,
+                    tab: None,
+                    scope: Some("invalid_scope".to_owned()),
+                    pin: None,
+                    anchor_label: None,
+                    prompt: None,
+                    submit: false,
+                },
+            );
+            assert!(!alan_bad_scope.ok);
+            assert!(alan_bad_scope.error.is_some());
+
+            // TriggerAction: toggle_sidebar, open_palette, close_palette, close_company, reset_alan
+            let initial_collapsed = store.sidebar_collapsed.get_untracked();
+            let toggle_sb = dispatch_app_control_request(
+                store,
+                AppControlRequest::TriggerAction {
+                    action: "toggle_sidebar".to_owned(),
+                    ticker: None,
+                },
+            );
+            assert!(toggle_sb.ok);
+            assert_eq!(
+                toggle_sb.state.expect("toggle_sidebar").sidebar_collapsed,
+                !initial_collapsed
+            );
+
+            let open_pal = dispatch_app_control_request(
+                store,
+                AppControlRequest::TriggerAction {
+                    action: "open_palette".to_owned(),
+                    ticker: None,
+                },
+            );
+            assert!(open_pal.ok);
+            assert!(open_pal.state.expect("open_palette").palette_open);
+
+            let close_pal = dispatch_app_control_request(
+                store,
+                AppControlRequest::TriggerAction {
+                    action: "close_palette".to_owned(),
+                    ticker: None,
+                },
+            );
+            assert!(close_pal.ok);
+            assert!(!close_pal.state.expect("close_palette").palette_open);
+
+            let _ = dispatch_app_control_request(
+                store,
+                AppControlRequest::Navigate {
+                    tab: None,
+                    ticker: Some("MSFT".to_owned()),
+                    industry: None,
+                },
+            );
+            assert!(store.company_open.get_untracked());
+            let close_co = dispatch_app_control_request(
+                store,
+                AppControlRequest::TriggerAction {
+                    action: "close_company".to_owned(),
+                    ticker: None,
+                },
+            );
+            assert!(close_co.ok);
+            assert!(!close_co.state.expect("close_company").company_open);
+
+            let reset_alan = dispatch_app_control_request(
+                store,
+                AppControlRequest::TriggerAction {
+                    action: "reset_alan".to_owned(),
+                    ticker: None,
+                },
+            );
+            assert!(reset_alan.ok);
+            assert_eq!(reset_alan.state.expect("reset_alan").alan_message_count, 0);
+
+            let unknown_act = dispatch_app_control_request(
+                store,
+                AppControlRequest::TriggerAction {
+                    action: "nonexistent_action".to_owned(),
+                    ticker: None,
+                },
+            );
+            assert!(!unknown_act.ok);
+            assert!(unknown_act.error.is_some());
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn control_ipc_socket_bind_replaces_stale_socket_and_sets_0600() {
+    use crate::control_ipc::bind_control_listener;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::net::UnixListener;
+
+    let root = temp_workspace("control_ipc_sock");
+    let sock_path = root.join("nested").join("control.sock");
+    std::fs::create_dir_all(sock_path.parent().expect("parent")).expect("mkdir");
+
+    // Create a stale unconnected socket file by binding and immediately dropping its listener.
+    {
+        let _stale = UnixListener::bind(&sock_path).expect("bind stale");
+    }
+    assert!(sock_path.exists());
+
+    // Binding over the stale socket succeeds and enforces 0600 permissions.
+    let live_listener = bind_control_listener(&sock_path).expect("rebind stale socket");
+    let mode = std::fs::metadata(&sock_path)
+        .expect("stat")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+
+    // Binding while another listener is live refuses to clobber it.
+    let err = bind_control_listener(&sock_path).expect_err("must not clobber live socket");
+    assert!(err.to_string().contains("already owned"));
+    drop(live_listener);
+
+    // Non-socket regular file is never deleted.
+    let non_sock = root.join("not_a_socket.txt");
+    std::fs::write(&non_sock, "keep me").expect("write");
+    let err = bind_control_listener(&non_sock).expect_err("must not remove regular file");
+    assert!(err.to_string().contains("non-socket"));
+    assert!(non_sock.exists());
+
+    let _ = std::fs::remove_dir_all(&root);
+}

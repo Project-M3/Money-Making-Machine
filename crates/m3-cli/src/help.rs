@@ -40,8 +40,12 @@ COMMANDS:
     triage            Inspect or run L1.5 Circle Filing Watchdog signal triage
     falsification     List, add, or remove human falsification metrics on a dossier
 
+  Alan & Desktop Copilot:
+    alan              Inspect/test Alan connection, ask scoped questions, manage sessions
+    app               Inspect and control the running M3 desktop window via IPC
+
   Agent Integration:
-    mcp               Run read-only JSON-RPC 2.0 MCP server over stdio
+    mcp               Run full-capability (or --read-only) JSON-RPC 2.0 MCP server over stdio
 
   System & Maintenance:
     storage           Inspect and clean local SEC/DuckDB/cache storage footprint
@@ -249,7 +253,7 @@ USAGE:
   m3 research run <TICKER> [--focus <TEXT>] [--trigger manual|inbox|cli]
 
 SUBCOMMANDS:
-  status              List past research runs and current monthly budget status (default)
+  status              Reclaim stale `running` runs (>= 15m) if RW DuckDB is free, list runs & budget (default)
   run <TICKER>        Execute budget-gated 4-perspective Deep Research and write memo
 
 EXAMPLES:
@@ -334,27 +338,94 @@ EXAMPLES:
 "
         }
         "mcp" => {
-            "m3 mcp — Run read-only JSON-RPC 2.0 MCP server over stdio
+            "m3 mcp — Run full-capability (or --read-only) JSON-RPC 2.0 MCP server over stdio
 
 USAGE:
-  m3 mcp [--workspace <PATH>]
+  m3 mcp [--workspace <PATH>] [--read-only]
 
 OPTIONS:
   --workspace <PATH>  Override M3 workspace root (defaults to M3_REPO_ROOT / cwd / configured root)
+  --read-only         Filter tools/list to readOnlyHint=true tools and reject write/action calls
 
 NOTES:
   - Reads line-delimited JSON-RPC 2.0 requests from stdin and writes responses to stdout.
   - All diagnostics go to stderr only; stdout carries JSON-RPC frames exclusively.
-  - Exposes 17 deterministic read-only tools (m3_status, m3_doctor, m3_report, m3_dossier,
-    m3_universe_status, m3_universe_screen, m3_universe_peers, m3_universe_similar,
-    m3_inbox_list, m3_industry_list, m3_industry_show, m3_budget_status,
-    m3_themes_list, m3_storage_status, m3_briefing_latest, m3_briefing_list,
-    m3_triage_list).
-  - Never mutates `human_judgment` and never deletes `personal_workbench`.
+  - Default mode exposes 40 tools (24 read-only + 16 controlled action/Alan/desktop tools)
+    with accurate MCP annotations (`readOnlyHint`, `destructiveHint: false`).
+  - Never mutates `human_judgment` (except explicit `m3_falsification_update`), never auto-signs
+    `feynman_checked_at`, never overwrites `## Human Notes`, and never deletes `personal_workbench`.
 
 EXAMPLES:
   m3 mcp
+  m3 mcp --read-only
   m3 mcp --workspace ~/Documents/m3-workbench
+"
+        }
+        "alan" => {
+            "m3 alan — Inspect/test Alan connection, ask scoped questions, and manage sessions
+
+USAGE:
+  m3 alan [status]
+  m3 alan test [--profile <ID>]
+  m3 alan ask --scope <SCOPE> \"<QUESTION>\" [--lang zh|en] [--timeout <SECS>]
+  m3 alan session show --scope <SCOPE>
+  m3 alan session clear --scope <SCOPE>
+
+SCOPES:
+  company:<TICKER>    Company dossier & computed report scope (e.g. company:COST)
+  industry:<SLUG>     Industry Research Studio scope (e.g. industry:retail)
+  briefing:latest     Latest Circle briefing scope (or briefing:<ID>)
+  portfolio           Global Circle of Competence portfolio scope
+
+OPTIONS:
+  --profile <ID>      Target Alan connection profile ID for `test`
+  --scope <SCOPE>     Target AlanScope (`company:TICKER|industry:SLUG|briefing:latest|portfolio`)
+  --lang zh|en        Override response language (defaults to configured UI language)
+  --timeout <SECS>    Max seconds to wait for scoped reply (1..=600, default: 120)
+
+EXAMPLES:
+  m3 alan status
+  m3 alan test
+  m3 alan ask --scope company:COST \"Verify Costco membership moat [report:COST]\" --lang en
+  m3 alan session show --scope company:COST
+  m3 alan session clear --scope company:COST
+"
+        }
+        "app" => {
+            "m3 app — Inspect and control the running M3 desktop window via IPC
+
+USAGE:
+  m3 app ping [--timeout <SECS>]
+  m3 app state [--timeout <SECS>]
+  m3 app navigate [--tab <TAB>] [--ticker <T>] [--industry <SLUG>] [--timeout <SECS>]
+  m3 app alan [--mode closed|split|immersive] [--tab interrogate|feynman] [--scope <SCOPE>]
+              [--pin true|false] [--anchor <LABEL>] [--prompt <TEXT>] [--submit] [--timeout <SECS>]
+  m3 app action <ACTION> [--ticker <T>] [--timeout <SECS>]
+  m3 app screenshot <PATH> [--timeout <SECS>]
+
+OPTIONS:
+  --tab <TAB>         Workspace tab (`inbox|universe|industry|baskets|journal|settings`)
+                      or Alan canvas tab (`interrogate|feynman`) under `m3 app alan`
+  --ticker <T>        Company ticker (pass `\"\"` to close company overlay in `navigate`)
+  --industry <SLUG>   Industry profile slug
+  --mode <MODE>       Alan stage mode: closed | split | immersive
+  --scope <SCOPE>     AlanScope (`company:TICKER|industry:SLUG|briefing:latest|portfolio`)
+  --pin true|false    Lock or unlock Alan auto-follow scope pin
+  --anchor <LABEL>    Optional UI anchor label for Alan context
+  --prompt <TEXT>     Pre-fill Alan input prompt
+  --submit            Submit the prompt immediately to Alan
+  --timeout <SECS>    IPC socket timeout in seconds (1..=120, default: 5)
+
+ACTIONS:
+  toggle_sidebar | open_palette | close_palette | close_company |
+  sync | refresh_briefing | reset_alan | deep_research
+
+EXAMPLES:
+  m3 app ping
+  m3 app state
+  m3 app navigate --tab universe --ticker COST
+  m3 app alan --mode split --scope company:COST --pin true
+  m3 app screenshot /tmp/m3-window.png
 "
         }
         "themes" => {
@@ -398,7 +469,7 @@ EXAMPLES:
 "
         }
         "doctor" => {
-            "m3 doctor — Diagnose binary, workspace, lakehouse, storage, and host tools
+            "m3 doctor — Diagnose binary, workspace, lakehouse, Alan connection, stale runs, storage, and host tools
 
 USAGE:
   m3 doctor [GLOBAL OPTIONS]

@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod components;
+pub mod control_ipc;
 pub mod format;
 pub mod icons;
 pub mod palette;

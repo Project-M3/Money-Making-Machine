@@ -25,6 +25,9 @@ pub enum ResearchRunStatus {
     Failed,
 }
 
+/// Default age threshold (15 minutes) after which an unfinished `running` Deep Research row is treated as stale.
+pub const DEFAULT_STALE_RESEARCH_RUN_MS: u64 = 15 * 60 * 1000;
+
 impl ResearchRunStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -235,6 +238,46 @@ impl LakeDb {
             )
             .with_context(|| format!("failed to finish research_run {run_id}"))?;
         Ok(changed > 0)
+    }
+
+    /// Marks stale `running` rows in `research_runs` (where
+    /// `now_ms.saturating_sub(started_at_ms) >= stale_after_ms`) as `failed` with a clear
+    /// interrupted note and `finished_at_ms = now_ms`.
+    pub fn reclaim_stale_running_runs(&self, now_ms: u64, stale_after_ms: u64) -> Result<usize> {
+        if !self.l2_table_exists("research_runs")? {
+            return Ok(0);
+        }
+        if now_ms < stale_after_ms {
+            return Ok(0);
+        }
+        let now_i64 = i64::try_from(now_ms).unwrap_or(i64::MAX);
+        let note = "Interrupted before completion (stale running run reclaimed).";
+        let updated = if stale_after_ms == 0 {
+            self.conn
+                .execute(
+                    "UPDATE research_runs
+                     SET status = 'failed',
+                         finished_at_ms = ?,
+                         error = COALESCE(NULLIF(TRIM(error), ''), ?)
+                     WHERE LOWER(status) = 'running'",
+                    params![now_i64, note],
+                )
+                .context("failed to reclaim stale running research_runs")?
+        } else {
+            let cutoff_ms = now_ms.saturating_sub(stale_after_ms);
+            let cutoff_i64 = i64::try_from(cutoff_ms).unwrap_or(i64::MAX);
+            self.conn
+                .execute(
+                    "UPDATE research_runs
+                     SET status = 'failed',
+                         finished_at_ms = ?,
+                         error = COALESCE(NULLIF(TRIM(error), ''), ?)
+                     WHERE LOWER(status) = 'running' AND started_at_ms <= ?",
+                    params![now_i64, note, cutoff_i64],
+                )
+                .context("failed to reclaim stale running research_runs")?
+        };
+        Ok(updated)
     }
 
     /// Lists recent `research_runs` ordered newest first, optionally filtered by ticker.
@@ -646,6 +689,98 @@ mod tests {
         assert_eq!(usage.total_cost_usd, Decimal::new(30, 2));
         // Only run-2 counts toward weekly_auto_runs; run-3 was blocked_budget.
         assert_eq!(usage.weekly_auto_runs, 1);
+
+        let _ = fs::remove_dir_all(&paths.repo_root);
+    }
+
+    #[test]
+    fn reclaim_stale_running_runs_marks_only_expired_running_rows_failed() {
+        let paths = temp_paths("reclaim_stale");
+        let db = LakeDb::open(&paths).unwrap();
+
+        let now_ms = 2_000_000_000u64;
+        let stale_started = now_ms - DEFAULT_STALE_RESEARCH_RUN_MS;
+        let very_stale_started = now_ms - DEFAULT_STALE_RESEARCH_RUN_MS - 60_000;
+        let fresh_started = now_ms - (DEFAULT_STALE_RESEARCH_RUN_MS - 1_000);
+
+        let mk_run =
+            |id: &str, ticker: &str, started: u64, status: ResearchRunStatus| ResearchRunRow {
+                run_id: id.to_owned(),
+                ticker: ticker.to_owned(),
+                trigger: "manual".to_owned(),
+                focus: None,
+                model: "test".to_owned(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: Decimal::ZERO,
+                started_at_ms: started,
+                finished_at_ms: (status != ResearchRunStatus::Running).then_some(started + 500),
+                status,
+                error: None,
+                memo_path: None,
+                perspectives_json: "[]".to_owned(),
+                citations_json: "[]".to_owned(),
+            };
+
+        db.insert_research_run(&mk_run(
+            "stale-exact",
+            "AAPL",
+            stale_started,
+            ResearchRunStatus::Running,
+        ))
+        .unwrap();
+        db.insert_research_run(&mk_run(
+            "stale-old",
+            "COST",
+            very_stale_started,
+            ResearchRunStatus::Running,
+        ))
+        .unwrap();
+        db.insert_research_run(&mk_run(
+            "fresh-run",
+            "MSFT",
+            fresh_started,
+            ResearchRunStatus::Running,
+        ))
+        .unwrap();
+        db.insert_research_run(&mk_run(
+            "already-done",
+            "ADSK",
+            very_stale_started,
+            ResearchRunStatus::Completed,
+        ))
+        .unwrap();
+
+        let reclaimed = db
+            .reclaim_stale_running_runs(now_ms, DEFAULT_STALE_RESEARCH_RUN_MS)
+            .unwrap();
+        assert_eq!(reclaimed, 2);
+
+        let all = db.list_research_runs(None, 10).unwrap();
+        let by_id = |id: &str| all.iter().find(|r| r.run_id == id).unwrap().clone();
+
+        let r1 = by_id("stale-exact");
+        assert_eq!(r1.status, ResearchRunStatus::Failed);
+        assert_eq!(r1.finished_at_ms, Some(now_ms));
+        assert!(r1.error.as_deref().unwrap_or("").contains("stale"));
+
+        let r2 = by_id("stale-old");
+        assert_eq!(r2.status, ResearchRunStatus::Failed);
+        assert_eq!(r2.finished_at_ms, Some(now_ms));
+
+        let r3 = by_id("fresh-run");
+        assert_eq!(r3.status, ResearchRunStatus::Running);
+        assert_eq!(r3.finished_at_ms, None);
+
+        let r4 = by_id("already-done");
+        assert_eq!(r4.status, ResearchRunStatus::Completed);
+
+        // Second call is idempotent.
+        assert_eq!(
+            db.reclaim_stale_running_runs(now_ms, DEFAULT_STALE_RESEARCH_RUN_MS)
+                .unwrap(),
+            0
+        );
 
         let _ = fs::remove_dir_all(&paths.repo_root);
     }

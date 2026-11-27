@@ -7,7 +7,6 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use alan_os_host::embed::{EmbedEvent, LlmSource, UiInputStatus};
@@ -15,7 +14,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::alan_connection;
-use crate::alan_interrogator::{self, M3WorkbenchFs};
+use crate::alan_interrogator;
 use crate::i18n::UiLang;
 use crate::industry::IndustryProfile;
 use crate::market;
@@ -455,9 +454,96 @@ pub async fn evaluate_feynman_round_with_alan(
     evaluate_feynman_round_with_llm(paths, prompt, LlmSource::SharedProductCredentials, lang).await
 }
 
+/// Synchronously runs a single lightweight Feynman critique turn using Alan if a default
+/// Alan connection profile is configured. Safe to call from both sync and Tokio async contexts.
+pub fn evaluate_feynman_round_blocking(
+    paths: &WorkspacePaths,
+    prompt: String,
+    lang: UiLang,
+) -> Result<(ParsedFeynmanCritique, Option<String>)> {
+    anyhow::ensure!(
+        !prompt.trim().is_empty(),
+        "{}",
+        lang.t(
+            "费曼评估提示词不能为空。",
+            "Feynman critique prompt cannot be empty."
+        )
+    );
+
+    match alan_connection::list_alan_connection_status() {
+        Ok(status) if status.active_profile().is_none() => {
+            anyhow::bail!(
+                "{}",
+                lang.t(
+                    "尚未配置默认 Alan 模型连接，无法执行费曼点评（可运行 `alan connection add ...` 或在设置页配置）。",
+                    "No default Alan connection profile is configured; cannot run Feynman critique (run `alan connection add ...` or configure in Settings)."
+                )
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            anyhow::bail!(
+                "{}",
+                alan_interrogator::friendly_m3_credentials_error(&format!("{err:#}"))
+            );
+        }
+    }
+
+    evaluate_feynman_round_blocking_with_llm(
+        paths,
+        prompt,
+        LlmSource::SharedProductCredentials,
+        lang,
+    )
+}
+
+/// Synchronously executes a single lightweight Feynman critique turn with an explicit [`LlmSource`].
+/// Safe to call from both sync callers and active Tokio runtimes.
+pub fn evaluate_feynman_round_blocking_with_llm(
+    paths: &WorkspacePaths,
+    prompt: String,
+    llm: LlmSource,
+    lang: UiLang,
+) -> Result<(ParsedFeynmanCritique, Option<String>)> {
+    let paths_owned = paths.clone();
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let handle = std::thread::Builder::new()
+            .name("m3-feynman-eval".to_owned())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("build async runtime for Feynman critique")?;
+                rt.block_on(evaluate_feynman_round_with_llm(
+                    &paths_owned,
+                    prompt,
+                    llm,
+                    lang,
+                ))
+            })
+            .context("spawn thread for Feynman critique evaluation")?;
+        match handle.join() {
+            Ok(res) => res,
+            Err(_) => anyhow::bail!("Feynman critique evaluation thread panicked"),
+        }
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("build async runtime for Feynman critique")?;
+        rt.block_on(evaluate_feynman_round_with_llm(
+            &paths_owned,
+            prompt,
+            llm,
+            lang,
+        ))
+    }
+}
+
 /// Internal/testable runner executing a single lightweight Feynman critique turn with an explicit [`LlmSource`].
 pub async fn evaluate_feynman_round_with_llm(
-    paths: &WorkspacePaths,
+    _paths: &WorkspacePaths,
     prompt: String,
     llm: LlmSource,
     lang: UiLang,
@@ -471,8 +557,7 @@ pub async fn evaluate_feynman_round_with_llm(
         )
     );
 
-    let fs = Arc::new(M3WorkbenchFs::new(paths.clone()));
-    let app = alan_interrogator::boot_m3_embedded(paths.clone(), fs, llm)
+    let app = alan_interrogator::boot_m3_feynman_embedded(llm, lang)
         .await
         .map_err(|err| {
             anyhow::anyhow!(
@@ -1317,7 +1402,7 @@ Please sharpen round 2.
             .block_on(evaluate_feynman_round_with_llm(
                 &paths,
                 "Evaluate my answer".to_owned(),
-                LlmSource::Client(LlmClient::new(provider)),
+                LlmSource::Client(LlmClient::new(provider.clone())),
                 UiLang::En,
             ))
             .unwrap();
@@ -1327,6 +1412,61 @@ Please sharpen round 2.
         assert_eq!(
             parsed.suggested_falsification_metrics,
             vec!["ROIC drops below 18%"]
+        );
+        assert!(raw.is_some());
+
+        // Verify lightweight Feynman config registers zero heavy `m3_*` external tools.
+        let recorded = provider.recorded_requests();
+        assert_eq!(recorded.len(), 1);
+        assert!(
+            !recorded[0].tools.iter().any(|t| t.name.starts_with("m3_")),
+            "expected no m3_* tools in lightweight Feynman boot, got {:?}",
+            recorded[0]
+                .tools
+                .iter()
+                .map(|t| &t.name)
+                .collect::<Vec<_>>()
+        );
+
+        let _ = fs::remove_dir_all(&paths.repo_root);
+    }
+
+    #[tokio::test]
+    async fn evaluate_feynman_round_blocking_runs_cleanly_inside_tokio_runtime() {
+        let paths = temp_workspace("blocking_in_tokio");
+        let provider = MockLlmProvider::new().with_responses(vec![GenerationResponse {
+            content: r#"```json
+{
+  "critique": "Clear unit economics.",
+  "blind_spots": ["Customer churn sensitivity"],
+  "suggested_falsification_metrics": ["Net retention < 105%"]
+}
+```"#
+                .to_string(),
+            thinking: None,
+            thinking_signature: None,
+            redacted_thinking: Vec::new(),
+            tool_calls: Vec::new(),
+            usage: None,
+            finish_reason: None,
+            warnings: Vec::new(),
+            provider_response_id: None,
+            provider_response_status: None,
+        }]);
+
+        let (parsed, raw) = evaluate_feynman_round_blocking_with_llm(
+            &paths,
+            "Evaluate my answer".to_owned(),
+            LlmSource::Client(LlmClient::new(provider)),
+            UiLang::En,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.critique, "Clear unit economics.");
+        assert_eq!(parsed.blind_spots, vec!["Customer churn sensitivity"]);
+        assert_eq!(
+            parsed.suggested_falsification_metrics,
+            vec!["Net retention < 105%"]
         );
         assert!(raw.is_some());
 

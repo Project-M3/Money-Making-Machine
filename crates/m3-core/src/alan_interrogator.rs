@@ -5,10 +5,10 @@
 //!   `industries/<slug>.json`, `memos/<TICKER>.md`, `memos/<TICKER>-feynman.md`,
 //!   `briefings/latest.json`, and `events/recent.json`.
 //! - Registers deterministic M3 tools (`m3_status`, `m3_report`, `m3_dossier`,
-//!   `m3_update_draft`, `m3_universe_query`, `m3_peer_percentiles`,
-//!   `m3_semantic_neighbors`, `m3_events_for_ticker`, `m3_industry_matrix`,
-//!   `m3_web_search`) backed directly by `store.rs`, `calculator.rs`,
-//!   `industry.rs`, `lake.rs`, and `lake_l1.rs`.
+//!   `m3_update_draft`, `m3_fs_list`, `m3_fs_read`, `m3_universe_query`,
+//!   `m3_peer_percentiles`, `m3_semantic_neighbors`, `m3_events_for_ticker`,
+//!   `m3_industry_matrix`, `m3_web_search`) backed directly by `M3WorkbenchFs`,
+//!   `store.rs`, `calculator.rs`, `industry.rs`, `lake.rs`, and `lake_l1.rs`.
 //! - Enforces [`M3ToolPolicyHook`] unconditionally denying any tool call
 //!   touching `human_judgment`, `computed/`, `raw/`, `data/munger/`, `m3.duckdb`,
 //!   `.parquet`, `lake/`, `journal.json`, `watchlist.json`, `budget.json`,
@@ -19,9 +19,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
+use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alan_agent_engine::TrustPosture;
 use alan_agent_engine::tools::{Tool, ToolCapability, ToolContext, ToolRegistry, ToolResult};
@@ -38,6 +40,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, mpsc as tokio_mpsc};
 
+use crate::alan_connection;
+use crate::alan_session::{self, AlanMessageRole, PersistedAlanMessage};
 use crate::i18n::UiLang;
 use crate::industry::{self, IndustryProfile};
 use crate::lake::{LakeDb, UniverseFilter, UniverseRow, UniverseSortBy};
@@ -49,13 +53,17 @@ use crate::store::{self, WorkspacePaths};
 
 const M3_INTERROGATOR_SYSTEM_PROMPT: &str = "\
 你是 Project-M3 的查理·芒格跨学科研究幕僚 Alan（费曼审讯台）。请严格遵循以下纪律：
-1. 严禁自行心算、编造或篡改任何财务数字、估值倍数、ROIC 或击球价；需要数据时必须调用 `m3_status`、`m3_report`、`m3_dossier` 或只读湖仓工具（`m3_universe_query`、`m3_peer_percentiles`、`m3_semantic_neighbors`、`m3_events_for_ticker`），或读取只读 `/mnt/m3` 挂载树。
+1. 严禁自行心算、编造或篡改任何财务数字、估值倍数、ROIC 或击球价；需要数据时必须调用 `m3_status`、`m3_report`、`m3_dossier`、只读湖仓工具（`m3_universe_query`、`m3_peer_percentiles`、`m3_semantic_neighbors`、`m3_events_for_ticker`、`m3_industry_matrix`），或使用只读 `/mnt/m3` 文件工具 `m3_fs_list` 与 `m3_fs_read`（可读取 `/mnt/m3/watchlist.json`、`/mnt/m3/industries/*`、`/mnt/m3/memos/*`、`/mnt/m3/briefings/latest.json`、`/mnt/m3/events/recent.json`、`/mnt/m3/computed/*`、`/mnt/m3/dossiers/*`）。
 2. 允许通过 `m3_update_draft` 更新公司档案草稿区（`three_sentence_business`、`latticework`、`premortem`、`open_questions`），但严禁修改或代填 `human_judgment`、`computed/`、`raw/`、`data/munger/`、`m3.duckdb`、`.parquet`、`watchlist.json`、`journal.json`、`budget.json`、`themes.json` 与 `memos/`（系统会在工具策略层硬拦截）。
 3. 回答中引用确定性数据与档案时，附上可点击证据标记 `[report:TICKER]`、`[xbrl:TICKER]`、`[dossier:TICKER]`。
 4. 先核对财务与护城河事实，再提出锋利的 5 年逆向事前验尸问题与费曼追问；严禁直接给出买卖指令。";
 
+/// Maximum bytes returned by a single bounded read from `/mnt/m3` via `m3_fs_read` (64 KiB).
+pub const M3_FS_MAX_READ_BYTES: usize = 64 * 1024;
+
 /// One entry in the `alanworks.app`-style Turing Tape displayed in `2 Alan 审讯台`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TuringTapeKind {
     Input,
     Tool,
@@ -76,7 +84,7 @@ impl TuringTapeKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TuringTapeEntry {
     pub seq: usize,
     pub call_id: Option<String>,
@@ -594,6 +602,104 @@ pub struct M3WorkbenchFs {
     paths: WorkspacePaths,
     tree: RwLock<TreeSnapshot>,
     fids: AsyncMutex<HashMap<Fid, FidState>>,
+    next_internal_fid: AtomicU64,
+}
+
+/// One directory entry returned by [`M3WorkbenchFs::list_mnt_entries`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct M3FsListEntry {
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+    pub bytes: u64,
+}
+
+/// Bounded read result returned by [`M3WorkbenchFs::read_mnt_file_bounded`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct M3FsReadOutput {
+    pub path: String,
+    pub offset: u64,
+    pub bytes_read: usize,
+    pub total_bytes: u64,
+    pub truncated: bool,
+    pub content: String,
+}
+
+const MNT_M3_ALLOWED_ROOTS: &[&str] = &[
+    "watchlist.json",
+    "journal.json",
+    "computed",
+    "dossiers",
+    "industries",
+    "memos",
+    "briefings",
+    "events",
+];
+
+fn normalize_mnt_m3_parts(raw: &str) -> Result<Vec<String>> {
+    let trimmed = raw.trim();
+    anyhow::ensure!(
+        !trimmed.contains('\\')
+            && !trimmed.contains("..")
+            && !trimmed.contains('~')
+            && !trimmed.contains('\0'),
+        "红线拦截：/mnt/m3 路径不允许包含 `..`、反斜杠或宿主逃逸字符"
+    );
+
+    let stripped =
+        if trimmed.is_empty() || trimmed == "/" || trimmed == "/mnt/m3" || trimmed == "/mnt/m3/" {
+            ""
+        } else if let Some(rest) = trimmed.strip_prefix("/mnt/m3/") {
+            rest
+        } else if trimmed.starts_with('/') {
+            anyhow::bail!("红线拦截：只允许访问 `/mnt/m3` 挂载树下的路径，拒绝 `{trimmed}`");
+        } else {
+            trimmed
+        };
+
+    let clean = stripped.trim_end_matches('/');
+    if clean.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut parts = Vec::new();
+    for seg in clean.split('/') {
+        anyhow::ensure!(
+            !seg.is_empty() && seg != "." && seg != "..",
+            "红线拦截：/mnt/m3 路径包含非法片段 `{trimmed}`"
+        );
+        parts.push(seg.to_owned());
+    }
+
+    let first = parts[0].to_ascii_lowercase();
+    anyhow::ensure!(
+        MNT_M3_ALLOWED_ROOTS.contains(&first.as_str()),
+        "红线拦截：只允许访问 `/mnt/m3` 已知只读目录与文件，拒绝 `{trimmed}`"
+    );
+
+    Ok(parts)
+}
+
+fn format_mnt_m3_path(parts: &[String]) -> String {
+    if parts.is_empty() {
+        "/mnt/m3".to_owned()
+    } else {
+        format!("/mnt/m3/{}", parts.join("/"))
+    }
+}
+
+fn decode_utf8_bounded(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_owned(),
+        Err(err) => {
+            let valid_up_to = err.valid_up_to();
+            if bytes.len() - valid_up_to <= 3 && err.error_len().is_none() {
+                String::from_utf8_lossy(&bytes[..valid_up_to]).into_owned()
+            } else {
+                String::from_utf8_lossy(bytes).into_owned()
+            }
+        }
+    }
 }
 
 impl M3WorkbenchFs {
@@ -603,6 +709,7 @@ impl M3WorkbenchFs {
             paths,
             tree: RwLock::new(tree),
             fids: AsyncMutex::new(HashMap::new()),
+            next_internal_fid: AtomicU64::new(1_000_000_000),
         }
     }
 
@@ -614,6 +721,125 @@ impl M3WorkbenchFs {
             }
             *guard = updated;
         }
+    }
+
+    fn alloc_internal_fid(&self) -> Fid {
+        Fid(self.next_internal_fid.fetch_add(1, AtomicOrdering::Relaxed))
+    }
+
+    /// Lists entries under `/mnt/m3` (or a subdirectory) using `FileServer` operations.
+    pub async fn list_mnt_entries(&self, raw_path: &str) -> Result<(String, Vec<M3FsListEntry>)> {
+        let parts = normalize_mnt_m3_parts(raw_path)?;
+        let display_path = format_mnt_m3_path(&parts);
+        let fid = self.alloc_internal_fid();
+        self.walk(Fid::ROOT, fid, &parts)
+            .await
+            .map_err(|code| anyhow::anyhow!("无法访问 `{display_path}`: {code}"))?;
+
+        let read_res = async {
+            let st = self
+                .stat(fid)
+                .await
+                .map_err(|code| anyhow::anyhow!("无法读取 `{display_path}` 元数据: {code}"))?;
+            anyhow::ensure!(
+                st.qid.kind == FileKind::Dir,
+                "`{display_path}` 是文件而非目录，请改用 `m3_fs_read`"
+            );
+            self.open(fid, OpenMode::Read)
+                .await
+                .map_err(|code| anyhow::anyhow!("无法打开目录 `{display_path}`: {code}"))?;
+            let raw = self
+                .read(fid, 0, 256 * 1024)
+                .await
+                .map_err(|code| anyhow::anyhow!("无法读取目录 `{display_path}`: {code}"))?;
+            let listing = String::from_utf8_lossy(&raw);
+            let mut entries = Vec::new();
+            for name in listing.lines().map(str::trim).filter(|s| !s.is_empty()) {
+                let mut child_parts = parts.clone();
+                child_parts.push(name.to_owned());
+                let child_path = format_mnt_m3_path(&child_parts);
+                let child_fid = self.alloc_internal_fid();
+                let child_stat = match self.walk(Fid::ROOT, child_fid, &child_parts).await {
+                    Ok(_) => {
+                        let res = self.stat(child_fid).await;
+                        let _ = self.clunk(child_fid).await;
+                        res.ok()
+                    }
+                    Err(_) => None,
+                };
+                let (kind, bytes) = match child_stat {
+                    Some(cs) if cs.qid.kind == FileKind::Dir => ("dir".to_owned(), 0),
+                    Some(cs) => ("file".to_owned(), cs.length),
+                    None => ("file".to_owned(), 0),
+                };
+                entries.push(M3FsListEntry {
+                    name: name.to_owned(),
+                    path: child_path,
+                    kind,
+                    bytes,
+                });
+            }
+            Ok::<_, anyhow::Error>(entries)
+        }
+        .await;
+
+        let _ = self.clunk(fid).await;
+        read_res.map(|entries| (display_path, entries))
+    }
+
+    /// Reads up to `max_bytes` (capped at [`M3_FS_MAX_READ_BYTES`]) from a file under `/mnt/m3`
+    /// using `FileServer::walk`/`stat`/`open`/`read`/`clunk`.
+    pub async fn read_mnt_file_bounded(
+        &self,
+        raw_path: &str,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<M3FsReadOutput> {
+        let parts = normalize_mnt_m3_parts(raw_path)?;
+        anyhow::ensure!(
+            !parts.is_empty(),
+            "`/mnt/m3` 是目录而非文件，请改用 `m3_fs_list`"
+        );
+        let display_path = format_mnt_m3_path(&parts);
+        let cap = max_bytes.clamp(1, M3_FS_MAX_READ_BYTES);
+        let fid = self.alloc_internal_fid();
+        self.walk(Fid::ROOT, fid, &parts)
+            .await
+            .map_err(|code| anyhow::anyhow!("无法访问 `{display_path}`: {code}"))?;
+
+        let read_res = async {
+            let st = self
+                .stat(fid)
+                .await
+                .map_err(|code| anyhow::anyhow!("无法读取 `{display_path}` 元数据: {code}"))?;
+            anyhow::ensure!(
+                st.qid.kind != FileKind::Dir,
+                "`{display_path}` 是目录而非文件，请改用 `m3_fs_list`"
+            );
+            self.open(fid, OpenMode::Read)
+                .await
+                .map_err(|code| anyhow::anyhow!("无法只读打开 `{display_path}`: {code}"))?;
+            let bytes = self
+                .read(fid, offset, cap as u32)
+                .await
+                .map_err(|code| anyhow::anyhow!("无法读取 `{display_path}`: {code}"))?;
+            let total_bytes = st.length;
+            let bytes_read = bytes.len();
+            let truncated = offset.saturating_add(bytes_read as u64) < total_bytes;
+            let content = decode_utf8_bounded(&bytes);
+            Ok::<_, anyhow::Error>(M3FsReadOutput {
+                path: display_path.clone(),
+                offset,
+                bytes_read,
+                total_bytes,
+                truncated,
+                content,
+            })
+        }
+        .await;
+
+        let _ = self.clunk(fid).await;
+        read_res
     }
 }
 
@@ -997,6 +1223,45 @@ impl M3ToolPolicyHook {
 
 impl ToolPolicyHook for M3ToolPolicyHook {
     fn evaluate(&self, tool_name: &str, args: &Value, capability: ToolCapability) -> HookDecision {
+        if matches!(tool_name, "m3_fs_list" | "m3_fs_read") {
+            if capability != ToolCapability::Read {
+                return HookDecision::Deny(format!(
+                    "红线拦截：{tool_name} 仅允许只读访问 `/mnt/m3`。"
+                ));
+            }
+            let Some(obj) = args.as_object() else {
+                return HookDecision::Deny(format!("红线拦截：{tool_name} 参数必须是 JSON 对象。"));
+            };
+            for key in obj.keys() {
+                let allowed = if tool_name == "m3_fs_list" {
+                    key == "path"
+                } else {
+                    matches!(key.as_str(), "path" | "offset" | "max_bytes")
+                };
+                if !allowed {
+                    return HookDecision::Deny(format!(
+                        "红线拦截：{tool_name} 不允许参数 `{key}`。"
+                    ));
+                }
+            }
+            let raw_path = match obj.get("path") {
+                Some(Value::String(s)) => s.as_str(),
+                Some(_) => {
+                    return HookDecision::Deny(format!(
+                        "红线拦截：{tool_name} 的 path 参数必须是字符串。"
+                    ));
+                }
+                None if tool_name == "m3_fs_list" => "/mnt/m3",
+                None => {
+                    return HookDecision::Deny("红线拦截：m3_fs_read 缺少 path 参数。".into());
+                }
+            };
+            if let Err(err) = normalize_mnt_m3_parts(raw_path) {
+                return HookDecision::Deny(format!("{err}"));
+            }
+            return HookDecision::Allow;
+        }
+
         if tool_name == "m3_web_search" && capability == ToolCapability::Network {
             let Some(obj) = args.as_object() else {
                 return HookDecision::Deny(
@@ -1074,6 +1339,143 @@ impl ToolPolicyHook for M3ToolPolicyHook {
                 "红线拦截：嵌入式 Alan 禁止执行网络或未知高危工具 {tool_name}。"
             )),
         }
+    }
+}
+
+struct M3FsListTool {
+    fs: Arc<M3WorkbenchFs>,
+}
+
+impl Tool for M3FsListTool {
+    fn name(&self) -> &str {
+        "m3_fs_list"
+    }
+
+    fn description(&self) -> &str {
+        "只读列出 `/mnt/m3` 虚拟挂载树目录（如 `/mnt/m3`、`/mnt/m3/industries`、`/mnt/m3/memos`、`/mnt/m3/computed`、`/mnt/m3/dossiers`、`/mnt/m3/briefings`、`/mnt/m3/events`）。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "要列出的 `/mnt/m3` 目录路径（默认 `/mnt/m3`）"
+                }
+            },
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, _ctx: &ToolContext) -> ToolResult {
+        let fs = Arc::clone(&self.fs);
+        Box::pin(async move {
+            let raw_path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("/mnt/m3")
+                .to_owned();
+            let (path, entries) = fs.list_mnt_entries(&raw_path).await?;
+            Ok(json!({
+                "ok": true,
+                "read_only": true,
+                "path": path,
+                "count": entries.len(),
+                "entries": entries,
+            }))
+        })
+    }
+}
+
+struct M3FsReadTool {
+    fs: Arc<M3WorkbenchFs>,
+}
+
+impl Tool for M3FsReadTool {
+    fn name(&self) -> &str {
+        "m3_fs_read"
+    }
+
+    fn description(&self) -> &str {
+        "有界只读 `/mnt/m3` 挂载树文件（如 `/mnt/m3/watchlist.json`、`/mnt/m3/industries/<slug>.json`、`/mnt/m3/memos/<TICKER>.md`、`/mnt/m3/briefings/latest.json`、`/mnt/m3/events/recent.json`、`/mnt/m3/computed/<TICKER>.json`、`/mnt/m3/dossiers/<TICKER>.json`），单次上限 64 KiB。"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "只读文件路径，例如 `/mnt/m3/watchlist.json` 或 `/mnt/m3/briefings/latest.json`"
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "起始字节偏移量（默认 0）"
+                },
+                "max_bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65536,
+                    "default": 65536,
+                    "description": "最大读取字节数（上限 65536）"
+                }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        })
+    }
+
+    fn capability(&self, _arguments: &Value) -> ToolCapability {
+        ToolCapability::Read
+    }
+
+    fn presentation_is_read_only(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, arguments: Value, _ctx: &ToolContext) -> ToolResult {
+        let fs = Arc::clone(&self.fs);
+        Box::pin(async move {
+            let raw_path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .context("m3_fs_read 缺少 path 参数")?
+                .to_owned();
+            let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
+            let max_bytes = arguments
+                .get("max_bytes")
+                .and_then(Value::as_u64)
+                .map_or(M3_FS_MAX_READ_BYTES, |v| {
+                    usize::try_from(v).unwrap_or(M3_FS_MAX_READ_BYTES)
+                })
+                .clamp(1, M3_FS_MAX_READ_BYTES);
+            let output = fs
+                .read_mnt_file_bounded(&raw_path, offset, max_bytes)
+                .await?;
+            Ok(json!({
+                "ok": true,
+                "read_only": true,
+                "path": output.path,
+                "offset": output.offset,
+                "bytes_read": output.bytes_read,
+                "total_bytes": output.total_bytes,
+                "truncated": output.truncated,
+                "content": output.content,
+            }))
+        })
     }
 }
 
@@ -2961,12 +3363,12 @@ fn build_company_context_preamble(paths: &WorkspacePaths, ticker: &str, lang: Ui
 
     lines.push(match lang {
         UiLang::Zh => format!(
-            "请优先调用 `m3_report`、`m3_dossier`、`m3_events_for_ticker` 或读取 `/mnt/m3/computed/{safe}.json`、`/mnt/m3/dossiers/{safe}.json`{}{}; 引用依据时请标注 `[report:{upper}]`、`[xbrl:{upper}]`、`[dossier:{upper}]`，严禁修改 `human_judgment` 或直接给出买卖指令。",
+            "请优先调用 `m3_report`、`m3_dossier`、`m3_events_for_ticker`，或使用 `m3_fs_list` / `m3_fs_read` 读取只读 `/mnt/m3/computed/{safe}.json`、`/mnt/m3/dossiers/{safe}.json`{}{}; 引用依据时请标注 `[report:{upper}]`、`[xbrl:{upper}]`、`[dossier:{upper}]`，严禁修改 `human_judgment` 或直接给出买卖指令。",
             if has_memo { format!("、`/mnt/m3/memos/{safe}.md`") } else { String::new() },
             if has_feynman { format!("、`/mnt/m3/memos/{safe}-feynman.md`") } else { String::new() },
         ),
         UiLang::En => format!(
-            "Verify facts via `m3_report`, `m3_dossier`, `m3_events_for_ticker`, or read-only `/mnt/m3/computed/{safe}.json` and `/mnt/m3/dossiers/{safe}.json`{}{}; cite `[report:{upper}]`, `[xbrl:{upper}]`, `[dossier:{upper}]`. Never modify `human_judgment` or issue buy/sell commands.",
+            "Verify facts via `m3_report`, `m3_dossier`, `m3_events_for_ticker`, or use `m3_fs_list` / `m3_fs_read` on read-only `/mnt/m3/computed/{safe}.json` and `/mnt/m3/dossiers/{safe}.json`{}{}; cite `[report:{upper}]`, `[xbrl:{upper}]`, `[dossier:{upper}]`. Never modify `human_judgment` or issue buy/sell commands.",
             if has_memo { format!(", `/mnt/m3/memos/{safe}.md`") } else { String::new() },
             if has_feynman { format!(", `/mnt/m3/memos/{safe}-feynman.md`") } else { String::new() },
         ),
@@ -2996,7 +3398,7 @@ fn build_industry_context_preamble(paths: &WorkspacePaths, slug: &str, lang: UiL
         return match lang {
             UiLang::Zh => format!(
                 "[当前研究范围：行业 {} (slug: `{}`) | 状态 {} | 代表公司池：{tickers} | 人类估值锚：{anchor}]\n\
-                 请使用 `m3_industry_matrix`、`m3_events_for_ticker`、`m3_web_search` 及只读 `/mnt/m3/industries/{}.json` 核对事实；严格区分 `[SEC 10-K: TICKER]` 与 `[Web: 标题 (URL)]`，禁止修改人类判断。\n\
+                 请使用 `m3_industry_matrix`、`m3_events_for_ticker`、`m3_web_search` 及 `m3_fs_list` / `m3_fs_read` 读取只读 `/mnt/m3/industries/{}.json` 核对事实；严格区分 `[SEC 10-K: TICKER]` 与 `[Web: 标题 (URL)]`，禁止修改人类判断。\n\
                  行业活手册摘要：\n{excerpt}",
                 profile.title,
                 profile.slug,
@@ -3005,7 +3407,7 @@ fn build_industry_context_preamble(paths: &WorkspacePaths, slug: &str, lang: UiL
             ),
             UiLang::En => format!(
                 "[Active Scope: Industry {} (slug: `{}`) | Status {} | Bound Tickers: {tickers} | Human Valuation Anchor: {anchor}]\n\
-                 Verify facts via `m3_industry_matrix`, `m3_events_for_ticker`, `m3_web_search`, and read-only `/mnt/m3/industries/{}.json`; distinguish `[SEC 10-K: TICKER]` from `[Web: Title (URL)]`. Never alter human judgment.\n\
+                 Verify facts via `m3_industry_matrix`, `m3_events_for_ticker`, `m3_web_search`, and `m3_fs_list` / `m3_fs_read` on read-only `/mnt/m3/industries/{}.json`; distinguish `[SEC 10-K: TICKER]` from `[Web: Title (URL)]`. Never alter human judgment.\n\
                  Primer Excerpt:\n{excerpt}",
                 profile.title,
                 profile.slug,
@@ -3018,11 +3420,11 @@ fn build_industry_context_preamble(paths: &WorkspacePaths, slug: &str, lang: UiL
     match lang {
         UiLang::Zh => format!(
             "[当前研究范围：行业 `{trimmed}`]\n\
-             未找到该行业档案，可先读取只读 `/mnt/m3/industries/index.json` 或调用 `m3_universe_query` 核对。"
+             未找到该行业档案，可先调用 `m3_fs_list` / `m3_fs_read` 读取只读 `/mnt/m3/industries/index.json` 或调用 `m3_universe_query` 核对。"
         ),
         UiLang::En => format!(
             "[Active Scope: Industry `{trimmed}`]\n\
-             Industry profile not found on disk; inspect read-only `/mnt/m3/industries/index.json` or call `m3_universe_query`."
+             Industry profile not found on disk; use `m3_fs_list` / `m3_fs_read` on `/mnt/m3/industries/index.json` or call `m3_universe_query`."
         ),
     }
 }
@@ -3090,7 +3492,7 @@ fn build_briefing_context_preamble(
                     "[当前研究范围：能力圈简报 {} ({}) | 击球雷达 {} 项: {radar_label} | 财报异动 {} 项 | L1.5 哨兵命中 {} 项 | 近 40 条信号 {recent_signals_count} / 研判 {recent_triages_count}]\n\
                      简报标题：{}\n\
                      摘要：{exec_summary}\n\
-                     请结合只读 `/mnt/m3/briefings/latest.json`、`/mnt/m3/events/recent.json` 与 `m3_report` / `m3_events_for_ticker` 回答，并用 `[report:TICKER]` / `[xbrl:TICKER]` 标注相关标的。",
+                     请使用 `m3_fs_read` 读取只读 `/mnt/m3/briefings/latest.json`、`/mnt/m3/events/recent.json`，并结合 `m3_report` / `m3_events_for_ticker` 回答，并用 `[report:TICKER]` / `[xbrl:TICKER]` 标注相关标的。",
                     b.period_key,
                     b.period.as_str(),
                     b.strike_radar.len(),
@@ -3102,7 +3504,7 @@ fn build_briefing_context_preamble(
                     "[Active Scope: Circle Briefing {} ({}) | Strike Radar {}: {radar_label} | Filing Deltas {} | Watchdog Hits {} | Recent signals {recent_signals_count} / triages {recent_triages_count}]\n\
                      Headline: {}\n\
                      Summary: {exec_summary}\n\
-                     Use read-only `/mnt/m3/briefings/latest.json`, `/mnt/m3/events/recent.json`, `m3_report`, and `m3_events_for_ticker`, citing `[report:TICKER]` / `[xbrl:TICKER]`.",
+                     Use `m3_fs_read` on `/mnt/m3/briefings/latest.json` and `/mnt/m3/events/recent.json`, plus `m3_report` and `m3_events_for_ticker`, citing `[report:TICKER]` / `[xbrl:TICKER]`.",
                     b.period_key,
                     b.period.as_str(),
                     b.strike_radar.len(),
@@ -3115,11 +3517,11 @@ fn build_briefing_context_preamble(
         None => match lang {
             UiLang::Zh => format!(
                 "[当前研究范围：能力圈简报 `{target_id}`（暂未持久化简报）| 近 40 条信号 {recent_signals_count} / 研判 {recent_triages_count}]\n\
-                 请读取只读 `/mnt/m3/briefings/latest.json`、`/mnt/m3/events/recent.json` 及 `m3_status` 核对最新观察池与事件动态。"
+                 请调用 `m3_fs_read` 读取只读 `/mnt/m3/briefings/latest.json`、`/mnt/m3/events/recent.json` 及 `m3_status` 核对最新观察池与事件动态。"
             ),
             UiLang::En => format!(
                 "[Active Scope: Circle Briefing `{target_id}` (no persisted briefing yet) | Recent signals {recent_signals_count} / triages {recent_triages_count}]\n\
-                 Inspect read-only `/mnt/m3/briefings/latest.json`, `/mnt/m3/events/recent.json`, and `m3_status` for current circle and event state."
+                 Use `m3_fs_read` on `/mnt/m3/briefings/latest.json` and `/mnt/m3/events/recent.json`, plus `m3_status` for current circle and event state."
             ),
         },
     }
@@ -3176,18 +3578,18 @@ fn build_portfolio_context_preamble(paths: &WorkspacePaths, lang: UiLang) -> Str
     match lang {
         UiLang::Zh => format!(
             "[当前研究范围：全局能力圈组合 | 观察池 IN={core_n}, WATCH={watch_n}, OUT={out_n}, TOO_HARD={hard_n} | 击球雷达：{strike_summary} | 模拟持仓 {positions_n} 笔 · 现金 {cash_label} | 行业研究 {} 个]\n\
-             请调用 `m3_status`、`m3_universe_query`、`m3_industry_matrix` 或读取只读 `/mnt/m3/watchlist.json`、`/mnt/m3/journal.json`、`/mnt/m3/industries/index.json` 核对全盘数据；引用标的时标注 `[report:TICKER]`、`[xbrl:TICKER]`、`[dossier:TICKER]`，严禁篡改 `watchlist.json`、`journal.json` 或 `human_judgment`。",
+             请调用 `m3_status`、`m3_universe_query`、`m3_industry_matrix` 或使用 `m3_fs_list` / `m3_fs_read` 读取只读 `/mnt/m3/watchlist.json`、`/mnt/m3/journal.json`、`/mnt/m3/industries/index.json` 核对全盘数据；引用标的时标注 `[report:TICKER]`、`[xbrl:TICKER]`、`[dossier:TICKER]`，严禁篡改 `watchlist.json`、`journal.json` 或 `human_judgment`。",
             industries.len()
         ),
         UiLang::En => format!(
             "[Active Scope: Circle Portfolio | Watchlist IN={core_n}, WATCH={watch_n}, OUT={out_n}, TOO_HARD={hard_n} | Strike Radar: {strike_summary} | Paper Positions: {positions_n} · Cash {cash_label} | Industry Studies: {}]\n\
-             Call `m3_status`, `m3_universe_query`, `m3_industry_matrix`, or read `/mnt/m3/watchlist.json`, `/mnt/m3/journal.json`, `/mnt/m3/industries/index.json`; cite `[report:TICKER]`, `[xbrl:TICKER]`, `[dossier:TICKER]`. Never mutate `watchlist.json`, `journal.json`, or `human_judgment`.",
+             Call `m3_status`, `m3_universe_query`, `m3_industry_matrix`, or use `m3_fs_list` / `m3_fs_read` on `/mnt/m3/watchlist.json`, `/mnt/m3/journal.json`, `/mnt/m3/industries/index.json`; cite `[report:TICKER]`, `[xbrl:TICKER]`, `[dossier:TICKER]`. Never mutate `watchlist.json`, `journal.json`, or `human_judgment`.",
             industries.len()
         ),
     }
 }
 
-/// Builds and boots Project-M3's isolated `EmbeddedAlan` V2 instance.
+/// Builds and boots Project-M3's isolated Alan V2 instance.
 pub async fn boot_m3_embedded(
     paths: WorkspacePaths,
     fs: Arc<M3WorkbenchFs>,
@@ -3205,6 +3607,12 @@ pub async fn boot_m3_embedded(
     });
     tools.register(M3UpdateDraftTool {
         paths: paths.clone(),
+        fs: Arc::clone(&fs),
+    });
+    tools.register(M3FsListTool {
+        fs: Arc::clone(&fs),
+    });
+    tools.register(M3FsReadTool {
         fs: Arc::clone(&fs),
     });
     tools.register(M3UniverseQueryTool {
@@ -3235,6 +3643,43 @@ pub async fn boot_m3_embedded(
         .with_builtin_skills(false)
         .with_system_prompt_mode(SystemPromptMode::Replace {
             prompt: M3_INTERROGATOR_SYSTEM_PROMPT.to_string(),
+        });
+
+    EmbeddedAlan::boot(config).await
+}
+
+/// Builds and boots a lightweight single-pass Alan instance for Feynman defense critiques
+/// without external web/universe tool loops.
+pub async fn boot_m3_feynman_embedded(llm: LlmSource, lang: UiLang) -> Result<EmbeddedAlan> {
+    let prompt = match lang {
+        UiLang::Zh => {
+            "你是 Project-M3 费曼答辩审讯官 Alan。用户提示词中已包含全部确定性财务、档案或行业上下文；\
+             严禁调用任何外部工具或等待补充查询，请在单轮内直接完成审讯点评。\
+             严禁修改 `human_judgment` 或 `memos/`，严禁编造财务数字或输出买卖指令。\
+             直接按要求的 ```json 代码块格式输出点评、盲区与可量化事前证伪指标。"
+        }
+        UiLang::En => {
+            "You are Alan, Project-M3's Feynman defense coach. All required financial, dossier, and industry context is already provided in the prompt.\n\
+             Do not call tools or wait for extra lookups — produce your critique in one direct pass.\n\
+             Never mutate `human_judgment` or `memos/`, never fabricate numbers, and never issue buy/sell commands.\n\
+             Reply directly starting with the requested ```json block."
+        }
+    };
+
+    let mut process = AgentProcessConfig {
+        trust_posture: TrustPosture::ConfinedTrusted,
+        ..Default::default()
+    };
+    process.agent_config.core_config.max_tool_loops = Some(1);
+    process.agent_config.runtime_config.max_tool_loops = 1;
+
+    let config = EmbeddedConfig::ephemeral(llm)
+        .with_process_config(process)
+        .with_tools(ToolRegistry::new())
+        .with_tool_policy_hook(Arc::new(M3ToolPolicyHook))
+        .with_builtin_skills(false)
+        .with_system_prompt_mode(SystemPromptMode::Replace {
+            prompt: prompt.to_owned(),
         });
 
     EmbeddedAlan::boot(config).await
@@ -3548,10 +3993,16 @@ pub fn resolve_inline_evidence_cards(
             let val = rep.ttm_valuation.as_ref().or(rep.fy_valuation.as_ref());
             let fcf_yield =
                 val.and_then(|v| v.strict_fcf_yield_mcap_pct.or(v.strict_fcf_yield_ev_pct));
+            let name = wl_entry
+                .map(|c| c.name.trim())
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned)
+                .unwrap_or(rep.name);
+            let bucket = wl_entry.map(|c| c.bucket).or(Some(rep.bucket));
             cards.push(InlineEvidenceCard {
                 ticker: rep.ticker,
-                name: rep.name,
-                bucket: Some(rep.bucket),
+                name,
+                bucket,
                 currency: Some(rep.currency),
                 latest_price: rep.price.as_ref().map(|p| p.price),
                 strike_price: val.and_then(|v| v.strike_price),
@@ -3588,7 +4039,9 @@ pub fn resolve_inline_evidence_cards(
             cards.push(InlineEvidenceCard {
                 ticker: row.ticker.clone(),
                 name: wl_entry
-                    .map(|c| c.name.clone())
+                    .map(|c| c.name.trim())
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_owned)
                     .unwrap_or_else(|| row.name.clone()),
                 bucket: wl_entry.map(|c| c.bucket).or(row.bucket_opt),
                 currency: wl_entry
@@ -3644,6 +4097,410 @@ pub fn resolve_inline_evidence_cards(
     }
 
     cards
+}
+
+/// Complete reply returned by [`ask_scoped_blocking`] for CLI/MCP consumers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedAlanReply {
+    pub scope: AlanScope,
+    pub scope_key: String,
+    pub prose: String,
+    pub turing_tape: Vec<TuringTapeEntry>,
+    pub evidence_tokens: Vec<AcmeEvidenceToken>,
+    pub evidence_cards: Vec<InlineEvidenceCard>,
+    pub session_path: PathBuf,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub elapsed_ms: u64,
+}
+
+/// Executes one synchronous scoped Alan interrogation turn using the configured
+/// shared Alan connection profile (`LlmSource::SharedProductCredentials`),
+/// loading and persisting the scope's [`alan_session`] file.
+pub fn ask_scoped_blocking(
+    paths: &WorkspacePaths,
+    scope: &AlanScope,
+    lang: UiLang,
+    question: &str,
+    timeout: Duration,
+) -> Result<ScopedAlanReply> {
+    match alan_connection::list_alan_connection_status() {
+        Ok(status) if status.active_profile().is_none() => {
+            anyhow::bail!(
+                "{}",
+                friendly_m3_credentials_error("no connection service profile configured")
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            anyhow::bail!("{}", friendly_m3_credentials_error(&format!("{err:#}")));
+        }
+    }
+    ask_scoped_blocking_with_llm(
+        paths,
+        scope,
+        lang,
+        question,
+        timeout,
+        LlmSource::SharedProductCredentials,
+    )
+}
+
+/// Executes one synchronous scoped Alan interrogation turn with an explicit [`LlmSource`].
+pub fn ask_scoped_blocking_with_llm(
+    paths: &WorkspacePaths,
+    scope: &AlanScope,
+    lang: UiLang,
+    question: &str,
+    timeout: Duration,
+    llm: LlmSource,
+) -> Result<ScopedAlanReply> {
+    let trimmed_q = question.trim();
+    anyhow::ensure!(
+        !trimmed_q.is_empty(),
+        "{}",
+        lang.t("提问内容不能为空。", "Question cannot be empty.")
+    );
+
+    let started = Instant::now();
+    let norm_scope = scope.normalized();
+    let scope_key = norm_scope.scope_key();
+    let default_ticker = match &norm_scope {
+        AlanScope::Company(t) => t.as_str(),
+        _ => "",
+    };
+    let effective_timeout = if timeout.is_zero() {
+        Duration::from_secs(120)
+    } else {
+        timeout
+    };
+
+    let mut session = alan_session::load_alan_session(paths, &norm_scope);
+    let session_path = alan_session::alan_session_path(paths, &norm_scope);
+    let full_prompt =
+        compose_scoped_prompt_with_history(paths, &norm_scope, lang, &session.messages, trimmed_q);
+
+    let handle = M3InterrogatorHandle::start_with_llm(paths.clone(), llm);
+    handle.submit_prompt(trimmed_q, full_prompt);
+
+    let mut active_submission_id: Option<String> = None;
+    let mut raw_prose = String::new();
+    let mut turing_tape: Vec<TuringTapeEntry> = Vec::new();
+    let deadline = started + effective_timeout;
+
+    let loop_res: Result<()> = 'wait: loop {
+        for ev in handle.drain_events() {
+            match ev {
+                InterrogatorEvent::Ready | InterrogatorEvent::ResetDone => {}
+                InterrogatorEvent::UserSubmitted {
+                    submission_id,
+                    prompt,
+                } => {
+                    if active_submission_id.is_none() {
+                        active_submission_id = Some(submission_id);
+                        let seq = turing_tape.len() + 1;
+                        turing_tape.push(TuringTapeEntry {
+                            seq,
+                            call_id: None,
+                            kind: TuringTapeKind::Input,
+                            summary: truncate_chars(prompt.trim(), 120),
+                            detail: None,
+                            status: "submitted".to_owned(),
+                        });
+                    }
+                }
+                InterrogatorEvent::ToolStarted {
+                    call_id,
+                    name,
+                    title,
+                } => {
+                    if active_submission_id.is_some() {
+                        let seq = turing_tape.len() + 1;
+                        let summary = if title.is_empty() || title == name {
+                            name
+                        } else {
+                            format!("{name} · {title}")
+                        };
+                        turing_tape.push(TuringTapeEntry {
+                            seq,
+                            call_id: Some(call_id),
+                            kind: TuringTapeKind::Tool,
+                            summary,
+                            detail: None,
+                            status: "running".to_owned(),
+                        });
+                    }
+                }
+                InterrogatorEvent::ToolProgress { call_id, preview } => {
+                    if active_submission_id.is_some()
+                        && let Some(row) = turing_tape
+                            .iter_mut()
+                            .rev()
+                            .find(|r| r.call_id.as_deref() == Some(call_id.as_str()))
+                    {
+                        row.detail = Some(preview);
+                    }
+                }
+                InterrogatorEvent::ToolFinished {
+                    call_id,
+                    name,
+                    status,
+                    preview,
+                } => {
+                    if active_submission_id.is_some() {
+                        let blocked_by_redline = preview.contains("红线拦截")
+                            || preview.to_ascii_lowercase().contains("redline");
+                        let final_status = if blocked_by_redline {
+                            "denied".to_owned()
+                        } else {
+                            status
+                        };
+                        if let Some(row) = turing_tape
+                            .iter_mut()
+                            .rev()
+                            .find(|r| r.call_id.as_deref() == Some(call_id.as_str()))
+                        {
+                            row.status = final_status;
+                            if blocked_by_redline {
+                                row.kind = TuringTapeKind::Policy;
+                            }
+                            if !preview.is_empty() {
+                                row.detail = Some(preview);
+                            }
+                        } else {
+                            let seq = turing_tape.len() + 1;
+                            turing_tape.push(TuringTapeEntry {
+                                seq,
+                                call_id: Some(call_id),
+                                kind: if blocked_by_redline {
+                                    TuringTapeKind::Policy
+                                } else {
+                                    TuringTapeKind::Tool
+                                },
+                                summary: name,
+                                detail: (!preview.is_empty()).then_some(preview),
+                                status: final_status,
+                            });
+                        }
+                    }
+                }
+                InterrogatorEvent::TextDelta {
+                    submission_id,
+                    chunk,
+                    is_final: _,
+                } => {
+                    let matches_active = match (&active_submission_id, submission_id.as_deref()) {
+                        (Some(active), Some(sid)) => active == sid,
+                        (Some(_), None) => true,
+                        (None, _) => false,
+                    };
+                    if matches_active && !chunk.is_empty() {
+                        raw_prose.push_str(&chunk);
+                    }
+                }
+                InterrogatorEvent::TurnDone {
+                    submission_id,
+                    completed,
+                    error,
+                } => {
+                    if active_submission_id.as_deref() == Some(submission_id.as_str()) {
+                        if let Some(err) = error {
+                            let seq = turing_tape.len() + 1;
+                            turing_tape.push(TuringTapeEntry {
+                                seq,
+                                call_id: None,
+                                kind: TuringTapeKind::Error,
+                                summary: lang
+                                    .t("审讯未能完成", "Interrogation did not complete")
+                                    .to_owned(),
+                                detail: Some(err.clone()),
+                                status: "error".to_owned(),
+                            });
+                            break 'wait Err(anyhow::anyhow!("{err}"));
+                        }
+                        if !completed {
+                            break 'wait Err(anyhow::anyhow!(
+                                "{}",
+                                lang.t(
+                                    "Alan 审讯未正常完成。",
+                                    "Alan interrogation did not complete."
+                                )
+                            ));
+                        }
+                        break 'wait Ok(());
+                    }
+                }
+                InterrogatorEvent::Error { message } => {
+                    let seq = turing_tape.len() + 1;
+                    turing_tape.push(TuringTapeEntry {
+                        seq,
+                        call_id: None,
+                        kind: TuringTapeKind::Error,
+                        summary: lang.t("Alan 状态提示", "Alan status notice").to_owned(),
+                        detail: Some(message.clone()),
+                        status: "error".to_owned(),
+                    });
+                    break 'wait Err(anyhow::anyhow!("{message}"));
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            handle.interrupt();
+            break 'wait Err(anyhow::anyhow!(
+                "{} ({}s)",
+                lang.t("Alan 审讯超时", "Alan interrogation timed out"),
+                effective_timeout.as_secs(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    };
+
+    if let Err(err) = loop_res {
+        handle.shutdown();
+        return Err(err);
+    }
+
+    let (input_tokens, output_tokens) = handle.session_usage();
+    handle.shutdown();
+
+    let reports = store::load_or_compute_reports(paths).unwrap_or_default();
+    let mut dossiers: HashMap<String, Option<Dossier>> = HashMap::new();
+    for rep in &reports {
+        let up = rep.ticker.to_ascii_uppercase();
+        dossiers
+            .entry(up.clone())
+            .or_insert_with(|| store::load_dossier(paths, &up).ok().flatten());
+    }
+    if !default_ticker.is_empty() {
+        let up = default_ticker.to_ascii_uppercase();
+        dossiers
+            .entry(up.clone())
+            .or_insert_with(|| store::load_dossier(paths, &up).ok().flatten());
+    }
+    for cited in extract_bracket_tickers(&raw_prose) {
+        dossiers
+            .entry(cited.clone())
+            .or_insert_with(|| store::load_dossier(paths, &cited).ok().flatten());
+    }
+
+    let (prose, evidence_tokens) =
+        parse_acme_evidence_tokens(raw_prose.trim(), default_ticker, &reports, &dossiers);
+    let evidence_cards = resolve_inline_evidence_cards(paths, &evidence_tokens);
+
+    let seq = turing_tape.len() + 1;
+    turing_tape.push(TuringTapeEntry {
+        seq,
+        call_id: None,
+        kind: TuringTapeKind::Out,
+        summary: match lang {
+            UiLang::Zh => format!("回答完成 · 引用 Acme 证据 {} 项", evidence_tokens.len()),
+            UiLang::En => format!(
+                "Answer complete · {} Acme evidence citations",
+                evidence_tokens.len()
+            ),
+        },
+        detail: None,
+        status: "done".to_owned(),
+    });
+
+    let now_ms = store::now_ms();
+    let msg_idx = session.messages.len();
+    session.messages.push(PersistedAlanMessage {
+        id: format!("u-{now_ms}-{msg_idx}"),
+        role: AlanMessageRole::User,
+        text: trimmed_q.to_owned(),
+        raw_text: trimmed_q.to_owned(),
+        created_at_ms: now_ms,
+    });
+    session.messages.push(PersistedAlanMessage {
+        id: format!("a-{now_ms}-{}", msg_idx + 1),
+        role: AlanMessageRole::Assistant,
+        text: prose.clone(),
+        raw_text: raw_prose.trim().to_owned(),
+        created_at_ms: now_ms.saturating_add(1),
+    });
+    session.updated_at_ms = now_ms.saturating_add(1);
+    alan_session::save_alan_session(paths, &session)?;
+
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    Ok(ScopedAlanReply {
+        scope: norm_scope,
+        scope_key,
+        prose,
+        turing_tape,
+        evidence_tokens,
+        evidence_cards,
+        session_path,
+        input_tokens,
+        output_tokens,
+        elapsed_ms,
+    })
+}
+
+fn compose_scoped_prompt_with_history(
+    paths: &WorkspacePaths,
+    scope: &AlanScope,
+    lang: UiLang,
+    prior_messages: &[PersistedAlanMessage],
+    question: &str,
+) -> String {
+    let base = scope.compose_interrogation_turn(paths, lang, question);
+    let recent: Vec<&PersistedAlanMessage> = prior_messages
+        .iter()
+        .filter(|m| matches!(m.role, AlanMessageRole::User | AlanMessageRole::Assistant))
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if recent.is_empty() {
+        return base;
+    }
+
+    let preamble = scope.context_preamble(paths, lang);
+    let mut history_lines = Vec::with_capacity(recent.len() + 1);
+    history_lines.push(
+        lang.t(
+            "[历史会话上下文（最近轮次摘要）]",
+            "[Prior Session Context (recent turns)]",
+        )
+        .to_owned(),
+    );
+    for msg in recent {
+        let role_label = match msg.role {
+            AlanMessageRole::User => lang.t("人类", "Human"),
+            AlanMessageRole::Assistant => "Alan",
+            AlanMessageRole::SystemNote => "System",
+        };
+        history_lines.push(format!(
+            "{role_label}: {}",
+            truncate_chars(msg.text.trim(), 500)
+        ));
+    }
+
+    format!(
+        "{preamble}\n\n{}\n\n{}",
+        history_lines.join("\n"),
+        question.trim()
+    )
+}
+
+fn extract_bracket_tickers(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = raw;
+    while let Some(start) = rest.find('[') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find(']') else {
+            break;
+        };
+        if let Some((_, sym)) = parse_bracket_token(after[..end].trim(), "") {
+            out.push(sym);
+        }
+        rest = &after[end + 1..];
+    }
+    out
 }
 
 #[cfg(test)]
@@ -5114,6 +5971,289 @@ mod tests {
         assert_eq!(msft.bucket, None);
         assert_eq!(msft.source_kind, AcmeEvidenceKind::Dossier);
         assert!(msft.has_dossier);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_inline_evidence_cards_prefers_live_watchlist_bucket_and_name_over_stale_report() {
+        let (dir, paths) = temp_m3_workspace("stale_bucket");
+
+        // Save a cached computed report with stale Watch bucket & old name.
+        let mut stale_rep = store::recompute_ticker(&paths, "AAPL").unwrap();
+        stale_rep.bucket = Bucket::Watch;
+        stale_rep.name = "Apple Legacy Name".to_owned();
+        store::write_json_atomic(&paths.computed_report_path("AAPL"), &stale_rep).unwrap();
+
+        // Live watchlist has Bucket::Core and "Apple Inc.".
+        let cards = resolve_inline_evidence_cards(
+            &paths,
+            &[AcmeEvidenceToken {
+                id: "report:AAPL".to_owned(),
+                kind: AcmeEvidenceKind::Report,
+                ticker: "AAPL".to_owned(),
+                label: "[report:AAPL]".to_owned(),
+                summary: "AAPL".to_owned(),
+            }],
+        );
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].bucket, Some(Bucket::Core));
+        assert_eq!(cards[0].name, "Apple Inc.");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedded_m3_executes_m3_fs_list_and_m3_fs_read_with_policy_guardrails_and_cap() {
+        let handle = std::thread::Builder::new()
+            .name("m3-test-fs-tools".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let (dir, paths) = temp_m3_workspace("fs_tools");
+                    let memos_dir = paths.workbench_dir.join("memos");
+                    std::fs::create_dir_all(&memos_dir).unwrap();
+                    // Create a memo larger than 64 KiB to test bounded read truncation.
+                    let big_memo = format!("# AAPL Big Memo\n{}", "A".repeat(70 * 1024));
+                    std::fs::write(memos_dir.join("AAPL.md"), &big_memo).unwrap();
+
+                    let fs = Arc::new(M3WorkbenchFs::new(paths.clone()));
+
+                    let hook = M3ToolPolicyHook;
+                    assert!(matches!(
+                        hook.evaluate(
+                            "m3_fs_list",
+                            &json!({"path": "/mnt/m3"}),
+                            ToolCapability::Read
+                        ),
+                        HookDecision::Allow
+                    ));
+                    assert!(matches!(
+                        hook.evaluate(
+                            "m3_fs_read",
+                            &json!({"path": "/mnt/m3/watchlist.json"}),
+                            ToolCapability::Read
+                        ),
+                        HookDecision::Allow
+                    ));
+                    assert!(matches!(
+                        hook.evaluate(
+                            "m3_fs_read",
+                            &json!({"path": "/mnt/m3/memos/AAPL.md"}),
+                            ToolCapability::Read
+                        ),
+                        HookDecision::Allow
+                    ));
+                    assert!(matches!(
+                        hook.evaluate(
+                            "m3_fs_read",
+                            &json!({"path": "../workbench/watchlist.json"}),
+                            ToolCapability::Read
+                        ),
+                        HookDecision::Deny(_)
+                    ));
+                    assert!(matches!(
+                        hook.evaluate(
+                            "m3_fs_read",
+                            &json!({"path": "workbench/budget.json"}),
+                            ToolCapability::Read
+                        ),
+                        HookDecision::Deny(_)
+                    ));
+
+                    let provider = MockLlmProvider::new().with_responses(vec![
+                        tool_call_response("call_list", "m3_fs_list", json!({"path": "/mnt/m3"})),
+                        tool_call_response(
+                            "call_wl",
+                            "m3_fs_read",
+                            json!({"path": "/mnt/m3/watchlist.json"}),
+                        ),
+                        tool_call_response(
+                            "call_memo",
+                            "m3_fs_read",
+                            json!({"path": "/mnt/m3/memos/AAPL.md"}),
+                        ),
+                        tool_call_response(
+                            "call_escape",
+                            "m3_fs_read",
+                            json!({"path": "../secret.txt"}),
+                        ),
+                        text_response(
+                            "已读取只读挂载文件并确认 AAPL 观察池与备忘录 [report:AAPL]。",
+                        ),
+                    ]);
+
+                    let app = boot_m3_embedded(
+                        paths.clone(),
+                        Arc::clone(&fs),
+                        LlmSource::Client(LlmClient::new(provider.clone())),
+                    )
+                    .await
+                    .unwrap();
+
+                    let client = app.root_agent();
+                    let mut stream = client.event_stream().await.unwrap();
+                    let sub_id = client.submit_text("列出并读取 /mnt/m3 文件").await.unwrap();
+                    let mut finished_tools = Vec::new();
+                    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+                    loop {
+                        let ev = tokio::time::timeout_at(deadline, stream.next_event())
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        match ev {
+                            EmbedEvent::ToolFinished {
+                                name,
+                                status,
+                                preview,
+                                ..
+                            } => {
+                                finished_tools.push((name, status, preview.unwrap_or_default()));
+                            }
+                            EmbedEvent::TurnFinished {
+                                submission_id,
+                                status,
+                                ..
+                            } if submission_id == sub_id => {
+                                assert_eq!(status, UiInputStatus::Completed);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    assert!(
+                        finished_tools
+                            .iter()
+                            .any(|(n, st, _)| n == "m3_fs_list" && st == "completed")
+                    );
+                    assert_eq!(
+                        finished_tools
+                            .iter()
+                            .filter(|(n, st, _)| n == "m3_fs_read" && st == "completed")
+                            .count(),
+                        2
+                    );
+
+                    // Verify 64 KiB cap directly on bounded reader as well.
+                    let capped = fs
+                        .read_mnt_file_bounded("/mnt/m3/memos/AAPL.md", 0, M3_FS_MAX_READ_BYTES)
+                        .await
+                        .unwrap();
+                    assert_eq!(capped.bytes_read, M3_FS_MAX_READ_BYTES);
+                    assert!(capped.truncated);
+
+                    let recorded = provider.recorded_requests();
+                    assert!(
+                        recorded.iter().any(|r| {
+                            r.messages.iter().any(|m| m.content.contains("Apple Inc."))
+                        })
+                    );
+                    assert!(recorded.iter().any(|r| {
+                        r.messages.iter().any(|m| m.content.contains("红线拦截"))
+                    }));
+
+                    let _ = app.shutdown().await;
+                    let _ = std::fs::remove_dir_all(&dir);
+                });
+            })
+            .unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn ask_scoped_blocking_persists_session_loads_history_and_resolves_cards() {
+        let (dir, paths) = temp_m3_workspace("ask_scoped");
+        let scope = AlanScope::Company("aapl".to_owned());
+
+        // Seed a prior session turn to verify history injection + append.
+        let mut prior = alan_session::PersistedAlanSession::empty(&scope);
+        prior.updated_at_ms = 1_700_000_000_000;
+        prior.messages.push(PersistedAlanMessage {
+            id: "u-0".to_owned(),
+            role: AlanMessageRole::User,
+            text: "First question about AAPL".to_owned(),
+            raw_text: "First question about AAPL".to_owned(),
+            created_at_ms: 1_700_000_000_001,
+        });
+        prior.messages.push(PersistedAlanMessage {
+            id: "a-0".to_owned(),
+            role: AlanMessageRole::Assistant,
+            text: "First answer about AAPL".to_owned(),
+            raw_text: "First answer about AAPL".to_owned(),
+            created_at_ms: 1_700_000_000_002,
+        });
+        alan_session::save_alan_session(&paths, &prior).unwrap();
+
+        let provider = MockLlmProvider::new().with_responses(vec![
+            tool_call_response(
+                "call_fs",
+                "m3_fs_read",
+                json!({"path": "/mnt/m3/watchlist.json"}),
+            ),
+            text_response("AAPL 核心护城河稳固 [report:AAPL] [dossier:AAPL]。"),
+        ]);
+
+        let reply = ask_scoped_blocking_with_llm(
+            &paths,
+            &scope,
+            UiLang::Zh,
+            "请结合前期讨论复核 AAPL 护城河",
+            Duration::from_secs(15),
+            LlmSource::Client(LlmClient::new(provider.clone())),
+        )
+        .unwrap();
+
+        assert_eq!(reply.scope, AlanScope::Company("AAPL".to_owned()));
+        assert_eq!(reply.scope_key, "company-AAPL");
+        assert!(reply.prose.contains("[report:AAPL]"));
+        assert!(
+            reply
+                .turing_tape
+                .iter()
+                .any(|t| t.kind == TuringTapeKind::Input)
+        );
+        assert!(
+            reply
+                .turing_tape
+                .iter()
+                .any(|t| t.kind == TuringTapeKind::Tool && t.status == "completed")
+        );
+        assert!(
+            reply
+                .turing_tape
+                .iter()
+                .any(|t| t.kind == TuringTapeKind::Out)
+        );
+        assert!(reply.evidence_tokens.iter().any(|t| t.id == "report:AAPL"));
+        assert!(
+            reply
+                .evidence_cards
+                .iter()
+                .any(|c| c.ticker == "AAPL" && c.bucket == Some(Bucket::Core))
+        );
+        assert!(reply.input_tokens > 0);
+        assert!(reply.output_tokens > 0);
+        assert!(reply.session_path.is_file());
+
+        let persisted = alan_session::load_alan_session(&paths, &scope);
+        assert_eq!(persisted.messages.len(), 4);
+        assert_eq!(persisted.messages[2].role, AlanMessageRole::User);
+        assert_eq!(persisted.messages[3].role, AlanMessageRole::Assistant);
+        assert!(persisted.messages[3].text.contains("[report:AAPL]"));
+
+        // Verify prior turn context was passed to the LLM.
+        let recorded = provider.recorded_requests();
+        assert!(recorded.iter().any(|r| {
+            r.messages.iter().any(|m| {
+                m.content.contains("First question about AAPL")
+                    && m.content.contains("First answer about AAPL")
+            })
+        }));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
