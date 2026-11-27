@@ -123,9 +123,7 @@ const en = {
   fig2Label: 'Fig. 2',
   fig2Caption: 'Interactive — click around, or press 1–5.',
   fig2MobileCaption: 'Swipe through the five views.',
-  fig2Source: 'M3.app, macOS · sample data',
-  macMenus: ['File', 'View', 'Circle', 'Alan', 'Window'] as string[],
-  macClock: 'Thu 09:41',
+  fig2Source: 'M3.app, native macOS · sample data',
   tryLoading: 'Opening M3.app…',
   tryHotspotsLabel: 'Guided tour',
   hotspots: [
@@ -316,9 +314,7 @@ const zh: typeof en = {
   fig2Label: '图 2',
   fig2Caption: '可交互 — 直接点击，或按 1–5 切换视图。',
   fig2MobileCaption: '滑动查看五个视图。',
-  fig2Source: 'M3.app，macOS · 样本数据',
-  macMenus: ['文件', '视图', '能力圈', 'Alan', '窗口'],
-  macClock: '周四 09:41',
+  fig2Source: 'M3.app，原生 macOS · 样本数据',
   tryLoading: '正在打开 M3.app…',
   tryHotspotsLabel: '导览',
   hotspots: [
