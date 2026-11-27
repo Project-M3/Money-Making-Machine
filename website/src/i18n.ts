@@ -67,7 +67,7 @@ const en = {
 
   navLabel: 'Sections',
   navWork: 'Show your work',
-  navTry: 'Preview',
+  navTry: 'The desk',
   navRules: 'Editorial',
   navRoadmap: 'Roadmap',
   navOtherLocale: '中文',
@@ -116,11 +116,17 @@ const en = {
   workNote: 'Figures from the public demo fixture (Moody’s, FY25). In the app, every value is computed from your own downloaded filings.',
   workEngine: 'rust_decimal · no floating point · no LLM',
 
-  tryKicker: 'Interactive preview',
-  tryTitle: 'Click through the desk before you install.',
+  tryKicker: 'Inside M3.app',
+  tryTitle: 'The whole research loop, in one window.',
   tryLead:
-    'M3 runs natively on macOS — there is no web version. Below is an interactive preview of the app’s interface loaded with a fixed sample of Berkshire-style classics. Click around, or press 1–5 while hovering to switch views.',
-  tryLoading: 'Loading interface preview…',
+    'Screen the market, interrogate a business, study an industry, tend your circle, and log every call — all over plain files on your Mac.',
+  fig2Label: 'Fig. 2',
+  fig2Caption: 'Interactive — click around, or press 1–5.',
+  fig2MobileCaption: 'Swipe through the five views.',
+  fig2Source: 'M3.app, macOS · sample data',
+  macMenus: ['File', 'View', 'Circle', 'Alan', 'Window'] as string[],
+  macClock: 'Thu 09:41',
+  tryLoading: 'Opening M3.app…',
   tryHotspotsLabel: 'Guided tour',
   hotspots: [
     { title: 'Circle-gated inbox', body: 'Alerts fire only for companies you have studied. Everything else stays a quiet screen.' },
@@ -128,8 +134,6 @@ const en = {
     { title: 'Your circle', body: 'WATCH → IN → OUT → TOO HARD. Only you move a company between tiers.' },
     { title: 'Command palette', body: 'Press ⌘K to jump anywhere, as in the desktop app.' },
   ] as Hotspot[],
-  tryMobileNote:
-    'M3 runs natively on macOS. On a phone, swipe through its five views below — or open this page on a desktop screen for the interactive preview.',
   slides: [
     { src: '/shots/wb-inbox', caption: 'Briefing Inbox — alerts only inside your circle' },
     { src: '/shots/wb-research', caption: 'Company Desk — four lenses and the provenance of every figure' },
@@ -256,7 +260,7 @@ const zh: typeof en = {
 
   navLabel: '版块',
   navWork: '演算过程',
-  navTry: '界面预览',
+  navTry: '工作台',
   navRules: '社论',
   navRoadmap: '路线图',
   navOtherLocale: 'English',
@@ -305,11 +309,17 @@ const zh: typeof en = {
   workNote: '数字来自公开演示数据（穆迪，FY25）。在应用里，每个值都由你自己下载的财报算出。',
   workEngine: 'rust_decimal · 不用浮点 · 不用 LLM',
 
-  tryKicker: '交互预览',
-  tryTitle: '下载安装之前，先翻翻这张研究台。',
+  tryKicker: 'M3.app',
+  tryTitle: '整套研究闭环，收进一个窗口。',
   tryLead:
-    'M3 是原生 macOS 桌面应用，没有网页版。下方是装有伯克希尔式固定样本的界面交互预览——随便点点，或把鼠标停在上面按 1–5 切换视图。',
-  tryLoading: '正在载入界面预览…',
+    '筛全市场、审讯公司、拆解行业、守住能力圈、记下每一次判断——全部读写你 Mac 上的本地文件。',
+  fig2Label: '图 2',
+  fig2Caption: '可交互 — 直接点击，或按 1–5 切换视图。',
+  fig2MobileCaption: '滑动查看五个视图。',
+  fig2Source: 'M3.app，macOS · 样本数据',
+  macMenus: ['文件', '视图', '能力圈', 'Alan', '窗口'],
+  macClock: '周四 09:41',
+  tryLoading: '正在打开 M3.app…',
   tryHotspotsLabel: '导览',
   hotspots: [
     { title: '能力圈门控的收件箱', body: '只有你研究过的公司才会提醒，其他公司安静地留在筛选里。' },
@@ -317,7 +327,6 @@ const zh: typeof en = {
     { title: '你的能力圈', body: 'WATCH → IN → OUT → TOO HARD，只有你能调整公司所在的层级。' },
     { title: '命令面板', body: '按 ⌘K 跳到任何地方，和桌面应用一样。' },
   ],
-  tryMobileNote: 'M3 是原生 macOS 桌面应用。在手机上可滑动查看五个核心视图；在桌面端打开本页可体验交互式界面预览。',
   slides: [
     { src: '/shots/wb-inbox', caption: '简报收件箱 — 只提醒能力圈内的公司' },
     { src: '/shots/wb-research', caption: '公司研究台 — 四个视角，每个数字都有出处' },

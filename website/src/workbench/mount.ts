@@ -16,7 +16,7 @@ const HOST_CSS = `
   text-align: left;
 }
 .app-frame {
-  box-shadow: 0 1px 0 rgba(51, 48, 46, 0.12), 0 24px 60px -24px rgba(51, 48, 46, 0.45);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 26px 64px -18px rgba(0, 0, 0, 0.72);
 }
 `
 
