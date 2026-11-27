@@ -12,7 +12,7 @@ import {
   type UniverseFilter,
   type UniverseSearchMode,
   type WorkbenchTab,
-} from '../data/fixture';
+} from './fixture';
 
 interface DockNotice {
   tag: string;
@@ -107,7 +107,16 @@ function toneClass(tone: CompanyRecord['statusTone'] | InboxEvent['severity']): 
   }
 }
 
-export function mountWorkbench(container: HTMLElement): void {
+export interface MountOptions {
+  /** Keyboard shortcuts fire only while this returns true (e.g. the island has focus or hover). */
+  isActive?: () => boolean;
+  /** Initial UI language of the simulated app chrome. */
+  lang?: 'en' | 'zh';
+}
+
+export function mountWorkbench(container: HTMLElement, options: MountOptions = {}): void {
+  const root = container.getRootNode() as Document | ShadowRoot;
+  const isActive = options.isActive ?? (() => true);
   const state: WorkbenchState = {
     tab: 'inbox',
     companySubTab: 'alan',
@@ -126,7 +135,7 @@ export function mountWorkbench(container: HTMLElement): void {
         ind.feynmanChecklist.map((q, idx) => [`${ind.slug}:${idx}`, q.checked]),
       ),
     ),
-    settingsLang: 'en',
+    settingsLang: options.lang ?? 'en',
     settingsChannel: 'stable',
     sidebarCollapsed: false,
     messageBoxOpen: false,
@@ -1829,7 +1838,7 @@ export function mountWorkbench(container: HTMLElement): void {
       state.settingsOpen = false;
       state.paletteQuery = '';
       render();
-      document.getElementById('m3-palette-input')?.focus();
+      root.getElementById('m3-palette-input')?.focus();
     });
 
     container.querySelectorAll<HTMLElement>('[data-close-palette]').forEach((el) => {
@@ -1841,13 +1850,13 @@ export function mountWorkbench(container: HTMLElement): void {
       });
     });
 
-    const paletteInput = document.getElementById('m3-palette-input') as HTMLInputElement | null;
+    const paletteInput = root.getElementById('m3-palette-input') as HTMLInputElement | null;
     if (paletteInput) {
       paletteInput.addEventListener('input', () => {
         const caret = paletteInput.selectionStart ?? paletteInput.value.length;
         state.paletteQuery = paletteInput.value;
         render();
-        const fresh = document.getElementById('m3-palette-input') as HTMLInputElement | null;
+        const fresh = root.getElementById('m3-palette-input') as HTMLInputElement | null;
         if (fresh) {
           fresh.focus();
           fresh.setSelectionRange(caret, caret);
@@ -1880,7 +1889,8 @@ export function mountWorkbench(container: HTMLElement): void {
   }
 
   window.addEventListener('keydown', (ev) => {
-    const target = ev.target as HTMLElement | null;
+    if (!isActive()) return;
+    const target = (ev.composedPath()[0] ?? ev.target) as HTMLElement | null;
     const isInput =
       target &&
       (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
@@ -1889,7 +1899,7 @@ export function mountWorkbench(container: HTMLElement): void {
       ev.preventDefault();
       state.paletteOpen = !state.paletteOpen;
       render();
-      if (state.paletteOpen) document.getElementById('m3-palette-input')?.focus();
+      if (state.paletteOpen) root.getElementById('m3-palette-input')?.focus();
       return;
     }
 
