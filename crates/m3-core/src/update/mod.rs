@@ -93,7 +93,7 @@ use semver::{current_target_triple, is_newer_version};
 use semver::{normalize_version_str, parse_semver};
 
 /// Default GitHub owner/repo hosting public M3 releases.
-pub const DEFAULT_GITHUB_REPO: &str = "Project-M3/Money-Making-Machine";
+pub const DEFAULT_GITHUB_REPO: &str = "thinksmart-systems/m3";
 /// Default public GitHub web base URL hosting Release download endpoints.
 pub const DEFAULT_GITHUB_BASE_URL: &str = "https://github.com";
 

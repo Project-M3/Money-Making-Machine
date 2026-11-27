@@ -23,8 +23,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 pub const M3_WEBSITE_URL: &str = "https://m3.thinksmart.systems";
-pub const M3_GITHUB_URL: &str = "https://github.com/Project-M3/Money-Making-Machine";
-pub const M3_RELEASES_URL: &str = "https://github.com/Project-M3/Money-Making-Machine/releases";
+pub const M3_GITHUB_URL: &str = "https://github.com/thinksmart-systems/m3";
+pub const M3_RELEASES_URL: &str = "https://github.com/thinksmart-systems/m3/releases";
 
 /// Low-radius (`12pt`) behind-window Gaussian blur for the fog-free smoked-black glass shell.
 pub const SMOKED_GLASS_BLUR_RADIUS: f32 = 12.0;

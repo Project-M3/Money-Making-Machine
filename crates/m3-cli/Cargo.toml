@@ -3,9 +3,9 @@ name = "m3-cli"
 version = "0.6.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "JSON-first command-line interface for Project M3 (Munger Workbench)"
+description = "Agent-native schema-v1 JSON CLI and MCP server for M3"
 homepage = "https://m3.thinksmart.systems"
-repository = "https://github.com/Project-M3/Money-Making-Machine"
+repository = "https://github.com/thinksmart-systems/m3"
 publish = false
 
 [[bin]]

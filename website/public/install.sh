@@ -5,7 +5,7 @@ set -euo pipefail
 # Installs M3.app to /Applications/M3.app (by default) and symlinks ~/.local/bin/m3,
 # verifies SHA-256 checksums before swapping, and persists workspace + release channel.
 
-DEFAULT_REPO="Project-M3/Money-Making-Machine"
+DEFAULT_REPO="thinksmart-systems/m3"
 REPO="${M3_GITHUB_REPO:-$DEFAULT_REPO}"
 CHANNEL="${M3_CHANNEL:-stable}"
 REQUESTED_VERSION="${M3_VERSION:-}"
@@ -35,7 +35,7 @@ Options:
 
 Environment:
   M3_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN   Optional token for GitHub API rate limits or private forks (falls back to `gh auth token`)
-  M3_GITHUB_REPO                              GitHub owner/repo (default: Project-M3/Money-Making-Machine)
+  M3_GITHUB_REPO                              GitHub owner/repo (default: thinksmart-systems/m3)
 EOF
 }
 

@@ -3,9 +3,9 @@ name = "m3-nsh"
 version = "0.6.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "NSH 0.7.0 cross-platform UI shell for Project M3 (Munger value investing workbench)"
+description = "Native macOS desktop workbench for M3 built on Longbridge NSH"
 homepage = "https://m3.thinksmart.systems"
-repository = "https://github.com/Project-M3/Money-Making-Machine"
+repository = "https://github.com/thinksmart-systems/m3"
 publish = false
 
 [dependencies]

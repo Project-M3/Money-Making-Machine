@@ -1,15 +1,16 @@
-# Contributing to Project M3
+# Contributing to M3
 
-Thank you for your interest in contributing to **Project M3 (Money · Making · Machine)**.
+Thank you for your interest in contributing to **M3**.
 
 ## Project Layout
 
-- `crates/m3-core`: Zero-UI deterministic financial engine, SEC/Yahoo sync, DuckDB/Parquet lakehouse, Industry Studio, storage manager, i18n, and self-updater.
-- `crates/m3-cli`: Structured schema-v1 JSON CLI (`m3`).
+- `crates/m3-core`: Zero-UI deterministic financial engine, SEC/Yahoo sync, DuckDB/Parquet lakehouse, proactive watchdog, Feynman coach, Industry Studio, storage manager, i18n, and self-updater.
+- `crates/m3-cli`: Structured schema-v1 JSON CLI (`m3`) and 40-tool MCP server (`m3 mcp`).
 - `apps/m3-nsh`: Native macOS desktop workbench built with Longbridge NSH `0.7.0`.
-- `website`: Public Vite + TypeScript landing page and interactive workbench showcase (`m3.thinksmart.systems`).
+- `website`: Public Solid 2 + Vite 8 + Cloudflare Workers site and interactive workbench showcase (`m3.thinksmart.systems`).
 - `scripts`: macOS packaging, install (`scripts/install.sh`), release, and manifest tools.
-- `docs`: Architecture specs, Munger workflow, and Agent/CLI contracts.
+- `docs`: Architecture specs, Munger workflow, and Agent/MCP/CLI contracts.
+- `skills`: First-party Agent Skills (`m3`, `m3-qa`).
 
 ## Prerequisites
 

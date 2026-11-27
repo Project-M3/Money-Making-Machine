@@ -7,7 +7,7 @@ const D = '\x1b[38;2;160;166;180m';
 const M = '\x1b[38;2;107;114;130m';
 const X = '\x1b[0m';
 
-const REPO_URL = 'https://github.com/Project-M3/Money-Making-Machine';
+const REPO_URL = 'https://github.com/thinksmart-systems/m3';
 const LATEST_MANIFEST_UPSTREAM = `${REPO_URL}/releases/latest/download/latest.json`;
 const BETA_MANIFEST_UPSTREAM = `${REPO_URL}/releases/download/beta/latest.json`;
 const RELEASES_URL = `${REPO_URL}/releases`;

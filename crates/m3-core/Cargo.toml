@@ -3,9 +3,9 @@ name = "m3-core"
 version = "0.6.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "Core financial arithmetic, SEC EDGAR/DuckDB lakehouse, Alan integration, and storage abstractions for Project M3"
+description = "Core financial arithmetic, SEC EDGAR/DuckDB lakehouse, Alan integration, and storage abstractions for M3"
 homepage = "https://m3.thinksmart.systems"
-repository = "https://github.com/Project-M3/Money-Making-Machine"
+repository = "https://github.com/thinksmart-systems/m3"
 publish = false
 
 [dependencies]
