@@ -47,7 +47,7 @@ python3 scripts/generate-release-manifest.py --help >/dev/null
 pnpm --dir website build
 ```
 
-If you build or test local Alan changes via `[patch."https://github.com/realmorrisliu/alan.git"]`, keep the patch strictly local (for example in an untracked `.cargo/config.toml`) and never commit host-specific absolute paths.
+If you build or test local Alan changes via `[patch."https://github.com/thinksmart-systems/alan.git"]`, keep the patch strictly local (for example in an untracked `.cargo/config.toml`) and never commit host-specific absolute paths.
 
 ## Commit & Pull Request Conventions
 

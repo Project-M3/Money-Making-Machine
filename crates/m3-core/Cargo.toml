@@ -24,12 +24,12 @@ sha2 = "0.10"
 tar = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 zip = { version = "9.5", default-features = false, features = ["deflate"] }
-alan-os-host = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4", default-features = false, features = ["provider-openrouter", "provider-openai", "provider-magpie", "provider-vertex"] }
-alan-service-manager = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4" }
-alan-agent-engine = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4", default-features = false }
-alan-auth = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4" }
-alan-ap = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4" }
-alan-shell = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4" }
+alan-os-host = { git = "https://github.com/thinksmart-systems/alan.git", tag = "v0.1.4", default-features = false, features = ["provider-openrouter", "provider-openai", "provider-magpie", "provider-vertex"] }
+alan-service-manager = { git = "https://github.com/thinksmart-systems/alan.git", tag = "v0.1.4" }
+alan-agent-engine = { git = "https://github.com/thinksmart-systems/alan.git", tag = "v0.1.4", default-features = false }
+alan-auth = { git = "https://github.com/thinksmart-systems/alan.git", tag = "v0.1.4" }
+alan-ap = { git = "https://github.com/thinksmart-systems/alan.git", tag = "v0.1.4" }
+alan-shell = { git = "https://github.com/thinksmart-systems/alan.git", tag = "v0.1.4" }
 
 [dev-dependencies]
-alan-llm = { git = "https://github.com/realmorrisliu/alan.git", tag = "v0.1.4", default-features = false, features = ["mock"] }
+alan-llm = { git = "https://github.com/thinksmart-systems/alan.git", tag = "v0.1.4", default-features = false, features = ["mock"] }

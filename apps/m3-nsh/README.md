@@ -37,6 +37,6 @@ CLI 二进制 `m3`（由 `crates/m3-cli` 构建并内置在 `M3.app/Contents/Mac
 ## 数据与验证
 
 - `cargo test --workspace --locked -j 4` 运行 `m3-core`、`m3-cli` 与 `m3-nsh` 全部单元测试。
-- `alan-*` 依赖在 [crates/m3-core/Cargo.toml](../../crates/m3-core/Cargo.toml) 中固定指向公开仓库 `https://github.com/realmorrisliu/alan.git` 的 `v0.1.4` tag；如需与本地 Alan 源码联调，可通过 `.cargo/config.toml` 或 `[patch."https://github.com/realmorrisliu/alan.git"]` 临时覆写，避免将本机绝对路径提交进仓库。
+- `alan-*` 依赖在 [crates/m3-core/Cargo.toml](../../crates/m3-core/Cargo.toml) 中固定指向公开仓库 `https://github.com/thinksmart-systems/alan.git` 的 `v0.1.4` tag；如需与本地 Alan 源码联调，可通过 `.cargo/config.toml` 或 `[patch."https://github.com/thinksmart-systems/alan.git"]` 临时覆写，避免将本机绝对路径提交进仓库。
 - 一手原始财报、行情缓存与 L0 全美股 DuckDB/Parquet 湖仓写入仓库 `data/munger/`（Git 忽略）；观察池、审讯档案与模拟账本保存在 `workbench/`（Git 跟踪）。
 - 本工作台不包含券商登录、实盘交易密钥或自动下单功能，也不再运行已归档的 `m3-paper` 进程。
